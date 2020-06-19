@@ -1,3 +1,4 @@
+![Go](https://github.com/okian/servo/workflows/Go/badge.svg)
 # servo for serving!
 servo is a simple service initializer/finalizer
 
