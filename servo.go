@@ -43,14 +43,14 @@ const (
 	Stop
 )
 
-func Register(service Service, order int) error {
+func Register(service Service, order int) {
 	registerLock.Lock()
 	defer registerLock.Unlock()
 	if initialized {
-		return ErrorInitialized
+		panic(ErrorInitialized)
 	}
 	if _, ok := serviceNames[service.Name()]; ok {
-		return fmt.Errorf("service with name: %q has been registered", service.Name())
+		panic(fmt.Errorf("service with name: %q has been registered", service.Name()))
 	}
 	serviceNames[service.Name()] = true
 	if k, ok := register[order]; ok {
@@ -58,7 +58,6 @@ func Register(service Service, order int) error {
 	} else {
 		register[order] = []Service{service}
 	}
-	return nil
 }
 
 func flatServices() {
