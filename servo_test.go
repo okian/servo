@@ -73,58 +73,39 @@ func (t testService) Ready(ctx context.Context) (interface{}, error) {
 func TestRegister(t *testing.T) {
 
 	delay := time.Duration(0)
-	err := Register(&testService{
+	Register(&testService{
 		test:      t,
 		name:      "first",
 		initDelay: delay,
 	}, 1)
-	if err != nil {
-		t.Error(err)
-	}
-	err = Register(testService{
+
+	Register(testService{
 		test:      t,
 		name:      "second",
 		initDelay: delay,
 	}, 2)
-	if err != nil {
-		t.Error(err)
-	}
-	err = Register(testService{
+
+	Register(testService{
 		test:      t,
 		name:      "third",
 		initDelay: delay,
 	}, 3)
-	if err != nil {
-		t.Error(err)
-	}
-	err = Register(testService{
+
+	Register(testService{
 		test:      t,
 		name:      "forth 1",
 		initDelay: delay,
 	}, 4)
-	if err != nil {
-		t.Error(err)
-	}
-	err = Register(testService{
+
+	Register(testService{
 		test:      t,
 		name:      "forth 2",
 		initDelay: delay,
 	}, 4)
-	if err != nil {
-		t.Error(err)
-	}
-	err = Register(testService{
-		test:      t,
-		name:      "forth 2",
-		initDelay: delay,
-	}, 4)
-	if err == nil {
-		t.Error(err)
-	}
-	err = nil
+
 	ctx, cl := context.WithTimeout(context.Background(), time.Second*60)
 	defer cl()
-	err = Initialize(ctx)
+	err := Initialize(ctx)
 	if err != nil {
 		t.Error(err)
 	}
