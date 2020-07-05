@@ -11,6 +11,14 @@ import (
 	"time"
 )
 
+type report int
+
+const (
+	ALL report = iota
+	NONE
+	NOTNIL
+)
+
 var (
 	ErrorTimeout        = errors.New("timeout")
 	ErrorInitialized    = errors.New("services are already initialized")
@@ -69,6 +77,8 @@ func flatServices() {
 	})
 }
 
+var mode report = NOTNIL
+
 func check(ctx context.Context, rt checkType) (map[string]interface{}, error) {
 	registerLock.RLock()
 	defer registerLock.RUnlock()
@@ -93,18 +103,34 @@ func check(ctx context.Context, rt checkType) (map[string]interface{}, error) {
 	for _, sv := range services {
 		go func(s Service) {
 			defer wg.Done()
+
 			var r interface{}
 			var e error
-			if rt == health {
+
+			switch rt {
+			case health:
 				r, e = s.Healthy(ctx)
-			} else if rt == ready {
+			case ready:
 				r, e = s.Ready(ctx)
-			} else {
-				panic("[BUG]: unknown report type")
+			default:
+				panic(fmt.Sprintf("[BUG]: unknown report type %v", rt))
 			}
+
 			l.Lock()
 			defer l.Unlock()
-			res[s.Name()] = r
+			switch mode {
+			case ALL:
+				res[s.Name()] = r
+			case NOTNIL:
+				if r != nil {
+					res[s.Name()] = r
+				}
+			case NONE:
+				break
+			default:
+				panic("[BUG]")
+			}
+
 			if e != nil {
 				erc <- e
 			}
