@@ -40,7 +40,7 @@ var (
 type checkType int
 
 const (
-	health checkType = 1 << iota
+	health checkType = iota
 	ready
 )
 
@@ -60,7 +60,7 @@ func Register(service Service, order int) {
 	if _, ok := serviceNames[service.Name()]; ok {
 		panic(fmt.Errorf("service with name: %q has been registered", service.Name()))
 	}
-	serviceNames[service.Name()] = true
+	serviceNames[service.Name()] = false
 	if k, ok := register[order]; ok {
 		register[order] = append(k, service)
 	} else {
@@ -155,11 +155,11 @@ func Health(ctx context.Context) (map[string]interface{}, error) {
 	return check(ctx, health)
 }
 
-func Initialize(ctx context.Context) error {
+func Initialize(ctx context.Context) func() {
 	registerLock.Lock()
 	defer registerLock.Unlock()
 	if initialized {
-		return ErrorInitialized
+		panic(ErrorInitialized.Error())
 	}
 	initialized = true
 	var ks = make([]int, len(register))
@@ -167,20 +167,21 @@ func Initialize(ctx context.Context) error {
 		ks = append(ks, k)
 	}
 	sort.Ints(ks)
-	var err error
+
 	for _, i := range ks {
 		if e := run(ctx, Start, register[i]); e != nil {
-			err = e
+			finalize()
+			panic(e.Error())
 		}
 	}
-	return err
+	return finalize
 }
 
-func Finalize(ctx context.Context) error {
+func finalize() {
 	registerLock.Lock()
 	defer registerLock.Unlock()
 	if finalized {
-		return ErrorFinalized
+		return
 	}
 	finalized = true
 	var ks = make([]int, len(register))
@@ -189,11 +190,9 @@ func Finalize(ctx context.Context) error {
 	}
 	sort.Sort(sort.Reverse(sort.IntSlice(ks)))
 	for _, i := range ks {
-		if err := run(ctx, Stop, register[i]); err != nil {
-			return err
-		}
+		_ = run(context.Background(), Stop, register[i])
 	}
-	return nil
+	return
 }
 
 func run(ctx context.Context, mode runMode, svc []Service) error {
@@ -211,8 +210,14 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 			defer wg.Done()
 			var err error
 			if mode == Start {
-				err = c.Initialize(ctx)
+				if err = c.Initialize(ctx); err == nil {
+					serviceNames[c.Name()] = true
+				}
+
 			} else if mode == Stop {
+				if serviceNames[c.Name()] == false {
+					return
+				}
 				err = c.Finalize()
 			}
 			if err != nil {

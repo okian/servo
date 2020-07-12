@@ -105,7 +105,8 @@ func TestRegister(t *testing.T) {
 
 	ctx, cl := context.WithTimeout(context.Background(), time.Second*60)
 	defer cl()
-	err := Initialize(ctx)
+	defer Initialize(ctx)()
+	var err error
 	if err != nil {
 		t.Error(err)
 	}
@@ -114,10 +115,6 @@ func TestRegister(t *testing.T) {
 		t.Error(err)
 	}
 	_, err = Ready(ctx)
-	if err != nil {
-		t.Error(err)
-	}
-	err = Finalize(ctx)
 	if err != nil {
 		t.Error(err)
 	}
