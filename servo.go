@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -196,36 +197,35 @@ func finalize() {
 	for _, i := range ks {
 		_ = run(context.Background(), Stop, register[i])
 	}
-	return
 }
 
 func run(ctx context.Context, mode runMode, svc []Service) error {
 	wg := sync.WaitGroup{}
 	wg.Add(len(svc))
 	t := time.After(timeout)
-	done := make(chan bool, 0)
+	done := make(chan bool)
 	go func() {
 		wg.Wait()
 		close(done)
 	}()
-	ers := make(chan error, 0)
+	ers := make(chan error)
 	for _, s := range svc {
 		go func(c Service) {
 			defer wg.Done()
 			var err error
 			if mode == Start {
-				fmt.Println(fmt.Sprintf("initializing %s", c.Name()))
+				fmt.Fprintf(os.Stdout, "initializing %s", c.Name())
 
 				if err = c.Initialize(ctx); err == nil {
-					fmt.Println(fmt.Sprintf("%s failed to initialize: %q", c.Name(), err.Error()))
+					fmt.Fprintf(os.Stdout, "%s failed to initialized", c.Name())
 					serviceNames[c.Name()] = true
 				}
 
 			} else if mode == Stop {
-				if serviceNames[c.Name()] == false {
+				if !serviceNames[c.Name()] {
 					return
 				}
-				fmt.Println(fmt.Sprintf("finalizing %s", c.Name()))
+				fmt.Fprintf(os.Stdout, "finalizing %s", c.Name())
 				err = c.Finalize()
 			}
 			if err != nil {

@@ -22,11 +22,10 @@ func (c *cfg) Initialize(_ context.Context) error {
 	viper.AddConfigPath(fmt.Sprintf("/etc/%s/", AppName()))
 	viper.AddConfigPath(fmt.Sprintf("$HOME/.%s/", AppName()))
 	viper.AddConfigPath(".")
-	viper.SetConfigName(configFile)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	viper.AutomaticEnv()
-
-	return viper.ReadInConfig()
+	_ = viper.ReadInConfig()
+	return nil
 }
 
 func (c *cfg) Finalize() error {
