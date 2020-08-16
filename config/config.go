@@ -2,15 +2,17 @@ package config
 
 var (
 	// The values must be set on build time
-	appName string
+	app     string
 	version string
 	commit  string
 	tag     string
 	branch  string
+	// date of build
+	date string
 )
 
 func AppName() string {
-	return appName
+	return app
 }
 
 func Version() string {
@@ -27,4 +29,8 @@ func Tag() string {
 
 func Branch() string {
 	return branch
+}
+
+func Date() string {
+	return date
 }

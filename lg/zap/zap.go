@@ -13,12 +13,7 @@ import (
 )
 
 type log struct {
-	z *zap.SugaredLogger
-	info,
-	warn,
-	debug,
-	error,
-	panic uint
+	z    *zap.SugaredLogger
 	file *os.File
 }
 
@@ -144,6 +139,14 @@ func extra() []zapcore.Field {
 			Key:    "app_version",
 			Type:   zapcore.StringType,
 			String: config.Version(),
+		})
+	}
+
+	if viper.GetBool("log.extra.date") && config.Date() != "" {
+		fs = append(fs, zapcore.Field{
+			Key:    "app_date",
+			Type:   zapcore.StringType,
+			String: config.Date(),
 		})
 	}
 
