@@ -3,6 +3,7 @@ package config
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/okian/servo"
 	"github.com/spf13/viper"
@@ -17,12 +18,14 @@ func (c *cfg) Name() string {
 }
 
 func (c *cfg) Initialize(_ context.Context) error {
-	viper.AutomaticEnv()
 	viper.SetEnvPrefix(AppName())
 	viper.AddConfigPath(fmt.Sprintf("/etc/%s/", AppName()))
 	viper.AddConfigPath(fmt.Sprintf("$HOME/.%s/", AppName()))
 	viper.AddConfigPath(".")
 	viper.SetConfigName(configFile)
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	viper.AutomaticEnv()
+
 	return viper.ReadInConfig()
 }
 
