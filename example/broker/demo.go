@@ -46,8 +46,6 @@ func init() {
 	// servo will initialize services from smallest order to the biggest and
 	// finalize will do it in opposite order
 	// services with same order number will initiate concurrently
-	if err := servo.Register(Broker{}, 20); err != nil {
-		// you will get error when you have more then one service with same name
-		panic(err)
-	}
+	servo.Register(Broker{}, 20)
+
 }
