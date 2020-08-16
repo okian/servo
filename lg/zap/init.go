@@ -7,6 +7,6 @@ import (
 
 func init() {
 	s := &log{}
-	servo.Register(s, 10)
+	servo.Register(s, 20)
 	lg.Register(s)
 }

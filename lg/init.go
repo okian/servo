@@ -4,5 +4,5 @@ import "github.com/okian/servo"
 
 func init() {
 	s := new(in)
-	servo.Register(s, 10)
+	servo.Register(s, 29)
 }
