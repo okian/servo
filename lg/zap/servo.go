@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/okian/servo/lg"
 	"github.com/spf13/viper"
 )
 
@@ -18,6 +19,7 @@ func (l *log) Initialize(_ context.Context) error {
 	} else {
 		l.z = l.development()
 	}
+	lg.Register(l)
 	return nil
 }
 
