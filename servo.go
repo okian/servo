@@ -164,7 +164,7 @@ func Initialize(ctx context.Context) func() {
 		panic(ErrorInitialized.Error())
 	}
 	initialized = true
-	var ks = make([]int, len(register))
+	var ks = make([]int, 0)
 	for k := range register {
 		ks = append(ks, k)
 	}

@@ -7,9 +7,9 @@ import (
 
 	"github.com/okian/servo"
 	"github.com/okian/servo/lg"
-
+	_ "github.com/okian/servo/lg/zap"
 	// DONT FORGET THIS (needed for invoking init function)
-	_ "github.com/okian/servo/example/broker"
+	//	_ "github.com/okian/servo/example/broker"
 )
 
 type msg string
@@ -39,7 +39,6 @@ func main() {
 	//z.Sugar().Debugw("eellow ", "num2", 2, "num4", 4, "ctx", ctx)
 	//os.Exit(0)
 	servo.Initialize(ctx)
-	lg.AddField("AppName", 3232)
 
 	lg.Debugw("eellow ", "num2", 2, "num4", 4, "ctx", ctx)
 	lg.Errorw("name iswww", "test", 33)
