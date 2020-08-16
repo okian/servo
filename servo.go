@@ -158,7 +158,7 @@ func Health(ctx context.Context) (map[string]interface{}, error) {
 }
 
 func Initialize(ctx context.Context) func() {
-	fmt.Println("starting initializition")
+	fmt.Fprintf(os.Stdout, "starting initializition\n")
 	registerLock.Lock()
 	defer registerLock.Unlock()
 	if initialized {
@@ -172,7 +172,7 @@ func Initialize(ctx context.Context) func() {
 	sort.Ints(ks)
 
 	for _, i := range ks {
-		fmt.Println(fmt.Sprintf("initializing services with order %d", i))
+		fmt.Fprintf(os.Stdout, "initializing services with order %d\n", i)
 
 		if e := run(ctx, Start, register[i]); e != nil {
 			finalize()
@@ -214,10 +214,10 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 			defer wg.Done()
 			var err error
 			if mode == Start {
-				fmt.Fprintf(os.Stdout, "initializing %s", c.Name())
+				fmt.Fprintf(os.Stdout, "initializing %s\n", c.Name())
 
 				if err = c.Initialize(ctx); err == nil {
-					fmt.Fprintf(os.Stdout, "%s failed to initialized", c.Name())
+					fmt.Fprintf(os.Stdout, "%s failed to initialized\n", c.Name())
 					serviceNames[c.Name()] = true
 				}
 
@@ -225,7 +225,7 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 				if !serviceNames[c.Name()] {
 					return
 				}
-				fmt.Fprintf(os.Stdout, "finalizing %s", c.Name())
+				fmt.Fprintf(os.Stdout, "finalizing %s\n", c.Name())
 				err = c.Finalize()
 			}
 			if err != nil {
