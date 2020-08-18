@@ -217,8 +217,10 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 				fmt.Fprintf(os.Stdout, "initializing %s\n", c.Name())
 
 				if err = c.Initialize(ctx); err == nil {
-					fmt.Fprintf(os.Stdout, "%s failed to initialize: %s\n", c.Name(), err.Error())
+					fmt.Fprintf(os.Stdout, "%s initialized\n", c.Name())
 					serviceNames[c.Name()] = true
+				} else {
+					fmt.Fprintf(os.Stdout, "%s failed to initialize: %s\n", c.Name(), err.Error())
 				}
 
 			} else if mode == Stop {
