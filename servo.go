@@ -173,8 +173,8 @@ func Initialize(ctx context.Context) func() {
 
 	for _, i := range ks {
 		fmt.Fprintf(os.Stdout, "initializing services with order %d\n", i)
-
 		if e := run(ctx, Start, register[i]); e != nil {
+			fmt.Fprintf(os.Stdout, "service returned error: %s\n", e.Error())
 			finalize()
 			panic(e.Error())
 		}
