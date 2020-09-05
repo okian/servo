@@ -9,7 +9,6 @@ import (
 	"os"
 	"sort"
 	"sync"
-	"time"
 )
 
 type report int
@@ -28,7 +27,6 @@ var (
 	ErrorFinalized      = errors.New("services are already finalized")
 )
 var (
-	timeout      = time.Second * 10
 	register     = make(map[int][]Service)
 	registerLock = sync.RWMutex{}
 	initialized  = false
@@ -174,7 +172,7 @@ func Initialize(ctx context.Context) func() {
 	for _, i := range ks {
 		fmt.Fprintf(os.Stdout, "initializing services with order %d\n", i)
 		if e := run(ctx, Start, register[i]); e != nil {
-			fmt.Fprintf(os.Stdout, "service returned error: %s\n", e.Error())
+			fmt.Fprintf(os.Stdout, "service %q returned error: %s\n", i, e.Error())
 			finalize()
 			panic(e.Error())
 		}
@@ -202,7 +200,6 @@ func finalize() {
 func run(ctx context.Context, mode runMode, svc []Service) error {
 	wg := sync.WaitGroup{}
 	wg.Add(len(svc))
-	t := time.After(timeout)
 	done := make(chan bool)
 	go func() {
 		wg.Wait()
@@ -240,8 +237,6 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 		return err
 	case <-ctx.Done():
 		return ErrorCancelled
-	case <-t:
-		return ErrorTimeout
 	case <-done:
 		return nil
 	}
