@@ -7,6 +7,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
+	"github.com/okian/servo/lg"
 	"github.com/spf13/viper"
 )
 
@@ -22,13 +23,16 @@ func (s *service) Name() string {
 func (s *service) Initialize(ctx context.Context) error {
 	// this Pings the database trying to connect, panics on error
 	// use sqlx.Open() for sql.Open() semantics
-	cn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s password=%s sslmode=disable timezone='%s'",
+	cn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s password=%s sslmode=disable ",
 		viper.GetString("db_host"),
 		viper.GetString("db_port"),
 		viper.GetString("db_user"),
 		viper.GetString("db_dbname"),
-		viper.GetString("db_password"),
-		viper.GetString("db_tz"))
+		viper.GetString("db_password"))
+
+	cn = fmt.Sprintf("%s timezone='%s'", cn, viper.GetString("db_tz"))
+
+	lg.Debugf("db connection string: %s", cn)
 
 	d, err := sqlx.Connect("postgres", cn)
 	if err != nil {
@@ -50,30 +54,36 @@ func (s *service) Ready(ctx context.Context) (interface{}, error) {
 	return nil, db.Ping()
 }
 
+// Exec executes a query without returning any rows.
+// The args are for any placeholder parameters in the query.
+func Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+	return db.ExecContext(ctx, query, arg...)
+}
+
 // NamedQuery using this db.
 // Any named placeholder parameters are replaced with fields from arg.
-func NamedQuery(query string, arg interface{}) (*sqlx.Rows, error) {
-	return db.NamedQuery(query, arg)
+func NamedQuery(ctx context.Context, query string, arg interface{}) (*sqlx.Rows, error) {
+	return db.NamedQueryContext(ctx, query, arg)
 
 }
 
 // NamedExec using this db.
 // Any named placeholder parameters are replaced with fields from arg.
-func NamedExec(query string, arg interface{}) (sql.Result, error) {
-	return db.NamedExec(query, arg)
+func NamedExec(ctx context.Context, query string, arg interface{}) (sql.Result, error) {
+	return db.NamedExecContext(ctx, query, arg)
 }
 
 // Select using this db.
 // Any placeholder parameters are replaced with supplied args.
-func Select(dest interface{}, query string, args ...interface{}) error {
-	return db.Select(dest, query, args...)
+func Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	return db.SelectContext(ctx, dest, query, args...)
 }
 
 // Get using this db.
 // Any placeholder parameters are replaced with supplied args.
 // An error is returned if the result set is empty.
-func Get(dest interface{}, query string, args ...interface{}) error {
-	return db.Get(dest, query, args...)
+func Get(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
+	return db.GetContext(ctx, dest, query, args...)
 }
 
 // MustBegin starts a transaction, and panics on error.  Returns an *sqlx.Tx instead
@@ -89,28 +99,28 @@ func Beginx() (*sqlx.Tx, error) {
 
 // Queryx queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
-func Queryx(query string, args ...interface{}) (*sqlx.Rows, error) {
-	return db.Queryx(query, args...)
+func Queryx(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+	return db.QueryxContext(ctx, query, args...)
 }
 
 // QueryRowx queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
-func QueryRowx(query string, args ...interface{}) *sqlx.Row {
-	return db.QueryRowx(query, args...)
+func QueryRowx(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
+	return db.QueryRowxContext(ctx, query, args...)
 }
 
 // MustExec (panic) runs MustExec using this database.
 // Any placeholder parameters are replaced with supplied args.
-func MustExec(query string, args ...interface{}) sql.Result {
-	return db.MustExec(query, args...)
+func MustExec(ctx context.Context, query string, args ...interface{}) sql.Result {
+	return db.MustExecContext(ctx, query, args...)
 }
 
 // Preparex returns an sqlx.Stmt instead of a sql.Stmt
-func Preparex(query string) (*sqlx.Stmt, error) {
-	return db.Preparex(query)
+func Preparex(ctx context.Context, query string) (*sqlx.Stmt, error) {
+	return db.PreparexContext(ctx, query)
 }
 
 // PrepareNamed returns an sqlx.NamedStmt
-func PrepareNamed(query string) (*sqlx.NamedStmt, error) {
-	return db.PrepareNamed(query)
+func PrepareNamed(ctx context.Context, query string) (*sqlx.NamedStmt, error) {
+	return db.PrepareNamedContext(ctx, query)
 }
