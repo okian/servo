@@ -57,7 +57,7 @@ func (s *service) Ready(ctx context.Context) (interface{}, error) {
 // Exec executes a query without returning any rows.
 // The args are for any placeholder parameters in the query.
 func Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return db.ExecContext(ctx, query, arg...)
+	return db.ExecContext(ctx, query, args...)
 }
 
 // NamedQuery using this db.
