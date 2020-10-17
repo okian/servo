@@ -3,6 +3,7 @@ module github.com/okian/servo
 go 1.13
 
 require (
+	github.com/hashicorp/go-multierror v1.0.0
 	github.com/jmoiron/sqlx v1.2.0
 	github.com/lib/pq v1.8.0
 	github.com/mediocregopher/radix/v3 v3.5.2

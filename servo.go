@@ -109,9 +109,17 @@ func check(ctx context.Context, rt checkType) (map[string]interface{}, error) {
 
 			switch rt {
 			case health:
-				r, e = s.Healthy(ctx)
+				v, ok := s.(Healthiness)
+				if !ok {
+					return
+				}
+				r, e = v.Healthy(ctx)
 			case ready:
-				r, e = s.Ready(ctx)
+				v, ok := s.(Readiness)
+				if !ok {
+					return
+				}
+				r, e = v.Ready(ctx)
 			default:
 				panic(fmt.Sprintf("[BUG]: unknown report type %v", rt))
 			}

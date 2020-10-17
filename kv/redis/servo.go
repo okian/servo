@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/mediocregopher/radix/v3"
+	"github.com/okian/servo/kv"
 	"github.com/spf13/viper"
 )
 
@@ -23,7 +24,8 @@ func (s *service) Initialize(_ context.Context) error {
 		return err
 	}
 	pool = p
-	return nil
+	kv.Register(s)
+	return pool.Do(radix.Cmd(nil, "PING"))
 }
 
 func (s *service) Finalize() error {
@@ -35,7 +37,7 @@ func (s *service) Healthy(_ context.Context) (interface{}, error) {
 }
 
 func (s *service) Ready(_ context.Context) (interface{}, error) {
-	return nil, nil
+	return nil, pool.Do(radix.Cmd(nil, "PING"))
 }
 
 type pkgError string
@@ -79,10 +81,6 @@ func connection() (*radix.Pool, error) {
 	}
 
 	host := viper.GetString(host)
-	if host == "" {
-		return nil, ErrorInvalidHost
-	}
-
 	port := viper.GetString(port)
 	addr := fmt.Sprintf("%s:%s", host, port)
 	var connfunc = func(network, addr string) (radix.Conn, error) {
