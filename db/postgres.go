@@ -109,12 +109,6 @@ func QueryRowx(ctx context.Context, query string, args ...interface{}) *sqlx.Row
 	return db.QueryRowxContext(ctx, query, args...)
 }
 
-// ExecContext executes a query without returning any rows.
-// The args are for any placeholder parameters in the query.
-func Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return db.ExecContext(ctx, query, args...)
-}
-
 // MustExec (panic) runs MustExec using this database.
 // Any placeholder parameters are replaced with supplied args.
 func MustExec(ctx context.Context, query string, args ...interface{}) sql.Result {
