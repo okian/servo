@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"github.com/okian/servo/lg"
+	"github.com/okian/servo/v2/lg"
 	"github.com/spf13/viper"
 )
 

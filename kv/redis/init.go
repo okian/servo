@@ -1,7 +1,7 @@
 package redis
 
 import (
-	"github.com/okian/servo"
+	"github.com/okian/servo/v2"
 	"github.com/spf13/viper"
 )
 

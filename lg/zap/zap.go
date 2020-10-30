@@ -4,8 +4,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/okian/servo/config"
-	"github.com/okian/servo/lg"
+	"github.com/okian/servo/v2/config"
+	"github.com/okian/servo/v2/lg"
 	"github.com/spf13/viper"
 	"go.uber.org/zap/zapcore"
 

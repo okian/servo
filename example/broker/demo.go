@@ -3,7 +3,7 @@ package broker
 import (
 	"context"
 
-	"github.com/okian/servo"
+	"github.com/okian/servo/v2"
 )
 
 type Broker struct {
