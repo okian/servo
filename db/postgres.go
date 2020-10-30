@@ -9,7 +9,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
-	"github.com/okian/servo/lg"
+	"github.com/okian/servo/v2/lg"
 	"github.com/spf13/viper"
 )
 
@@ -177,7 +177,7 @@ func Select(ctx context.Context, dest interface{}, query string, args ...interfa
 	return get().SelectContext(ctx, dest, query, args...)
 }
 
-// WGet using this db.
+// Get using this db.
 // Any placeholder parameters are replaced with supplied args.
 // An error is returned if the result set is empty.
 func Get(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
@@ -186,35 +186,29 @@ func Get(ctx context.Context, dest interface{}, query string, args ...interface{
 
 // MustBegin starts a transaction, and panics on error.  Returns an *sqlx.Tx instead
 // of an *sql.Tx.
-func MustBegin() *sqlx.Tx {
-	return wdb.MustBegin()
+func MustBegin(ctx context.Context, ops *sql.TxOptions) *sqlx.Tx {
+	return wdb.MustBeginTx(ctx, ops)
 }
 
-// Beginx begins a transaction and returns an *sqlx.Tx instead of an *sql.Tx.
-func Beginx() (*sqlx.Tx, error) {
-	return wdb.Beginx()
+// Begin begins a transaction and returns an *sqlx.Tx instead of an *sql.Tx.
+func Begin(ctx context.Context, ops *sql.TxOptions) (*sqlx.Tx, error) {
+	return wdb.BeginTxx(ctx, ops)
 }
 
-// Queryx queries the database and returns an *sqlx.Row.
+// Query queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
-func Queryx(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
-	return wdb.QueryxContext(ctx, query, args...)
+func Query(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+	return get().QueryxContext(ctx, query, args...)
 }
 
-// QueryRowx queries the database and returns an *sqlx.Row.
+// QueryRow queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
-func QueryRowx(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
-	return wdb.QueryRowxContext(ctx, query, args...)
+func QueryRow(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
+	return get().QueryRowxContext(ctx, query, args...)
 }
 
-// MustExec (panic) runs MustExec using this database.
-// Any placeholder parameters are replaced with supplied args.
-func MustExec(ctx context.Context, query string, args ...interface{}) sql.Result {
-	return wdb.MustExecContext(ctx, query, args...)
-}
-
-// Preparex returns an sqlx.Stmt instead of a sql.Stmt
-func Preparex(ctx context.Context, query string) (*sqlx.Stmt, error) {
+// Prepare returns an sqlx.Stmt instead of a sql.Stmt
+func Prepare(ctx context.Context, query string) (*sqlx.Stmt, error) {
 	return wdb.PreparexContext(ctx, query)
 }
 

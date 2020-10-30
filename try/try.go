@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/okian/servo/lg"
+	"github.com/okian/servo/v2/lg"
 )
 
 // WithCancel try to do fn until context will cancel or fn return nil and will sleep in (logarithmic) duration of

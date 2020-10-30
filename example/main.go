@@ -4,14 +4,14 @@ import (
 	"context"
 	"time"
 
-	"github.com/okian/servo"
-	"github.com/okian/servo/kv"
-	_ "github.com/okian/servo/kv"
-	_ "github.com/okian/servo/kv/redis"
-	"github.com/okian/servo/lg"
-	_ "github.com/okian/servo/lg/zap"
+	"github.com/okian/servo/v2"
+	"github.com/okian/servo/v2/kv"
+	_ "github.com/okian/servo/v2/kv"
+	_ "github.com/okian/servo/v2/kv/redis"
+	"github.com/okian/servo/v2/lg"
+	_ "github.com/okian/servo/v2/lg/zap"
 	// DONT FORGET THIS (needed for invoking init function)
-	//	_ "github.com/okian/servo/example/broker"
+	//	_ "github.com/okian/servo/v2/v2/example/broker"
 )
 
 type msg string

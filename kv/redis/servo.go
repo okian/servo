@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/mediocregopher/radix/v3"
-	"github.com/okian/servo/kv"
+	"github.com/okian/servo/v2/kv"
 	"github.com/spf13/viper"
 )
 
