@@ -9,12 +9,31 @@ import (
 	"github.com/mediocregopher/radix/v3"
 )
 
-func (k *service) Set(key string, val interface{}) error {
-	return pool.Do(radix.FlatCmd(nil, "SET", key, val))
+func (k *service) Set(key string, val string, ttl time.Duration) error {
+	if ttl < time.Second {
+		return errors.New("invalid ttl")
+	}
+
+	return pool.Do(radix.Pipeline(
+		radix.Cmd(nil, "SET", key, val),
+		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
 }
 
-func (k *service) MSet(key string, val interface{}) error {
-	return pool.Do(radix.FlatCmd(nil, "HMSET", key, val))
+func (k *service) Get(key string, rcv *string) error {
+	return pool.Do(radix.Cmd(rcv, "GET", key))
+}
+
+func (k *service) MSet(key string, val interface{}, ttl time.Duration) error {
+	if ttl < time.Second {
+		return errors.New("invalid ttl")
+	}
+	return pool.Do(radix.Pipeline(
+		radix.FlatCmd(nil, "HMSET", key, val),
+		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
+}
+
+func (k *service) MGet(key string, rcv interface{}) error {
+	return pool.Do(radix.FlatCmd(rcv, "HGETALL", key))
 }
 
 func (k *service) BitSet(key string, idx int, val bool, ttl time.Duration) error {
@@ -35,19 +54,6 @@ func (k *service) BitGet(key string, idx int) (bool, error) {
 	var val int
 	err := pool.Do(radix.Cmd(&val, "GETBIT", key, fmt.Sprint(idx)))
 	return val == 1, err
-}
-
-func (k *service) SetWithTTL(key string, val interface{}, ttl time.Duration) error {
-	if ttl < time.Second {
-		return errors.New("invalid ttl")
-	}
-	return pool.Do(radix.Pipeline(
-		radix.FlatCmd(nil, "HMSET", key, val),
-		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
-}
-
-func (k *service) Get(key string, rcv interface{}) error {
-	return pool.Do(radix.FlatCmd(rcv, "HGETALL", key))
 }
 
 func (k *service) Decr(key string, val int, ttl time.Duration) (int, error) {

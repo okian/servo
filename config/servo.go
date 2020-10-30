@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/okian/servo"
 	"github.com/spf13/viper"
@@ -25,19 +26,19 @@ func (c *cfg) Initialize(_ context.Context) error {
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	viper.AutomaticEnv()
 	_ = viper.ReadInConfig()
+	if viper.GetString("tz") != "" {
+		z, err := time.LoadLocation(viper.GetString("tz"))
+		if err != nil {
+			return err
+		}
+		time.Local = z
+
+	}
 	return nil
 }
 
 func (c *cfg) Finalize() error {
 	return nil
-}
-
-func (c *cfg) Healthy(_ context.Context) (interface{}, error) {
-	return nil, nil
-}
-
-func (c *cfg) Ready(_ context.Context) (interface{}, error) {
-	return nil, nil
 }
 
 func init() {

@@ -1,13 +1,5 @@
 package lg
 
-import (
-	"errors"
-	"reflect"
-	"sync"
-
-	"github.com/okian/servo/lg/internal/logger"
-)
-
 type Interface interface {
 	Name() string
 	Info(args ...interface{})
@@ -31,188 +23,84 @@ type Interface interface {
 }
 
 var (
-	once    sync.Once
-	lock    sync.RWMutex
-	loggers = map[string]Interface{"default_logger": &logger.Logger{}}
+	logger Interface
 )
 
-func removeDefault() {
-	loggers = nil
-}
-
 func Register(i Interface) {
-	lock.Lock()
-	defer lock.Unlock()
-	once.Do(removeDefault)
-	if loggers == nil {
-		loggers = map[string]Interface{
-			i.Name(): i,
-		}
-		return
+	if logger != nil {
+		panic("multiple call")
 	}
-	if _, ok := loggers[i.Name()]; ok {
-		panic("lg: Register called twice for " + i.Name())
-	}
-	loggers[i.Name()] = i
+	logger = i
 }
 
 func Info(args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Info(args...)
-	}
+	logger.Info(args...)
 }
 
 func Debug(args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Debug(args...)
-	}
+	logger.Debug(args...)
 }
 
 func Warn(args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Warn(args...)
-	}
+	logger.Warn(args...)
 }
 
 func Error(args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Error(args...)
-	}
+	logger.Error(args...)
 }
 
 func Panic(args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Panic(args...)
-	}
+	logger.Panic(args...)
 }
 
 func Fatal(args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Fatal(args...)
-	}
-}
-
-// TODO: NOT TESTED, it's all guess work ;)
-func call(name string, params ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for _, v := range loggers {
-		f := reflect.ValueOf(v).MethodByName(name)
-		if len(params) != f.Type().NumIn() {
-			panic(errors.New("The number of params is not adapted."))
-		}
-		in := make([]reflect.Value, len(params))
-		for k, param := range params {
-			in[k] = reflect.ValueOf(param)
-		}
-		go f.Call(in)
-	}
+	logger.Fatal(args...)
 }
 
 func Infof(template string, args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Infof(template, args...)
-	}
+	logger.Infof(template, args...)
 }
 
 func Debugf(template string, args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Debugf(template, args...)
-	}
+	logger.Debugf(template, args...)
 }
 
 func Warnf(template string, args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Warnf(template, args...)
-	}
+	logger.Warnf(template, args...)
 }
 
 func Errorf(template string, args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Errorf(template, args...)
-	}
+	logger.Errorf(template, args...)
 }
 
 func Panicf(template string, args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Panicf(template, args...)
-	}
+	logger.Panicf(template, args...)
 }
 
 func Fatalf(template string, args ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Fatalf(template, args...)
-	}
+	logger.Fatalf(template, args...)
 }
 
 func Infow(template string, keysAndValues ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Infow(template, keysAndValues...)
-	}
+	logger.Infow(template, keysAndValues...)
 }
 
 func Debugw(template string, keysAndValues ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Debugw(template, keysAndValues...)
-	}
+	logger.Debugw(template, keysAndValues...)
 }
 
 func Warnw(template string, keysAndValues ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Warnw(template, keysAndValues...)
-	}
-}
-func Errorw(template string, keysAndValues ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Errorw(template, keysAndValues...)
-	}
+	logger.Warnw(template, keysAndValues...)
 }
 
-// TODO it should/can't panic more that one time. fix this
+func Errorw(template string, keysAndValues ...interface{}) {
+	logger.Errorw(template, keysAndValues...)
+}
+
 func Panicw(template string, keysAndValues ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Panicw(template, keysAndValues...)
-	}
+	logger.Panicw(template, keysAndValues...)
 }
 
 func Fatalw(template string, keysAndValues ...interface{}) {
-	lock.RLock()
-	defer lock.RUnlock()
-	for i := range loggers {
-		loggers[i].Fatalw(template, keysAndValues...)
-	}
+	logger.Fatalw(template, keysAndValues...)
 }

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/okian/servo"
@@ -42,63 +40,45 @@ func main() {
 	defer cl()
 
 	defer servo.Initialize(ctx)()
-	key := "sss"
+	err := kv.BitSet("ss", 10, true, time.Second*20)
+	if err != nil {
+		lg.Panic(err)
+	}
+	b, err := kv.BitGet("ss", 10)
+	if err != nil {
+		lg.Panic(err)
+	}
+	lg.Info(b)
 
-	var d kk
-	err := kv.Get(key, &d)
+	t, err := kv.TTL("ss")
 	if err != nil {
-		lg.Error(err)
+		lg.Panic(err)
 	}
+	lg.Info(t)
 
-	fmt.Println(d)
-	ee := kk{
-		Name: "Ali",
-		Age:  22,
-	}
-	err = kv.SetWithTTL(key, ee, time.Second*60)
-
+	err = kv.MSet("tmset", kk{"Kian", 37}, time.Second*10)
 	if err != nil {
-		lg.Error(err)
+		lg.Panic(err)
 	}
-	err = kv.Get(key, &d)
-	if err != nil {
-		lg.Error(err)
-	}
-	fmt.Println(d)
-	t, err := kv.TTL(key)
-	fmt.Println(t, err)
-	v, err := kv.Incr("ssss", 10, time.Second*00)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(v)
-	ts, err := kv.TTL("ssss")
-	fmt.Println(ts, err)
-	kv.Delete("ssss")
-	ts2, err := kv.TTL("ssss")
-	fmt.Println(ts2, err)
-	rp, err := servo.Health(ctx)
-	if err != nil {
-		panic(err.Error())
-	}
-	b, err := json.Marshal(rp)
-	if err != nil {
-		panic(err.Error())
-	}
-
-	err = kv.SetWithTTL("user", "bambo", time.Second*10)
-	if err != nil {
-		panic(err)
-	}
-
-	var vl string
-	err = kv.Get("user", &vl)
+	var k = &kk{}
+	err = kv.MGet("tmset", k)
 
 	if err != nil {
-		panic(err)
+		lg.Panic(err)
 	}
+	lg.Info(k)
 
-	fmt.Println(vl)
+	err = kv.Set("tset", "234", time.Second*10)
 
-	fmt.Println(string(b))
+	if err != nil {
+		lg.Panic(err)
+	}
+	var m string
+	err = kv.Get("tset", &m)
+
+	if err != nil {
+		lg.Panic(err)
+	}
+	lg.Info(m)
+
 }
