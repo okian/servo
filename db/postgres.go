@@ -133,12 +133,6 @@ func (s *service) Ready(ctx context.Context) (interface{}, error) {
 	return report(), check()
 }
 
-// RExec executes a query without returning any rows.
-// The args are for any placeholder parameters in the query.
-func RExec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return get().ExecContext(ctx, query, args...)
-}
-
 // RNamedQuery using this db.
 // Any named placeholder parameters are replaced with fields from arg.
 func RNamedQuery(ctx context.Context, query string, arg interface{}) (*sqlx.Rows, error) {
@@ -146,15 +140,9 @@ func RNamedQuery(ctx context.Context, query string, arg interface{}) (*sqlx.Rows
 
 }
 
-// RNamedExec using this db.
-// Any named placeholder parameters are replaced with fields from arg.
-func RNamedExec(ctx context.Context, query string, arg interface{}) (sql.Result, error) {
-	return get().NamedExecContext(ctx, query, arg)
-}
-
-// WExec executes a query without returning any rows.
+// Exec executes a query without returning any rows.
 // The args are for any placeholder parameters in the query.
-func WExec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
+func Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
 	return wdb.ExecContext(ctx, query, args...)
 }
 
@@ -195,15 +183,27 @@ func Begin(ctx context.Context, ops *sql.TxOptions) (*sqlx.Tx, error) {
 	return wdb.BeginTxx(ctx, ops)
 }
 
-// Query queries the database and returns an *sqlx.Row.
+// WQuery queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
-func Query(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+func WQuery(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
+	return wdb.QueryxContext(ctx, query, args...)
+}
+
+// WQueryRow queries the database and returns an *sqlx.Row.
+// Any placeholder parameters are replaced with supplied args.
+func WQueryRow(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
+	return wdb.QueryRowxContext(ctx, query, args...)
+}
+
+// RQuery queries the database and returns an *sqlx.Row.
+// Any placeholder parameters are replaced with supplied args.
+func RQuery(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
 	return get().QueryxContext(ctx, query, args...)
 }
 
-// QueryRow queries the database and returns an *sqlx.Row.
+// RQueryRow queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
-func QueryRow(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
+func RQueryRow(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
 	return get().QueryRowxContext(ctx, query, args...)
 }
 
