@@ -40,7 +40,7 @@ func connection(ctx context.Context, host string) (*sqlx.DB, error) {
 		viper.GetString("db_port"),
 		viper.GetString("db_user"),
 		viper.GetString("db_dbname"),
-		viper.GetString("db_password"))
+		strings.Repeat("*", len(viper.GetString("db_password"))))
 
 	cn = fmt.Sprintf("%s timezone='%s'", cn, viper.GetString("db_tz"))
 
