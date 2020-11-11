@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
@@ -32,7 +33,6 @@ func (s *service) Name() string {
 }
 
 func connection(ctx context.Context, host string) (*sqlx.DB, error) {
-
 	// this Pings the database trying to connect, panics on error
 	// use sqlx.Open() for sql.Open() semantics
 	cn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s password=%s sslmode=disable ",
@@ -46,12 +46,27 @@ func connection(ctx context.Context, host string) (*sqlx.DB, error) {
 
 	lg.Debugf("db connection string: %s", cn)
 
-	d, err := sqlx.Connect("postgres", cn)
+	d, err := sqlx.Open("postgres", cn)
 	if err != nil {
 		return nil, err
 	}
-	return d, nil
+	if err := d.PingContext(ctx); err != nil {
+		return nil, fmt.Errorf("fail to ping %s", host)
+	}
+	if m := viper.GetInt("db_max_open_connection"); m != 0 {
+		d.SetMaxOpenConns(m)
+	}
+	if m := viper.GetInt("db_max_idle_connection"); m != 0 {
+		d.SetMaxIdleConns(m)
+	}
 
+	if m := viper.GetDuration("db_max_connection_lifetime"); m != 0 {
+		d.SetConnMaxLifetime(m * time.Second)
+	}
+	if m := viper.GetDuration("db_max_idle_time"); m != 0 {
+		d.SetConnMaxIdleTime(m * time.Second)
+	}
+	return d, nil
 }
 
 func (s *service) Initialize(ctx context.Context) error {
