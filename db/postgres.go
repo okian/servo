@@ -40,11 +40,11 @@ func connection(ctx context.Context, host string) (*sqlx.DB, error) {
 		viper.GetString("db_port"),
 		viper.GetString("db_user"),
 		viper.GetString("db_dbname"),
-		strings.Repeat("*", len(viper.GetString("db_password"))))
+		viper.GetString("db_password"))
 
-	cn = fmt.Sprintf("%s timezone='%s'", cn, viper.GetString("db_tz"))
-
-	lg.Debugf("db connection string: %s", cn)
+	if v := viper.GetString("db_tz"); v != "" {
+		cn = fmt.Sprintf("%s timezone='%s'", cn, v)
+	}
 
 	d, err := sqlx.Open("postgres", cn)
 	if err != nil {
