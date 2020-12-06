@@ -4,6 +4,7 @@ import "time"
 
 type Interface interface {
 	BitSet(key string, idx int, val bool, ttl time.Duration) error
+	BitSets(key string, val bool, ttl time.Duration, idx ...int) error
 	BitGet(key string, idx int) (bool, error)
 	Set(key string, val string, ttl time.Duration) error
 	Get(key string, rcv *string) error
@@ -22,6 +23,10 @@ func Register(i Interface) {
 		panic("multiple call")
 	}
 	impl = i
+}
+
+func BitSets(key string, val bool, ttl time.Duration, idx ...int) error {
+	return impl.BitSets(key, val, ttl, idx...)
 }
 
 func BitSet(key string, idx int, val bool, ttl time.Duration) error {

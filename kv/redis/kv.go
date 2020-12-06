@@ -33,6 +33,7 @@ func (k *service) MSet(key string, val interface{}, ttl time.Duration) error {
 }
 
 func (k *service) MGet(key string, rcv interface{}) error {
+
 	return pool.Do(radix.FlatCmd(rcv, "HGETALL", key))
 }
 
@@ -48,6 +49,23 @@ func (k *service) BitSet(key string, idx int, val bool, ttl time.Duration) error
 	return pool.Do(radix.Pipeline(
 		radix.FlatCmd(nil, "SETBIT", key, fmt.Sprint(idx), i),
 		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
+}
+
+func (k *service) BitSets(key string, val bool, ttl time.Duration, idx ...int) error {
+	if ttl < time.Second {
+		return errors.New("invalid ttl")
+	}
+
+	var i int
+	if val {
+		i = 1
+	}
+	var plp = make([]radix.CmdAction, 0, len(idx)+1)
+	for _, v := range idx {
+		plp = append(plp, radix.FlatCmd(nil, "SETBIT", key, fmt.Sprint(v), i))
+	}
+	plp = append(plp, radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10)))
+	return pool.Do(radix.Pipeline(plp...))
 }
 
 func (k *service) BitGet(key string, idx int) (bool, error) {
