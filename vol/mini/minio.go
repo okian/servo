@@ -1,0 +1,34 @@
+package mini
+
+import (
+	"context"
+	"io"
+
+	"github.com/minio/minio-go/v7"
+	"github.com/spf13/viper"
+)
+
+func (s *service) Load(ctx context.Context, path string) (io.ReadCloser, error) {
+	return s.mi.GetObject(ctx, viper.GetString("vol_bucket"), path, minio.GetObjectOptions{})
+}
+
+func (s *service) Save(ctx context.Context, path string, file io.Reader) error {
+	_, err := s.mi.PutObject(ctx, viper.GetString("vol_bucket"), path, file, -1, minio.PutObjectOptions{
+		ContentType: "application/octet-stream",
+	})
+	return err
+}
+
+func (s *service) Delete(ctx context.Context, path string) error {
+	return s.mi.RemoveObject(ctx, viper.GetString("vol_bucket"), path, minio.RemoveObjectOptions{})
+}
+
+func (s *service) Exist(ctx context.Context, path string) (bool, error) {
+	if _, err := s.mi.StatObject(ctx, viper.GetString("vol_bucket"), path, minio.GetObjectOptions{}); err != nil {
+		if minio.ToErrorResponse(err).Code == "NoSuchKey" {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}

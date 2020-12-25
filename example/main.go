@@ -1,15 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"time"
+	"io/ioutil"
+	"os"
 
 	"github.com/okian/servo/v2"
-	"github.com/okian/servo/v2/kv"
 	_ "github.com/okian/servo/v2/kv"
 	_ "github.com/okian/servo/v2/kv/redis"
 	"github.com/okian/servo/v2/lg"
 	_ "github.com/okian/servo/v2/lg/zap"
+	"github.com/okian/servo/v2/vol"
+	_ "github.com/okian/servo/v2/vol/mem"
 	// DONT FORGET THIS (needed for invoking init function)
 	//	_ "github.com/okian/servo/v2/v2/example/broker"
 )
@@ -40,45 +43,27 @@ func main() {
 	defer cl()
 
 	defer servo.Initialize(ctx)()
-	err := kv.BitSet("ss", 10, true, time.Second*20)
+	b := bytes.NewReader([]byte("ssss"))
+	f := "ff.txt"
+	tt, err := vol.Exist(ctx, f)
+	lg.Info(tt, err)
+	err = vol.Save(ctx, f, b)
 	if err != nil {
-		lg.Panic(err)
+		lg.Error(err)
 	}
-	b, err := kv.BitGet("ss", 10)
+	tt, err = vol.Exist(ctx, f)
+	lg.Info(tt, err)
+	r, err := vol.Load(ctx, f)
 	if err != nil {
-		lg.Panic(err)
+		panic(err)
 	}
-	lg.Info(b)
-
-	t, err := kv.TTL("ss")
-	if err != nil {
-		lg.Panic(err)
+	bb, err := ioutil.ReadAll(r)
+	lg.Error(string(bb), err)
+	if err = vol.Delete(ctx, f); err != nil {
+		lg.Error(err)
 	}
-	lg.Info(t)
-
-	err = kv.MSet("tmset", kk{"Kian", 37}, time.Second*10)
-	if err != nil {
-		lg.Panic(err)
-	}
-	var k = &kk{}
-	err = kv.MGet("tmset", k)
-
-	if err != nil {
-		lg.Panic(err)
-	}
-	lg.Info(k)
-
-	err = kv.Set("tset", "234", time.Second*10)
-
-	if err != nil {
-		lg.Panic(err)
-	}
-	var m string
-	err = kv.Get("tset", &m)
-
-	if err != nil {
-		lg.Panic(err)
-	}
-	lg.Info(m)
+	tt, err = vol.Exist(ctx, f)
+	lg.Info(tt, err)
+	os.Exit(0)
 
 }
