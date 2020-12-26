@@ -1,7 +1,9 @@
 package mini
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/minio/minio-go/v7"
@@ -13,7 +15,12 @@ func (s *service) Load(ctx context.Context, path string) (io.ReadCloser, error) 
 }
 
 func (s *service) Save(ctx context.Context, path string, file io.Reader) error {
-	_, err := s.mi.PutObject(ctx, viper.GetString("vol_bucket"), path, file, -1, minio.PutObjectOptions{
+	buf := &bytes.Buffer{}
+	nRead, err := io.Copy(buf, file)
+	if err != nil {
+		fmt.Println(err)
+	}
+	_, err = s.mi.PutObject(ctx, viper.GetString("vol_bucket"), path, buf, nRead, minio.PutObjectOptions{
 		ContentType: "application/octet-stream",
 	})
 	return err
