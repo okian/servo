@@ -30,7 +30,7 @@ func (s *service) Initialize(ctx context.Context) error {
 
 	// Run server
 	go func() {
-		lg.Info("starting monitoring server on :%s", port)
+		lg.Infof("starting monitoring server on :%s", port)
 		if err := s.server.ListenAndServe(); err != http.ErrServerClosed {
 			lg.Error(err)
 		}

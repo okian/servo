@@ -4,12 +4,9 @@ import (
 	"strings"
 
 	"github.com/okian/servo/v2"
-	"github.com/okian/servo/v2/config"
-	"github.com/ory/viper"
 )
 
 func init() {
-	viper.SetDefault("monitoring_namespace", snakeCase(config.AppName()))
 	servo.Register(&service{}, 100)
 }
 
