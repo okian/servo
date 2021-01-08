@@ -33,11 +33,12 @@ func (s *service) Statictis() {
 		"method",
 	})
 
+	def := []float64{.01, .025, .05, .1, .25, .5, 1, 2.5}
 	responseTime = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_time",
-		Buckets:   prometheus.DefBuckets,
+		Buckets:   def,
 	}, []string{
 		"path",
 		"code",
