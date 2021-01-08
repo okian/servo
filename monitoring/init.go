@@ -9,7 +9,7 @@ import (
 )
 
 func init() {
-	viper.SetDefault("monitoring_port", snakeCase(config.AppName()))
+	viper.SetDefault("monitoring_namespace", snakeCase(config.AppName()))
 	servo.Register(&service{}, 100)
 }
 

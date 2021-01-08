@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/ory/viper"
+	"github.com/okian/servo/v2/monitoring"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -22,11 +22,9 @@ const (
 	subsystem = "rest"
 )
 
-func (s *service) monitoring() {
-	ns := viper.GetString("monitoring_namespace")
-
+func (s *service) Statictis() {
 	requestsCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: ns,
+		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "requests_total",
 	}, []string{
@@ -36,7 +34,7 @@ func (s *service) monitoring() {
 	})
 
 	responseTime = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Namespace: ns,
+		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_time",
 		Buckets:   prometheus.DefBuckets,
@@ -47,7 +45,7 @@ func (s *service) monitoring() {
 	})
 
 	responseSize = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: ns,
+		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_size",
 	}, []string{
@@ -57,7 +55,7 @@ func (s *service) monitoring() {
 	})
 
 	requestSize = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: ns,
+		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "request_size",
 	}, []string{
@@ -68,7 +66,7 @@ func (s *service) monitoring() {
 
 }
 
-func monitoring(next echo.HandlerFunc) echo.HandlerFunc {
+func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) (err error) {
 		path := c.Request().URL.Path
 		method := c.Request().Method

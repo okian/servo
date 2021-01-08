@@ -30,7 +30,8 @@ func (s *service) middlewares() {
 		s.e.Use(middleware.CORS())
 	}
 	if viper.GetBool("rest_monitoring") {
-		s.e.Use(monitoring)
+		s.Statictis()
+		s.e.Use(statictis)
 	}
 	if viper.GetBool("rest_middleware_remove_trailing_slash") {
 		s.e.Use(middleware.RemoveTrailingSlash())

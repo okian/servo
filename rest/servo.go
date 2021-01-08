@@ -2,6 +2,7 @@ package rest
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/labstack/echo/v4"
 	"github.com/okian/servo/v2/lg"
@@ -24,7 +25,7 @@ func (s *service) Initialize(ctx context.Context) error {
 	s.middlewares()
 	s.routes()
 	go func() {
-		if err := e.Start(":" + viper.GetString(port)); err != nil {
+		if err := e.Start(":" + viper.GetString(port)); err != nil && err != http.ErrServerClosed {
 			lg.Error(err)
 		}
 	}()

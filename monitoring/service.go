@@ -16,9 +16,8 @@ type service struct {
 }
 
 func memoryUsage(ctx context.Context) {
-	ns := viper.GetString("monitoring_namespace")
 	mem := promauto.NewGauge(prometheus.GaugeOpts{
-		Namespace: ns,
+		Namespace: Namespace(),
 		Name:      "memory_usage",
 	})
 	tick := time.Tick(time.Second)
@@ -32,4 +31,10 @@ func memoryUsage(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func Namespace() string {
+
+	return viper.GetString("monitoring_namespace")
+
 }
