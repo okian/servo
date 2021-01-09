@@ -66,10 +66,16 @@ func connection(ctx context.Context, host string) (*sqlx.DB, error) {
 	if m := viper.GetDuration("db_max_idle_time"); m != 0 {
 		d.SetConnMaxIdleTime(m * time.Second)
 	}
+	if viper.GetBool("db_monitoring") {
+		go monitor(ctx, d, host)
+	}
 	return d, nil
 }
 
 func (s *service) Initialize(ctx context.Context) error {
+	if viper.GetBool("db_monitoring") {
+		metrics()
+	}
 	if h := viper.GetString("db_host"); h != "" {
 		db, err := connection(ctx, h)
 		if err != nil {
