@@ -51,6 +51,7 @@ func (s *service) Statictis() {
 		Name:      "response_size",
 	}, []string{
 		"path",
+		"code",
 		"method",
 	})
 	requestSize = promauto.NewCounterVec(prometheus.CounterOpts{
@@ -74,15 +75,15 @@ func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 		if err = next(c); err != nil {
 			c.Error(err)
 		}
-		code := strconv.Itoa(c.Response().Status)
-		elapsed := float64(time.Since(start)) / float64(time.Second)
-		resSz := float64(c.Response().Size)
-
-		requestsCounter.WithLabelValues(path, code, method).Inc()
-		requestSize.WithLabelValues(path, method).Add(float64(reqSize))
-		responseSize.WithLabelValues(path, method).Add(resSz)
-		responseTime.WithLabelValues(path, code, method).Observe(elapsed)
-
+		c.Response().After(func() {
+			code := strconv.Itoa(c.Response().Status)
+			elapsed := float64(time.Since(start)) / float64(time.Second)
+			resSz := float64(c.Response().Size)
+			requestsCounter.WithLabelValues(path, code, method).Inc()
+			requestSize.WithLabelValues(path, code, method).Add(float64(reqSize))
+			responseSize.WithLabelValues(path, method).Add(resSz)
+			responseTime.WithLabelValues(path, code, method).Observe(elapsed)
+		})
 		return
 
 	}
