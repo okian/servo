@@ -72,9 +72,6 @@ func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 		start := time.Now()
 		reqSize := computeApproximateRequestSize(c.Request())
 
-		if err = next(c); err != nil {
-			c.Error(err)
-		}
 		c.Response().After(func() {
 			code := strconv.Itoa(c.Response().Status)
 			elapsed := float64(time.Since(start)) / float64(time.Second)
@@ -84,6 +81,9 @@ func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 			responseSize.WithLabelValues(path, method).Add(resSz)
 			responseTime.WithLabelValues(path, code, method).Observe(elapsed)
 		})
+		if err = next(c); err != nil {
+			c.Error(err)
+		}
 		return
 
 	}
