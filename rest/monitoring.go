@@ -14,8 +14,8 @@ import (
 var (
 	requestsCounter *prometheus.CounterVec
 	responseTime    *prometheus.HistogramVec
-	responseSize    *prometheus.SummaryVec
-	requestSize     *prometheus.SummaryVec
+	responseSize    *prometheus.CounterVec
+	requestSize     *prometheus.CounterVec
 )
 
 const (
@@ -26,7 +26,7 @@ func (s *service) Statictis() {
 	requestsCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
-		Name:      "requests_total",
+		Name:      "request_total",
 	}, []string{
 		"path",
 		"code",
@@ -45,23 +45,20 @@ func (s *service) Statictis() {
 		"method",
 	})
 
-	responseSize = promauto.NewSummaryVec(prometheus.SummaryOpts{
+	responseSize = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_size",
 	}, []string{
 		"path",
-		"code",
 		"method",
 	})
-
-	requestSize = promauto.NewSummaryVec(prometheus.SummaryOpts{
+	requestSize = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "request_size",
 	}, []string{
 		"path",
-		"code",
 		"method",
 	})
 
@@ -82,8 +79,8 @@ func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 		resSz := float64(c.Response().Size)
 
 		requestsCounter.WithLabelValues(path, code, method).Inc()
-		requestSize.WithLabelValues(path, code, method).Observe(float64(reqSize))
-		responseSize.WithLabelValues(path, code, method).Observe(resSz)
+		requestSize.WithLabelValues(path, method).Add(float64(reqSize))
+		responseSize.WithLabelValues(path, method).Add(resSz)
 		responseTime.WithLabelValues(path, code, method).Observe(elapsed)
 
 		return
