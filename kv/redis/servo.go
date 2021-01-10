@@ -13,30 +13,30 @@ import (
 type service struct {
 }
 
-func (s *service) Name() string {
+func (k *service) Name() string {
 	return "redis"
 }
 
-func (s *service) Initialize(_ context.Context) error {
+func (k *service) Initialize(_ context.Context) error {
 	p, err := connection()
 
 	if err != nil {
 		return err
 	}
 	pool = p
-	kv.Register(s)
+	kv.Register(k)
 	return pool.Do(radix.Cmd(nil, "PING"))
 }
 
-func (s *service) Finalize() error {
+func (k *service) Finalize() error {
 	return pool.Close()
 }
 
-func (s *service) Healthy(_ context.Context) (interface{}, error) {
+func (k *service) Healthy(_ context.Context) (interface{}, error) {
 	return nil, pool.Do(radix.Cmd(nil, "PING"))
 }
 
-func (s *service) Ready(_ context.Context) (interface{}, error) {
+func (k *service) Ready(_ context.Context) (interface{}, error) {
 	return nil, pool.Do(radix.Cmd(nil, "PING"))
 }
 

@@ -19,7 +19,7 @@ func (k *service) Set(key string, val string, ttl time.Duration) error {
 		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
 }
 
-func (s *service) Get(key string, rcv *string) error {
+func (k *service) Get(key string, rcv *string) error {
 	return pool.Do(radix.Cmd(rcv, "GET", key))
 }
 

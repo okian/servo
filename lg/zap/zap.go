@@ -1,6 +1,7 @@
 package zap
 
 import (
+	"errors"
 	"os"
 	"strings"
 
@@ -12,13 +13,12 @@ import (
 	"go.uber.org/zap"
 )
 
-type log struct {
-	z    *zap.SugaredLogger
-	file *os.File
+type service struct {
+	logger *zap.SugaredLogger
 }
 
-func logLevel() zapcore.Level {
-	switch lg.Level(strings.ToUpper(viper.GetString("log.level"))) {
+func logLevel(s string) zapcore.LevelEnabler {
+	switch lg.Level(strings.ToUpper(s)) {
 	case lg.DebugLevel:
 		return zap.DebugLevel
 	case lg.InfoLevel:
@@ -32,30 +32,28 @@ func logLevel() zapcore.Level {
 	case lg.PanicLevel:
 		return zap.PanicLevel
 	default:
-		return zap.DebugLevel
+		return nil
 	}
 }
 
-func writer() *writeSyncer {
-	ws := &writeSyncer{}
-
-	if path := viper.GetString("log.filepath"); path != "" {
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-		if err != nil {
-			panic(err.Error())
-		}
-		ws.file = f
+func encoder() zapcore.Encoder {
+	if strings.ToUpper(viper.GetString("environment")) == "PRODUCTION" {
+		zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+			MessageKey:     "msg",
+			LevelKey:       "level",
+			TimeKey:        "ts",
+			NameKey:        "data",
+			CallerKey:      "caller",
+			StacktraceKey:  "stack",
+			LineEnding:     "\n",
+			EncodeLevel:    zapcore.CapitalLevelEncoder,
+			EncodeTime:     zapcore.ISO8601TimeEncoder,
+			EncodeDuration: zapcore.SecondsDurationEncoder,
+			EncodeCaller:   zapcore.ShortCallerEncoder,
+			EncodeName:     zapcore.FullNameEncoder,
+		})
 	}
-	return ws
-}
-
-func (l *log) development() *zap.SugaredLogger {
-	ws := writer()
-	if ws.file != nil {
-		l.file = ws.file
-	}
-
-	core := zapcore.NewCore(zapcore.NewConsoleEncoder(zapcore.EncoderConfig{
+	return zapcore.NewConsoleEncoder(zapcore.EncoderConfig{
 		MessageKey:     "msg",
 		LevelKey:       "level",
 		TimeKey:        "ts",
@@ -68,41 +66,44 @@ func (l *log) development() *zap.SugaredLogger {
 		EncodeDuration: zapcore.SecondsDurationEncoder,
 		EncodeCaller:   zapcore.ShortCallerEncoder,
 		EncodeName:     zapcore.FullNameEncoder,
-	}), ws, logLevel())
-	return zap.New(core, zap.AddCaller(), zap.AddStacktrace(zap.ErrorLevel),
-		zap.AddCallerSkip(2)).Sugar()
+	})
 }
 
-func (l *log) production() *zap.SugaredLogger {
-	ws := writer()
-	if ws.file != nil {
-		l.file = ws.file
+func (s *service) setup() error {
+
+	var cores []zapcore.Core
+	if l := logLevel(viper.GetString("log_console")); l != nil {
+		cores = append(cores, zapcore.NewCore(encoder(), zapcore.Lock(os.Stderr), l))
 	}
-
-	core := zapcore.NewCore(zapcore.NewJSONEncoder(zapcore.EncoderConfig{
-		MessageKey:     "msg",
-		LevelKey:       "level",
-		TimeKey:        "ts",
-		NameKey:        "data",
-		CallerKey:      "caller",
-		StacktraceKey:  "stack",
-		LineEnding:     "\n",
-		EncodeLevel:    zapcore.CapitalLevelEncoder,
-		EncodeTime:     zapcore.ISO8601TimeEncoder,
-		EncodeDuration: zapcore.SecondsDurationEncoder,
-		EncodeCaller:   zapcore.ShortCallerEncoder,
-		EncodeName:     zapcore.FullNameEncoder,
-	}), ws, logLevel())
-	return zap.New(core,
+	if l := logLevel(viper.GetString("log_file")); l != nil {
+		f, err := fileWriter()
+		if err != nil {
+			return err
+		}
+		cores = append(cores, zapcore.NewCore(encoder(), zapcore.Lock(f), l))
+	}
+	if l := logLevel(viper.GetString("log_syslog")); l != nil {
+		w, err := newSysLog()
+		if err != nil {
+			return err
+		}
+		cores = append(cores, zapcore.NewCore(encoder(), w, l))
+	}
+	if len(cores) < 1 {
+		return errors.New("log config not found")
+	}
+	s.logger = zap.New(zapcore.NewTee(cores...),
 		zap.AddCaller(),
+		zap.AddStacktrace(zap.ErrorLevel),
 		zap.AddCallerSkip(2),
-		zap.Fields(extra()...)).Sugar()
-
+		zap.Fields(extra()...),
+	).Sugar()
+	return nil
 }
 
 func extra() []zapcore.Field {
-	fs := []zap.Field{}
-	if viper.GetBool("log.extra.appname") && config.AppName() != "" {
+	var fs []zap.Field
+	if viper.GetBool("service.extra.appname") && config.AppName() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_name",
 			Type:   zapcore.StringType,
@@ -110,7 +111,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("log.extra.branch") && config.Branch() != "" {
+	if viper.GetBool("service.extra.branch") && config.Branch() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_branch",
 			Type:   zapcore.StringType,
@@ -118,7 +119,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("log.extra.tag") && config.Tag() != "" {
+	if viper.GetBool("service.extra.tag") && config.Tag() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_tag",
 			Type:   zapcore.StringType,
@@ -126,7 +127,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("log.extra.commit") && config.Commit() != "" {
+	if viper.GetBool("service.extra.commit") && config.Commit() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_commit",
 			Type:   zapcore.StringType,
@@ -134,7 +135,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("log.extra.version") && config.Version() != "" {
+	if viper.GetBool("service.extra.version") && config.Version() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_version",
 			Type:   zapcore.StringType,
@@ -142,7 +143,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("log.extra.date") && config.Date() != "" {
+	if viper.GetBool("service.extra.date") && config.Date() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_date",
 			Type:   zapcore.StringType,

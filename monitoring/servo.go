@@ -15,6 +15,9 @@ func (s *service) Name() string {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
+	if !viper.GetBool("monitoring") {
+		return nil
+	}
 	port := viper.GetString("monitoring_port")
 	if port == "" {
 		port = "9001"
@@ -35,8 +38,6 @@ func (s *service) Initialize(ctx context.Context) error {
 			lg.Error(err)
 		}
 	}()
-
-	go memoryUsage(ctx)
 
 	return nil
 }

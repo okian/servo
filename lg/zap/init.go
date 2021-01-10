@@ -5,6 +5,6 @@ import (
 )
 
 func init() {
-	s := &log{}
+	s := &service{}
 	servo.Register(s, 20)
 }

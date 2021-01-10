@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -53,7 +54,7 @@ const (
 func Register(service Service, order int) {
 	registerLock.Lock()
 	defer registerLock.Unlock()
-	fmt.Println(fmt.Sprintf("registring service  %q", service.Name()))
+	log(fmt.Sprintf("registring service  %q", service.Name()))
 	if initialized {
 		panic(ErrorInitialized)
 	}
@@ -164,7 +165,7 @@ func Health(ctx context.Context) (map[string]interface{}, error) {
 }
 
 func Initialize(ctx context.Context) func() {
-	fmt.Fprintf(os.Stdout, "starting initializition\n")
+	log("starting initializition")
 	registerLock.Lock()
 	defer registerLock.Unlock()
 	if initialized {
@@ -178,9 +179,9 @@ func Initialize(ctx context.Context) func() {
 	sort.Ints(ks)
 
 	for _, i := range ks {
-		fmt.Fprintf(os.Stdout, "initializing services with order %d\n", i)
+		log(fmt.Sprintf("initializing services with order %d\n", i))
 		if e := run(ctx, Start, register[i]); e != nil {
-			fmt.Fprintf(os.Stdout, "service %q returned error: %s\n", i, e.Error())
+			log(fmt.Sprintf("service %q returned error: %s\n", i, e.Error()))
 			finalize()
 			panic(e.Error())
 		}
@@ -219,20 +220,20 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 			defer wg.Done()
 			var err error
 			if mode == Start {
-				fmt.Fprintf(os.Stdout, "initializing %s\n", c.Name())
+				log(fmt.Sprintf("initializing %s\n", c.Name()))
 
 				if err = c.Initialize(ctx); err == nil {
-					fmt.Fprintf(os.Stdout, "%s initialized\n", c.Name())
+					log(fmt.Sprintf("%s initialized\n", c.Name()))
 					serviceNames[c.Name()] = true
 				} else {
-					fmt.Fprintf(os.Stdout, "%s failed to initialize: %s\n", c.Name(), err.Error())
+					log(fmt.Sprintf("%s failed to initialize: %s\n", c.Name(), err.Error()))
 				}
 
 			} else if mode == Stop {
 				if !serviceNames[c.Name()] {
 					return
 				}
-				fmt.Fprintf(os.Stdout, "finalizing %s\n", c.Name())
+				log(fmt.Sprintf("finalizing %s\n", c.Name()))
 				err = c.Finalize()
 			}
 			if err != nil {
@@ -265,4 +266,12 @@ func ReadinessHandler(w http.ResponseWriter, _ *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(rep)
+}
+
+func log(s string) {
+	if strings.ToLower(os.Getenv("DEBUG")) == "true" {
+		if _, err := fmt.Fprintln(os.Stderr, s); err != nil {
+			panic(err.Error())
+		}
+	}
 }

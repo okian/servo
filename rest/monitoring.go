@@ -67,23 +67,23 @@ func (s *service) Statictis() {
 
 func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) (err error) {
+
+		reqSize := computeApproximateRequestSize(c.Request())
 		path := c.Request().URL.Path
 		method := c.Request().Method
 		start := time.Now()
-		reqSize := computeApproximateRequestSize(c.Request())
 
-		c.Response().After(func() {
-			code := strconv.Itoa(c.Response().Status)
-			elapsed := float64(time.Since(start)) / float64(time.Second)
-			resSz := float64(c.Response().Size)
-			requestsCounter.WithLabelValues(path, code, method).Inc()
-			requestSize.WithLabelValues(path, code, method).Add(float64(reqSize))
-			responseSize.WithLabelValues(path, method).Add(resSz)
-			responseTime.WithLabelValues(path, code, method).Observe(elapsed)
-		})
 		if err = next(c); err != nil {
 			c.Error(err)
 		}
+
+		code := strconv.Itoa(c.Response().Status)
+		elapsed := float64(time.Since(start)) / float64(time.Second)
+		resSz := float64(c.Response().Size)
+		requestsCounter.WithLabelValues(path, code, method).Inc()
+		responseTime.WithLabelValues(path, code, method).Observe(elapsed)
+		responseSize.WithLabelValues(path, code, method).Add(resSz)
+		requestSize.WithLabelValues(path, method).Add(float64(reqSize))
 		return
 
 	}

@@ -29,10 +29,6 @@ func (s *service) middlewares() {
 	if viper.GetBool("rest_middleware_core") {
 		s.e.Use(middleware.CORS())
 	}
-	if viper.GetBool("rest_monitoring") {
-		s.Statictis()
-		s.e.Use(statictis)
-	}
 	if viper.GetBool("rest_middleware_remove_trailing_slash") {
 		s.e.Use(middleware.RemoveTrailingSlash())
 	}
@@ -43,6 +39,10 @@ func (s *service) middlewares() {
 		s.e.Use(middleware.BodyLimit(viper.GetString("rest_middleware_body_limit")))
 	}
 	s.e.Use(middlewares...)
+	if viper.GetBool("rest_monitoring") {
+		s.Statictis()
+		s.e.Use(statictis)
+	}
 }
 
 func (s *service) routes() {

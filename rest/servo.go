@@ -9,13 +9,17 @@ import (
 	"github.com/spf13/viper"
 )
 
-const port string = "rest_port"
+const portKey string = "rest_port"
 
 func (s *service) Name() string {
 	return "rest"
 }
 
 func (s *service) Initialize(ctx context.Context) error {
+	port := viper.GetString(portKey)
+	if port == "" {
+		port = "9000"
+	}
 	e := echo.New()
 	e.HideBanner = true
 
@@ -25,7 +29,7 @@ func (s *service) Initialize(ctx context.Context) error {
 	s.middlewares()
 	s.routes()
 	go func() {
-		if err := e.Start(":" + viper.GetString(port)); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(":" + port); err != nil && err != http.ErrServerClosed {
 			lg.Error(err)
 		}
 	}()
