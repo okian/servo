@@ -38,7 +38,7 @@ func logLevel(s string) zapcore.LevelEnabler {
 
 func encoder() zapcore.Encoder {
 	if strings.ToUpper(viper.GetString("environment")) == "PRODUCTION" {
-		zapcore.NewJSONEncoder(zapcore.EncoderConfig{
+		return zapcore.NewJSONEncoder(zapcore.EncoderConfig{
 			MessageKey:     "msg",
 			LevelKey:       "level",
 			TimeKey:        "ts",
