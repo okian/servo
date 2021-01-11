@@ -52,7 +52,6 @@ func (s *service) Statictis() {
 	}, []string{
 		"path",
 		"code",
-		"method",
 	})
 	requestSize = promauto.NewCounterVec(prometheus.CounterOpts{
 		Namespace: monitoring.Namespace(),
@@ -82,11 +81,15 @@ func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 		resSz := float64(c.Response().Size)
 		requestsCounter.WithLabelValues(path, code, method).Inc()
 		responseTime.WithLabelValues(path, code, method).Observe(elapsed)
-		responseSize.WithLabelValues(path, code, method).Add(resSz)
+		responseSize.WithLabelValues(path, code).Add(resSz)
 		requestSize.WithLabelValues(path, method).Add(float64(reqSize))
 		return
 
 	}
+}
+
+func NetworkWriteSize(path string, code int, size uint64) {
+	responseSize.WithLabelValues(path, strconv.Itoa(code)).Add(float64(size))
 }
 
 func computeApproximateRequestSize(r *http.Request) int {
