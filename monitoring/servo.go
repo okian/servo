@@ -39,6 +39,8 @@ func (s *service) Initialize(ctx context.Context) error {
 		}
 	}()
 
+	go memoryUsage(ctx)
+
 	return nil
 }
 
