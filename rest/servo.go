@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/okian/servo/v2/lg"
@@ -51,7 +50,7 @@ func (s *service) Finalize() error {
 }
 
 func checkPort(h, p string) error {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(h, p), time.Second)
+	conn, err := net.Listen("tcp", net.JoinHostPort(h, p))
 	if err != nil {
 		return err
 	}
