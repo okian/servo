@@ -2,7 +2,9 @@ package rest
 
 import (
 	"context"
+	"net"
 	"net/http"
+	"time"
 
 	"github.com/labstack/echo/v4"
 	"github.com/okian/servo/v2/lg"
@@ -16,10 +18,16 @@ func (s *service) Name() string {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
-	port := viper.GetString(portKey)
-	if port == "" {
-		port = "9000"
+	h := viper.GetString("rest_host")
+	p := viper.GetString(portKey)
+	if p == "" {
+		p = "9000"
 	}
+
+	if err := checkPort(h, p); err != nil {
+		return err
+	}
+
 	e := echo.New()
 	e.HideBanner = true
 
@@ -29,7 +37,7 @@ func (s *service) Initialize(ctx context.Context) error {
 	s.middlewares()
 	s.routes()
 	go func() {
-		if err := e.Start(":" + port); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(net.JoinHostPort(h, p)); err != nil && err != http.ErrServerClosed {
 			lg.Error(err)
 		}
 	}()
@@ -40,4 +48,13 @@ func (s *service) Initialize(ctx context.Context) error {
 
 func (s *service) Finalize() error {
 	return s.e.Shutdown(context.Background())
+}
+
+func checkPort(h, p string) error {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(h, p), time.Second)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	return nil
 }
