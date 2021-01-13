@@ -72,9 +72,6 @@ func encoder() zapcore.Encoder {
 func (s *service) setup() error {
 
 	var cores []zapcore.Core
-	if l := logLevel(viper.GetString("log_console")); l != nil {
-		cores = append(cores, zapcore.NewCore(encoder(), zapcore.Lock(os.Stderr), l))
-	}
 	if l := logLevel(viper.GetString("log_file")); l != nil {
 		f, err := fileWriter()
 		if err != nil {
@@ -89,6 +86,15 @@ func (s *service) setup() error {
 		}
 		cores = append(cores, zapcore.NewCore(encoder(), w, l))
 	}
+
+	l := logLevel(viper.GetString("log_console"))
+	if len(cores) == 0 && l == nil {
+		l = zap.DebugLevel
+	}
+	if l != nil {
+		cores = append(cores, zapcore.NewCore(encoder(), zapcore.Lock(os.Stderr), l))
+	}
+
 	if len(cores) < 1 {
 		return errors.New("log config not found")
 	}
