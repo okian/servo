@@ -1,4 +1,4 @@
-package zap
+package lg
 
 import (
 	"log/syslog"

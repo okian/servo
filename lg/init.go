@@ -1,4 +1,4 @@
-package zap
+package lg
 
 import (
 	"github.com/okian/servo/v2"

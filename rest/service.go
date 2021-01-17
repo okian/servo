@@ -38,11 +38,16 @@ func (s *service) middlewares() {
 	if viper.GetString("rest_middleware_body_limit") != "" {
 		s.e.Use(middleware.BodyLimit(viper.GetString("rest_middleware_body_limit")))
 	}
-	s.e.Use(middlewares...)
 	if viper.GetBool("rest_monitoring") {
 		s.Statictis()
 		s.e.Use(statictis)
 	}
+
+	if viper.GetBool("rest_log") {
+		s.e.Use(logger)
+	}
+	s.e.Use(middlewares...)
+
 }
 
 func (s *service) routes() {

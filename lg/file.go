@@ -1,4 +1,4 @@
-package zap
+package lg
 
 import (
 	"os"
@@ -13,5 +13,5 @@ func fileWriter() (zapcore.WriteSyncer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return f, nil
+	return zapcore.AddSync(f), nil
 }

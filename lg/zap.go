@@ -1,4 +1,4 @@
-package zap
+package lg
 
 import (
 	"errors"
@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/okian/servo/v2/config"
-	"github.com/okian/servo/v2/lg"
 	"github.com/spf13/viper"
 	"go.uber.org/zap/zapcore"
 
@@ -18,18 +17,18 @@ type service struct {
 }
 
 func logLevel(s string) zapcore.LevelEnabler {
-	switch lg.Level(strings.ToUpper(s)) {
-	case lg.DebugLevel:
+	switch Level(strings.ToUpper(s)) {
+	case DebugLevel:
 		return zap.DebugLevel
-	case lg.InfoLevel:
+	case InfoLevel:
 		return zap.InfoLevel
-	case lg.WarnLevel:
+	case WarnLevel:
 		return zap.WarnLevel
-	case lg.ErrorLevel:
+	case ErrorLevel:
 		return zap.ErrorLevel
-	case lg.DPanicLevel:
+	case DPanicLevel:
 		return zap.DPanicLevel
-	case lg.PanicLevel:
+	case PanicLevel:
 		return zap.PanicLevel
 	default:
 		return nil
@@ -77,7 +76,7 @@ func (s *service) setup() error {
 		if err != nil {
 			return err
 		}
-		cores = append(cores, zapcore.NewCore(encoder(), zapcore.Lock(f), l))
+		cores = append(cores, zapcore.NewCore(encoder(), f, l))
 	}
 	if l := logLevel(viper.GetString("log_syslog")); l != nil {
 		w, err := newSysLog()

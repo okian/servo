@@ -1,4 +1,4 @@
-package zap
+package lg
 
 func (s *service) Info(args ...interface{}) {
 	s.logger.Info(args...)

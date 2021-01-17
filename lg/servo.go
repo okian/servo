@@ -1,9 +1,7 @@
-package zap
+package lg
 
 import (
 	"context"
-
-	"github.com/okian/servo/v2/lg"
 )
 
 func (s *service) Name() string {
@@ -14,7 +12,7 @@ func (s *service) Initialize(_ context.Context) error {
 	if err := s.setup(); err != nil {
 		return err
 	}
-	lg.Register(s)
+	Register(s)
 	return nil
 }
 
