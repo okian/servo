@@ -20,7 +20,7 @@ func logger(next echo.HandlerFunc) echo.HandlerFunc {
 			c.Error(err)
 			return
 		}
-		lg.Infof("%s %s %d %s", c.Request().Method, c.Request().URL.String(), c.Response().Status)
+		lg.Infof("%s %s %d %s", c.Request().Method, c.Request().URL.String(), c.Response().Status, time.Since(start))
 
 		return
 	}
