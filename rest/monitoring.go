@@ -13,7 +13,7 @@ import (
 
 var (
 	requestsCounter *prometheus.CounterVec
-	responseTime    *prometheus.HistogramVec
+	responseTime    *prometheus.SummaryVec
 	responseSize    *prometheus.CounterVec
 	requestSize     *prometheus.CounterVec
 )
@@ -33,12 +33,10 @@ func (s *service) Statictis() {
 		"method",
 	})
 
-	def := []float64{.01, .025, .05, .1, .25, .5, 1, 2.5}
-	responseTime = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	responseTime = promauto.NewSummaryVec(prometheus.SummaryOpts{
 		Namespace: monitoring.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_time",
-		Buckets:   def,
 	}, []string{
 		"path",
 		"code",
