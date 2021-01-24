@@ -104,7 +104,7 @@ func (s *service) Initialize(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		wdb = append(rdb, db)
+		wdb = append(wdb, db)
 		rdb = append(rdb, db)
 		return nil
 	}
@@ -117,7 +117,7 @@ func (s *service) Initialize(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			wdb = append(rdb, db)
+			wdb = append(wdb, db)
 		}
 		return nil
 	}
