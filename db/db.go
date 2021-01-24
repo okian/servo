@@ -119,7 +119,6 @@ func (s *service) Initialize(ctx context.Context) error {
 			}
 			wdb = append(wdb, db)
 		}
-		return nil
 	}
 
 	if ss := strings.Split(viper.GetString("db_slaves"), ","); len(ss) > 0 {
