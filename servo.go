@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 )
 
 type report int
@@ -271,6 +272,7 @@ func ReadinessHandler(w http.ResponseWriter, _ *http.Request) {
 func log(s string) {
 	if strings.ToLower(os.Getenv("DEBUG")) == "true" {
 		if _, err := fmt.Fprintln(os.Stderr, s); err != nil {
+			time.Sleep(2 * time.Minute)
 			panic(err.Error())
 		}
 	}
