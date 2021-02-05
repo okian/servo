@@ -58,5 +58,8 @@ func (s *service) Initialize(ctx context.Context) error {
 }
 
 func (s *service) Finalize() error {
-	return s.server.Shutdown(context.Background())
+	if s.server != nil {
+		return s.server.Shutdown(context.Background())
+	}
+	return nil
 }
