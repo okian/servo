@@ -15,11 +15,14 @@ type service struct {
 
 func (s *service) validator() {
 	if viper.GetBool("rest_validator") {
+		if customValidator != nil {
+			s.e.Validator = customValidator
+			return
+		}
 		s.e.Validator = &v10Validator{
 			validator: validator.New(),
 		}
 	}
-	s.e.Validator = customValidator
 }
 
 func (s *service) middlewares() {
