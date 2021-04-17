@@ -29,14 +29,8 @@ func (s *service) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	var ops = minio.MakeBucketOptions{}
-
-	if reg := viper.GetString("vol_location"); reg != "" {
-		ops.Region = reg
-	}
-
 	if !ok {
-		if err = c.MakeBucket(ctx, viper.GetString("vol_bucket"), ops); err != nil {
+		if err = c.MakeBucket(ctx, viper.GetString("vol_bucket"), minio.MakeBucketOptions{}); err != nil {
 			return err
 		}
 	}
