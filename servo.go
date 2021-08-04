@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
+	"reflect"
 	"sort"
-	"strings"
 	"sync"
-	"time"
+
+	"github.com/jedib0t/go-pretty/v6/table"
 )
 
 type report int
@@ -55,7 +57,7 @@ const (
 func Register(service Service, order int) {
 	registerLock.Lock()
 	defer registerLock.Unlock()
-	log(fmt.Sprintf("registring service  %q", service.Name()))
+	log.Println(fmt.Sprintf("registring service  %q", service.Name()))
 	if initialized {
 		panic(ErrorInitialized)
 	}
@@ -166,7 +168,7 @@ func Health(ctx context.Context) (map[string]interface{}, error) {
 }
 
 func Initialize(ctx context.Context) func() {
-	log("starting initializition")
+	//	registered()
 	registerLock.Lock()
 	defer registerLock.Unlock()
 	if initialized {
@@ -180,9 +182,9 @@ func Initialize(ctx context.Context) func() {
 	sort.Ints(ks)
 
 	for _, i := range ks {
-		log(fmt.Sprintf("initializing services with order %d\n", i))
+		log.Println(fmt.Sprintf("initializing services with order %d\n", i))
 		if e := run(ctx, Start, register[i]); e != nil {
-			log(fmt.Sprintf("service %q returned error: %s\n", i, e.Error()))
+			log.Println(fmt.Sprintf("service %q returned error: %s\n", i, e.Error()))
 			finalize()
 			panic(e.Error())
 		}
@@ -221,21 +223,23 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 			defer wg.Done()
 			var err error
 			if mode == Start {
-				log(fmt.Sprintf("initializing %s\n", c.Name()))
-
+				log.Println(fmt.Sprintf("initializing %s\n", c.Name()))
 				if err = c.Initialize(ctx); err == nil {
-					log(fmt.Sprintf("%s initialized\n", c.Name()))
+					log.Println(fmt.Sprintf("%s initialized\n", c.Name()))
 					serviceNames[c.Name()] = true
 				} else {
-					log(fmt.Sprintf("%s failed to initialize: %s\n", c.Name(), err.Error()))
+					log.Println(fmt.Sprintf("%s failed to initialize: %s\n", c.Name(), err.Error()))
 				}
 
 			} else if mode == Stop {
 				if !serviceNames[c.Name()] {
 					return
 				}
-				log(fmt.Sprintf("finalizing %s\n", c.Name()))
-				err = c.Finalize()
+				if f, ok := c.(Finalizer); ok {
+					log.Println(fmt.Sprintf("finalizing %s\n", c.Name()))
+					err = f.Finalize()
+				}
+
 			}
 			if err != nil {
 				ers <- err
@@ -260,6 +264,7 @@ func HealthHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(rep)
 }
+
 func ReadinessHandler(w http.ResponseWriter, _ *http.Request) {
 	rep, err := Ready(context.Background())
 	if err != nil {
@@ -269,11 +274,33 @@ func ReadinessHandler(w http.ResponseWriter, _ *http.Request) {
 	_ = json.NewEncoder(w).Encode(rep)
 }
 
-func log(s string) {
-	if strings.ToLower(os.Getenv("DEBUG")) == "true" {
-		if _, err := fmt.Fprintln(os.Stderr, s); err != nil {
-			time.Sleep(2 * time.Minute)
-			panic(err.Error())
+func init() {
+	log.SetOutput(os.Stdout)
+	log.SetFlags(1 | 2)
+	log.SetPrefix("servo: ")
+}
+
+func registered() {
+	t := table.NewWriter()
+	t.SetStyle(table.StyleBold)
+	t.SetOutputMirror(os.Stdout)
+	t.AppendHeader(table.Row{"Order", "Name", "Finalizer", "Healthiness", "Readiness"})
+	var rs []table.Row
+	for k, ss := range register {
+		for _, s := range ss {
+			rs = append(rs, table.Row{
+				k, s.Name(), icon(s, (*Finalizer)(nil)), icon(s, (*Healthiness)(nil)), icon(s, (*Readiness)(nil)),
+			})
 		}
 	}
+	t.AppendSeparator()
+	t.Render()
+}
+
+func icon(s Service, n interface{}) string {
+	ti := reflect.TypeOf(s).Elem()
+	if reflect.TypeOf(n).Implements(ti) {
+		return "✅"
+	}
+	return "❌"
 }

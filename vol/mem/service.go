@@ -6,7 +6,7 @@ import (
 	"io"
 	"io/ioutil"
 
-	"github.com/okian/servo/v2/vol"
+	"github.com/okian/servo/v3/vol"
 )
 
 var _ vol.Interface = &service{}

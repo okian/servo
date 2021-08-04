@@ -1,8 +1,8 @@
 package mini
 
 import (
-	"github.com/okian/servo/v2"
-	"github.com/okian/servo/v2/vol"
+	"github.com/okian/servo/v3"
+	"github.com/okian/servo/v3/vol"
 )
 
 func init() {

@@ -1,7 +1,7 @@
 package rest
 
 import (
-	"github.com/okian/servo/v2"
+	"github.com/okian/servo/v3"
 )
 
 func init() {

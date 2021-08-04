@@ -12,7 +12,7 @@ package broker
 import (
 	"context"
 
-	"github.com/okian/servo"
+	"github.com/okian/servo/v3"
 )
 
 type Broker struct {
@@ -72,9 +72,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/okian/servo"
+	"github.com/okian/servo/v3"
 	// DONT FORGET THIS (needed for invoking init function)
-	_ "github.com/okian/servo/example/broker"
+	_ "github.com/okian/servo/v3/example/broker"
 )
 
 func main() {
@@ -95,3 +95,4 @@ func main() {
 }
 
 ```
+

@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/okian/servo/v2/monitoring"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+
+	"github.com/okian/servo/v3/monitoring"
 )
 
 var (

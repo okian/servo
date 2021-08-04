@@ -3,7 +3,7 @@ package monitoring
 import (
 	"net/http"
 
-	"github.com/spf13/viper"
+	"github.com/okian/servo/v3/cfg"
 )
 
 type service struct {
@@ -11,6 +11,6 @@ type service struct {
 }
 
 func Namespace() string {
-	return viper.GetString("monitoring_namespace")
+	return cfg.GetString("monitoring_namespace")
 
 }

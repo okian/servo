@@ -1,20 +1,25 @@
 package rest
 
 import (
+	"io"
 	"net/http"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/labstack/echo-contrib/jaegertracing"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/spf13/viper"
+
+	"github.com/okian/servo/v3"
+	"github.com/okian/servo/v3/cfg"
 )
 
 type service struct {
-	e *echo.Echo
+	e      *echo.Echo
+	jaeger io.Closer
 }
 
 func (s *service) validator() {
-	if viper.GetBool("rest_validator") {
+	if cfg.GetBool("rest_validator") {
 		if customValidator != nil {
 			s.e.Validator = customValidator
 			return
@@ -26,27 +31,30 @@ func (s *service) validator() {
 }
 
 func (s *service) middlewares() {
-	if viper.GetBool("rest_middleware_recover") {
+	if cfg.GetBool("rest_jaeger") {
+		s.jaeger = jaegertracing.New(s.e, nil)
+	}
+	if cfg.GetBool("rest_middleware_recover") {
 		s.e.Use(middleware.Recover())
 	}
-	if viper.GetBool("rest_middleware_core") {
+	if cfg.GetBool("rest_middleware_core") {
 		s.e.Use(middleware.CORS())
 	}
-	if viper.GetBool("rest_middleware_remove_trailing_slash") {
+	if cfg.GetBool("rest_middleware_remove_trailing_slash") {
 		s.e.Use(middleware.RemoveTrailingSlash())
 	}
-	if viper.GetBool("rest_middleware_gzip") {
+	if cfg.GetBool("rest_middleware_gzip") {
 		s.e.Use(middleware.Gzip())
 	}
-	if viper.GetString("rest_middleware_body_limit") != "" {
-		s.e.Use(middleware.BodyLimit(viper.GetString("rest_middleware_body_limit")))
+	if cfg.GetString("rest_middleware_body_limit") != "" {
+		s.e.Use(middleware.BodyLimit(cfg.GetString("rest_middleware_body_limit")))
 	}
-	if viper.GetBool("rest_monitoring") {
+	if cfg.GetBool("rest_monitoring") {
 		s.Statictis()
 		s.e.Use(statictis)
 	}
 
-	if viper.GetBool("rest_log") {
+	if cfg.GetBool("rest_log") {
 		s.e.Use(logger)
 	}
 	s.e.Use(middlewares...)
@@ -54,6 +62,12 @@ func (s *service) middlewares() {
 }
 
 func (s *service) routes() {
+	if cfg.GetString("healthiness") != "" {
+		Get(cfg.GetString("healthiness"), servo.HealthHandler)
+	}
+	if cfg.GetString("readiness") != "" {
+		Get(cfg.GetString("readiness"), servo.ReadinessHandler)
+	}
 	for _, r := range routes {
 		switch r.method {
 		case http.MethodGet:

@@ -6,8 +6,9 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
-	"github.com/okian/servo/v2/lg"
-	"github.com/spf13/viper"
+
+	"github.com/okian/servo/v3/cfg"
+	log "github.com/okian/servo/v3/log"
 )
 
 const portKey string = "rest_port"
@@ -17,8 +18,8 @@ func (s *service) Name() string {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
-	h := viper.GetString("rest_host")
-	p := viper.GetString(portKey)
+	h := cfg.GetString("rest_host")
+	p := cfg.GetString(portKey)
 	if p == "" {
 		p = "9000"
 	}
@@ -37,7 +38,7 @@ func (s *service) Initialize(ctx context.Context) error {
 	s.routes()
 	go func() {
 		if err := e.Start(net.JoinHostPort(h, p)); err != nil && err != http.ErrServerClosed {
-			lg.Error(err)
+			log.Error(err)
 		}
 	}()
 
@@ -46,6 +47,9 @@ func (s *service) Initialize(ctx context.Context) error {
 }
 
 func (s *service) Finalize() error {
+	if s.jaeger != nil {
+		_ = s.jaeger.Close()
+	}
 	return s.e.Shutdown(context.Background())
 }
 

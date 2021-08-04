@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/okian/servo/v2/monitoring"
+	"github.com/okian/servo/v3/monitoring"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -46,7 +46,6 @@ func metrics() {
 	}, []string{
 		"host",
 	})
-
 }
 
 func monitor(ctx context.Context, d *sqlx.DB, host string) {

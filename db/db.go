@@ -12,25 +12,26 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
-	"github.com/okian/servo/v2/lg"
-	"github.com/spf13/viper"
+
+	"github.com/okian/servo/v3/cfg"
+	"github.com/okian/servo/v3/log"
 )
 
 var (
 	wdb     []*sqlx.DB
-	nextWDB uint32
+	nextWDB uint64
 
 	rdb     []*sqlx.DB
-	nextRDB uint32
+	nextRDB uint64
 )
 
 func getRDB() *sqlx.DB {
-	n := atomic.AddUint32(&nextRDB, 1)
+	n := atomic.AddUint64(&nextRDB, 1)
 	return rdb[(int(n)-1)%len(rdb)]
 }
 
 func getWDB() *sqlx.DB {
-	n := atomic.AddUint32(&nextWDB, 1)
+	n := atomic.AddUint64(&nextWDB, 1)
 	return wdb[(int(n)-1)%len(wdb)]
 }
 
@@ -44,12 +45,12 @@ func (s *service) Name() string {
 func postgresCS(host string) string {
 	cn := fmt.Sprintf("host=%s port=%s user=%s dbname=%s password=%s sslmode=disable ",
 		host,
-		viper.GetString("db_port"),
-		viper.GetString("db_user"),
-		viper.GetString("db_dbname"),
-		viper.GetString("db_password"))
+		cfg.GetString("db_port"),
+		cfg.GetString("db_user"),
+		cfg.GetString("db_dbname"),
+		cfg.GetString("db_password"))
 
-	if v := viper.GetString("db_tz"); v != "" {
+	if v := cfg.GetString("db_tz"); v != "" {
 		cn = fmt.Sprintf("%s timezone='%s'", cn, v)
 	}
 	return cn
@@ -57,11 +58,11 @@ func postgresCS(host string) string {
 }
 
 func mysqlCS(host string) string {
-	return fmt.Sprintf(viper.GetString("db_dsn"), viper.GetString("db_password"), host)
+	return fmt.Sprintf(cfg.GetString("db_dsn"), cfg.GetString("db_password"), host)
 }
 
 func connection(ctx context.Context, host string) (d *sqlx.DB, err error) {
-	switch dr := viper.GetString("db_driver"); {
+	switch dr := cfg.GetString("db_driver"); {
 	case dr == "postgres":
 		d, err = sqlx.Open(dr, postgresCS(host))
 	case dr == "mysql":
@@ -76,30 +77,30 @@ func connection(ctx context.Context, host string) (d *sqlx.DB, err error) {
 	if err := d.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("fail to ping %s", host)
 	}
-	if m := viper.GetInt("db_max_open_connection"); m != 0 {
+	if m := cfg.GetInt("db_max_open_connection"); m != 0 {
 		d.SetMaxOpenConns(m)
 	}
-	if m := viper.GetInt("db_max_idle_connection"); m != 0 {
+	if m := cfg.GetInt("db_max_idle_connection"); m != 0 {
 		d.SetMaxIdleConns(m)
 	}
 
-	if m := viper.GetDuration("db_max_connection_lifetime"); m != 0 {
+	if m := cfg.GetDuration("db_max_connection_lifetime"); m != 0 {
 		d.SetConnMaxLifetime(m * time.Second)
 	}
-	if m := viper.GetDuration("db_max_idle_time"); m != 0 {
+	if m := cfg.GetDuration("db_max_idle_time"); m != 0 {
 		d.SetConnMaxIdleTime(m * time.Second)
 	}
-	if viper.GetBool("db_monitoring") {
+	if cfg.GetBool("db_monitoring") {
 		go monitor(ctx, d, host)
 	}
 	return d, nil
 }
 
 func (s *service) Initialize(ctx context.Context) error {
-	if viper.GetBool("db_monitoring") {
+	if cfg.GetBool("db_monitoring") {
 		metrics()
 	}
-	if h := viper.GetString("db_host"); h != "" {
+	if h := cfg.GetString("db_host"); h != "" {
 		db, err := connection(ctx, h)
 		if err != nil {
 			return err
@@ -109,7 +110,7 @@ func (s *service) Initialize(ctx context.Context) error {
 		return nil
 	}
 
-	if ww := strings.Split(viper.GetString("db_masters"), ","); len(ww) > 0 {
+	if ww := strings.Split(cfg.GetString("db_masters"), ","); len(ww) > 0 {
 		wdb = nil
 		for _, s := range ww {
 			db, err := connection(ctx, s)
@@ -121,7 +122,7 @@ func (s *service) Initialize(ctx context.Context) error {
 		}
 	}
 
-	if ss := strings.Split(viper.GetString("db_slaves"), ","); len(ss) > 0 {
+	if ss := strings.Split(cfg.GetString("db_slaves"), ","); len(ss) > 0 {
 		rdb = nil
 		for _, s := range ss {
 			db, err := connection(ctx, s)
@@ -134,7 +135,7 @@ func (s *service) Initialize(ctx context.Context) error {
 		return nil
 	}
 
-	lg.Warn("found master but there is no slave! using master as slave too")
+	log.Warn("found master but there is no slave! using master as slave too")
 	return nil
 }
 

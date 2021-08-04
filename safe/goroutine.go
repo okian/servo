@@ -3,7 +3,7 @@ package safe
 import (
 	"context"
 
-	"github.com/okian/servo/v2/lg"
+	log "github.com/okian/servo/v3/log"
 )
 
 // GoRoutine is a safe go routine system with recovery and a way to inform finish of the routine
@@ -13,7 +13,7 @@ func GoRoutine(c context.Context, f func(), extra ...interface{}) context.Contex
 		defer cl()
 		defer func() {
 			if e := recover(); e != nil {
-				lg.Error(e)
+				log.Error(e)
 			}
 		}()
 

@@ -1,4 +1,4 @@
-package lg
+package log
 
 type Interface interface {
 	Name() string
@@ -14,23 +14,19 @@ type Interface interface {
 	Errorf(template string, args ...interface{})
 	Panicf(template string, args ...interface{})
 	Fatalf(template string, args ...interface{})
-	Infow(msg string, keysAndValues ...interface{})
-	Debugw(msg string, keysAndValues ...interface{})
-	Warnw(msg string, keysAndValues ...interface{})
-	Errorw(msg string, keysAndValues ...interface{})
-	Panicw(msg string, keysAndValues ...interface{})
-	Fatalw(msg string, keysAndValues ...interface{})
 }
 
 var (
-	logger Interface
+	isDefault = true
+	logger    = newDefault()
 )
 
 func Register(i Interface) {
-	if logger != nil {
+	if logger != nil && !isDefault {
 		panic("multiple call")
 	}
 	logger = i
+	isDefault = false
 }
 
 func Info(args ...interface{}) {
@@ -79,28 +75,4 @@ func Panicf(template string, args ...interface{}) {
 
 func Fatalf(template string, args ...interface{}) {
 	logger.Fatalf(template, args...)
-}
-
-func Infow(template string, keysAndValues ...interface{}) {
-	logger.Infow(template, keysAndValues...)
-}
-
-func Debugw(template string, keysAndValues ...interface{}) {
-	logger.Debugw(template, keysAndValues...)
-}
-
-func Warnw(template string, keysAndValues ...interface{}) {
-	logger.Warnw(template, keysAndValues...)
-}
-
-func Errorw(template string, keysAndValues ...interface{}) {
-	logger.Errorw(template, keysAndValues...)
-}
-
-func Panicw(template string, keysAndValues ...interface{}) {
-	logger.Panicw(template, keysAndValues...)
-}
-
-func Fatalw(template string, keysAndValues ...interface{}) {
-	logger.Fatalw(template, keysAndValues...)
 }
