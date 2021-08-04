@@ -5,7 +5,8 @@ import (
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
-	"github.com/spf13/viper"
+
+	"github.com/okian/servo/v3/cfg"
 )
 
 type service struct {
@@ -18,19 +19,19 @@ func (s *service) Name() string {
 
 func (s *service) Initialize(ctx context.Context) error {
 
-	c, err := minio.New(viper.GetString("vol_server"), &minio.Options{
-		Creds: credentials.NewStaticV4(viper.GetString("vol_id"),
-			viper.GetString("vol_secret"),
-			viper.GetString("vol_token")),
-		Secure: viper.GetBool("vol_secure"),
+	c, err := minio.New(cfg.GetString("vol_server"), &minio.Options{
+		Creds: credentials.NewStaticV4(cfg.GetString("vol_id"),
+			cfg.GetString("vol_secret"),
+			cfg.GetString("vol_token")),
+		Secure: cfg.GetBool("vol_secure"),
 	})
-	ok, err := c.BucketExists(ctx, viper.GetString("vol_bucket"))
+	ok, err := c.BucketExists(ctx, cfg.GetString("vol_bucket"))
 	if err != nil {
 		return err
 	}
 
 	if !ok {
-		if err = c.MakeBucket(ctx, viper.GetString("vol_bucket"), minio.MakeBucketOptions{}); err != nil {
+		if err = c.MakeBucket(ctx, cfg.GetString("vol_bucket"), minio.MakeBucketOptions{}); err != nil {
 			return err
 		}
 	}

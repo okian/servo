@@ -1,12 +1,12 @@
 package redis
 
 import (
-	"github.com/okian/servo/v2"
-	"github.com/spf13/viper"
+	"github.com/okian/servo/v3"
+	"github.com/okian/servo/v3/cfg"
 )
 
 func init() {
-	viper.SetDefault(host, "127.0.0.1")
-	viper.SetDefault(port, 6379)
+	cfg.SetDefault(host, "127.0.0.1")
+	cfg.SetDefault(port, 6379)
 	servo.Register(&service{}, 20)
 }

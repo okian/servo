@@ -1,4 +1,4 @@
-package lg
+package log
 
 func (s *service) Info(args ...interface{}) {
 	s.logger.Info(args...)
@@ -46,28 +46,4 @@ func (s *service) Panicf(template string, args ...interface{}) {
 
 func (s *service) Fatalf(template string, args ...interface{}) {
 	s.logger.Fatalf(template, args...)
-}
-
-func (s *service) Infow(template string, keysAndValues ...interface{}) {
-	s.logger.Infow(template, keysAndValues...)
-}
-
-func (s *service) Debugw(template string, keysAndValues ...interface{}) {
-	s.logger.Debugw(template, keysAndValues...)
-}
-
-func (s *service) Warnw(template string, keysAndValues ...interface{}) {
-	s.logger.Warnw(template, keysAndValues...)
-}
-
-func (s *service) Errorw(template string, keysAndValues ...interface{}) {
-	s.logger.Errorw(template, keysAndValues...)
-}
-
-func (s *service) Panicw(template string, keysAndValues ...interface{}) {
-	s.logger.Panicw(template, keysAndValues...)
-}
-
-func (s *service) Fatalw(template string, keysAndValues ...interface{}) {
-	s.logger.Fatalw(template, keysAndValues...)
 }

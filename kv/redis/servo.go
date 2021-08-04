@@ -3,14 +3,23 @@ package redis
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/mediocregopher/radix/v3"
-	"github.com/okian/servo/v2/kv"
-	"github.com/spf13/viper"
+
+	"github.com/okian/servo/v3/cfg"
+	"github.com/okian/servo/v3/kv"
 )
 
 type service struct {
+	pool *radix.Pool
+	pre  string
+}
+
+func (k *service) prefix() string {
+	return k.pre
 }
 
 func (k *service) Name() string {
@@ -23,21 +32,29 @@ func (k *service) Initialize(_ context.Context) error {
 	if err != nil {
 		return err
 	}
-	pool = p
-	kv.Register(k)
-	return pool.Do(radix.Cmd(nil, "PING"))
+	k.pool = p
+	switch px := cfg.GetString("redis_prefix"); px {
+	case "", "app":
+		k.pre = regexp.MustCompile("[^A-Z]+").ReplaceAllString(strings.ToUpper(cfg.AppName()+"_"), "_")
+	case "none":
+	// nothing
+	default:
+		k.pre = px
+	}
+	kv.Register(k.Name(), k)
+	return k.pool.Do(radix.Cmd(nil, "PING"))
 }
 
 func (k *service) Finalize() error {
-	return pool.Close()
+	return k.pool.Close()
 }
 
 func (k *service) Healthy(_ context.Context) (interface{}, error) {
-	return nil, pool.Do(radix.Cmd(nil, "PING"))
+	return nil, k.pool.Do(radix.Cmd(nil, "PING"))
 }
 
 func (k *service) Ready(_ context.Context) (interface{}, error) {
-	return nil, pool.Do(radix.Cmd(nil, "PING"))
+	return nil, k.pool.Do(radix.Cmd(nil, "PING"))
 }
 
 type pkgError string
@@ -52,10 +69,6 @@ const (
 	ErrorInvalidPort     pkgError = "redis port is invalid"
 )
 
-var (
-	pool *radix.Pool
-)
-
 const (
 	user = "redis_user"
 	pass = "redis_pass"
@@ -68,20 +81,20 @@ func connection() (*radix.Pool, error) {
 	var opt = []radix.DialOpt{
 		radix.DialTimeout(time.Second * 10),
 	}
-	user := viper.GetString(user)
-	pass := viper.GetString(pass)
+	user := cfg.GetString(user)
+	pass := cfg.GetString(pass)
 	switch {
 	case user != "" && pass != "":
 		opt = append(opt, radix.DialAuthUser(user, pass))
 	case pass != "":
 		opt = append(opt, radix.DialAuthPass(pass))
 	}
-	if db := viper.GetInt(db); db != 0 {
+	if db := cfg.GetInt(db); db != 0 {
 		opt = append(opt, radix.DialSelectDB(db))
 	}
 
-	host := viper.GetString(host)
-	port := viper.GetString(port)
+	host := cfg.GetString(host)
+	port := cfg.GetString(port)
 	addr := fmt.Sprintf("%s:%s", host, port)
 	var connfunc = func(network, addr string) (radix.Conn, error) {
 		return radix.Dial(network, addr, opt...)

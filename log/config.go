@@ -1,4 +1,4 @@
-package lg
+package log
 
 type Level string
 

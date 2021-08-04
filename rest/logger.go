@@ -4,7 +4,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/okian/servo/v2/lg"
+
+	log "github.com/okian/servo/v3/log"
 )
 
 func logger(next echo.HandlerFunc) echo.HandlerFunc {
@@ -12,7 +13,7 @@ func logger(next echo.HandlerFunc) echo.HandlerFunc {
 
 		start := time.Now()
 		if err = next(c); err != nil {
-			lg.Errorf("%s %s %d %s Error: %q", c.Request().Method,
+			log.Errorf("%s %s %d %s Error: %q", c.Request().Method,
 				c.Request().URL.String(),
 				c.Response().Status,
 				time.Since(start).String(),
@@ -20,7 +21,7 @@ func logger(next echo.HandlerFunc) echo.HandlerFunc {
 			c.Error(err)
 			return
 		}
-		lg.Infof("%s %s %d %s", c.Request().Method, c.Request().URL.String(), c.Response().Status, time.Since(start))
+		log.Infof("%s %s %d %s", c.Request().Method, c.Request().URL.String(), c.Response().Status, time.Since(start))
 
 		return
 	}

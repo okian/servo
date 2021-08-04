@@ -1,9 +1,8 @@
 package util
 
 import (
-	"errors"
-
 	"context"
+	"errors"
 	"time"
 
 	"github.com/hashicorp/go-multierror"

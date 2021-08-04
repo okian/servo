@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/okian/servo/v2/lg"
+	log "github.com/okian/servo/v3/log"
 )
 
 // WithCancel try to do fn until context will cancel or fn return nil and will sleep in (logarithmic) duration of
@@ -37,7 +37,7 @@ func Try(ctx context.Context, maxSleep uint, fn func() error) <-chan error {
 func DoWithError(f func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			lg.Error(r)
+			log.Error(r)
 			err = errors.New("paniced")
 		}
 	}()
@@ -49,7 +49,7 @@ func DoWithError(f func() error) (err error) {
 func Do(f func()) {
 	defer func() {
 		if r := recover(); r != nil {
-			lg.Error(r)
+			log.Error(r)
 		}
 	}()
 
