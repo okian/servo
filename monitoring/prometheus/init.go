@@ -1,4 +1,4 @@
-package monitoring
+package prometheus
 
 import (
 	"github.com/okian/servo/v2"

@@ -2,10 +2,10 @@ package db
 
 import (
 	"context"
+	prometheus2 "github.com/okian/servo/v2/monitoring/prometheus"
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	"github.com/okian/servo/v2/monitoring"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -19,28 +19,28 @@ var (
 
 func metrics() {
 	metricOpenConn = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: "db",
 		Name:      "open_conn",
 	}, []string{
 		"host",
 	})
 	metricInuseConn = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: "db",
 		Name:      "inuse_conn",
 	}, []string{
 		"host",
 	})
 	metricIdleConn = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: "db",
 		Name:      "idle_conn",
 	}, []string{
 		"host",
 	})
 	metricTotalWait = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: "db",
 		Name:      "total_wait",
 	}, []string{

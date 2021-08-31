@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/labstack/echo/v4"
-	"github.com/okian/servo/v2/monitoring"
+	prometheus2 "github.com/okian/servo/v2/monitoring/prometheus"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -24,7 +25,7 @@ const (
 
 func (s *service) Statictis() {
 	requestsCounter = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: subsystem,
 		Name:      "request_total",
 	}, []string{
@@ -34,7 +35,7 @@ func (s *service) Statictis() {
 	})
 
 	responseTime = promauto.NewSummaryVec(prometheus.SummaryOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_time",
 	}, []string{
@@ -44,7 +45,7 @@ func (s *service) Statictis() {
 	})
 
 	responseSize = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_size",
 	}, []string{
@@ -52,7 +53,7 @@ func (s *service) Statictis() {
 		"code",
 	})
 	requestSize = promauto.NewCounterVec(prometheus.CounterOpts{
-		Namespace: monitoring.Namespace(),
+		Namespace: prometheus2.Namespace(),
 		Subsystem: subsystem,
 		Name:      "request_size",
 	}, []string{
