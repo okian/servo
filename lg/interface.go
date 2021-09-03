@@ -1,5 +1,7 @@
 package lg
 
+import "context"
+
 type Interface interface {
 	Name() string
 	Info(args ...interface{})
@@ -18,6 +20,7 @@ type Interface interface {
 	Debugw(msg string, keysAndValues ...interface{})
 	Warnw(msg string, keysAndValues ...interface{})
 	Errorw(msg string, keysAndValues ...interface{})
+	Errorwt(ctx context.Context, msg string, keysAndValues ...interface{})
 	Panicw(msg string, keysAndValues ...interface{})
 	Fatalw(msg string, keysAndValues ...interface{})
 }

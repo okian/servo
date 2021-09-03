@@ -1,11 +1,10 @@
-package jaeger
+package tracing
 
 import (
 	"github.com/okian/servo/v2/lg"
 )
 
 type logger struct {
-
 }
 
 func (l *logger) Error(msg string) {
@@ -13,6 +12,5 @@ func (l *logger) Error(msg string) {
 }
 
 func (l *logger) Infof(msg string, args ...interface{}) {
-	lg.Infof(msg,args)
+	lg.Infof(msg, args)
 }
-

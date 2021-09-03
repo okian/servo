@@ -13,6 +13,8 @@ import (
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq"
 	"github.com/okian/servo/v2/lg"
+	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/log"
 	"github.com/spf13/viper"
 )
 
@@ -189,40 +191,46 @@ func (s *service) Ready(ctx context.Context) (interface{}, error) {
 // RNamedQuery using this db.
 // Any named placeholder parameters are replaced with fields from arg.
 func RNamedQuery(ctx context.Context, query string, arg interface{}) (*sqlx.Rows, error) {
-	return getRDB().NamedQueryContext(ctx, query, arg)
-
+	f := trace(ctx, query)
+	r, err := getRDB().NamedQueryContext(ctx, query, arg)
+	return r, f(err)
 }
 
 // Exec executes a query without returning any rows.
 // The args are for any placeholder parameters in the query.
 func Exec(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return getWDB().ExecContext(ctx, query, args...)
+	f := trace(ctx, query)
+	r, err := getWDB().ExecContext(ctx, query, args...)
+	return r, f(err)
 }
 
 // WNamedQuery using this db.
 // Any named placeholder parameters are replaced with fields from arg.
 func WNamedQuery(ctx context.Context, query string, arg interface{}) (*sqlx.Rows, error) {
-	return getWDB().NamedQueryContext(ctx, query, arg)
-
+	f := trace(ctx, query)
+	r, err := getWDB().NamedQueryContext(ctx, query, arg)
+	return r, f(err)
 }
 
 // WNamedExec using this db.
 // Any named placeholder parameters are replaced with fields from arg.
 func WNamedExec(ctx context.Context, query string, arg interface{}) (sql.Result, error) {
-	return getWDB().NamedExecContext(ctx, query, arg)
+	f := trace(ctx, query)
+	r, err := getWDB().NamedExecContext(ctx, query, arg)
+	return r, f(err)
 }
 
 // Select using this db.
 // Any placeholder parameters are replaced with supplied args.
 func Select(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
-	return getRDB().SelectContext(ctx, dest, query, args...)
+	return trace(ctx, query)(getRDB().SelectContext(ctx, dest, query, args...))
 }
 
 // Get using this db.
 // Any placeholder parameters are replaced with supplied args.
 // An error is returned if the result set is empty.
 func Get(ctx context.Context, dest interface{}, query string, args ...interface{}) error {
-	return getRDB().GetContext(ctx, dest, query, args...)
+	return trace(ctx, query)(getRDB().GetContext(ctx, dest, query, args...))
 }
 
 // MustBegin starts a transaction, and panics on error.  Returns an *sqlx.Tx instead
@@ -233,39 +241,74 @@ func MustBegin(ctx context.Context, ops *sql.TxOptions) *sqlx.Tx {
 
 // Begin begins a transaction and returns an *sqlx.Tx instead of an *sql.Tx.
 func Begin(ctx context.Context, ops *sql.TxOptions) (*sqlx.Tx, error) {
-	return getWDB().BeginTxx(ctx, ops)
+	f := trace(ctx, "")
+	t, err := getWDB().BeginTxx(ctx, ops)
+	return t, f(err)
 }
 
 // WQuery queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
 func WQuery(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
-	return getWDB().QueryxContext(ctx, query, args...)
+	f := trace(ctx, query)
+	r, err := getWDB().QueryxContext(ctx, query, args...)
+	return r, f(err)
 }
 
 // WQueryRow queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
 func WQueryRow(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
+	defer trace(ctx, query)(nil)
 	return getWDB().QueryRowxContext(ctx, query, args...)
 }
 
 // RQuery queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
 func RQuery(ctx context.Context, query string, args ...interface{}) (*sqlx.Rows, error) {
-	return getRDB().QueryxContext(ctx, query, args...)
+	f := trace(ctx, query)
+	r, err := getRDB().QueryxContext(ctx, query, args...)
+	f(err)
+	return r, err
 }
 
 // RQueryRow queries the database and returns an *sqlx.Row.
 // Any placeholder parameters are replaced with supplied args.
 func RQueryRow(ctx context.Context, query string, args ...interface{}) *sqlx.Row {
+	defer trace(ctx, query)(nil)
 	return getRDB().QueryRowxContext(ctx, query, args...)
 }
 
 // Prepare returns an sqlx.Stmt instead of a sql.Stmt
 func Prepare(ctx context.Context, query string) (*sqlx.Stmt, error) {
-	return getWDB().PreparexContext(ctx, query)
+	f := trace(ctx, query)
+	r, err := getWDB().PreparexContext(ctx, query)
+	f(err)
+	return r, err
 }
 
 // PrepareNamed returns an sqlx.NamedStmt
 func PrepareNamed(ctx context.Context, query string) (*sqlx.NamedStmt, error) {
-	return getWDB().PrepareNamedContext(ctx, query)
+	f := trace(ctx, query)
+	r, err := getWDB().PrepareNamedContext(ctx, query)
+	f(err)
+	return r, err
+}
+
+func trace(ctx context.Context, q string) func(err error) error {
+	sp := opentracing.SpanFromContext(ctx)
+	if sp == nil {
+		return func(err error) error {
+			return err
+		}
+	}
+	ch := opentracing.StartSpan("db", opentracing.ChildOf(sp.Context()))
+	logs := []log.Field{log.String("query", q)}
+	return func(e error) error {
+		if e != nil {
+			logs = append(logs, log.Error(e))
+			ch.SetTag("error", true)
+			ch.LogFields(logs...)
+		}
+		ch.Finish()
+		return e
+	}
 }

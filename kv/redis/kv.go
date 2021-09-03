@@ -1,6 +1,7 @@
 package redis
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strconv"
@@ -9,7 +10,7 @@ import (
 	"github.com/mediocregopher/radix/v3"
 )
 
-func (k *service) Set(key string, val string, ttl time.Duration) error {
+func (k *service) Set(ctx context.Context, key string, val string, ttl time.Duration) error {
 	if ttl < time.Second {
 		return errors.New("invalid ttl")
 	}
@@ -19,11 +20,11 @@ func (k *service) Set(key string, val string, ttl time.Duration) error {
 		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
 }
 
-func (k *service) Get(key string, rcv *string) error {
+func (k *service) Get(ctx context.Context, key string, rcv *string) error {
 	return pool.Do(radix.Cmd(rcv, "GET", key))
 }
 
-func (k *service) MSet(key string, val interface{}, ttl time.Duration) error {
+func (k *service) MSet(ctx context.Context, key string, val interface{}, ttl time.Duration) error {
 	if ttl < time.Second {
 		return errors.New("invalid ttl")
 	}
@@ -32,12 +33,12 @@ func (k *service) MSet(key string, val interface{}, ttl time.Duration) error {
 		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
 }
 
-func (k *service) MGet(key string, rcv interface{}) error {
+func (k *service) MGet(ctx context.Context, key string, rcv interface{}) error {
 
 	return pool.Do(radix.FlatCmd(rcv, "HGETALL", key))
 }
 
-func (k *service) BitSet(key string, idx int, val bool, ttl time.Duration) error {
+func (k *service) BitSet(ctx context.Context, key string, idx int, val bool, ttl time.Duration) error {
 	if ttl < time.Second {
 		return errors.New("invalid ttl")
 	}
@@ -51,7 +52,7 @@ func (k *service) BitSet(key string, idx int, val bool, ttl time.Duration) error
 		radix.Cmd(nil, "EXPIRE", key, strconv.FormatInt(int64(ttl/time.Second), 10))))
 }
 
-func (k *service) BitSets(key string, val bool, ttl time.Duration, idx ...int) error {
+func (k *service) BitSets(ctx context.Context, key string, val bool, ttl time.Duration, idx ...int) error {
 	if ttl < time.Second {
 		return errors.New("invalid ttl")
 	}
@@ -68,17 +69,17 @@ func (k *service) BitSets(key string, val bool, ttl time.Duration, idx ...int) e
 	return pool.Do(radix.Pipeline(plp...))
 }
 
-func (k *service) BitGet(key string, idx int) (bool, error) {
+func (k *service) BitGet(ctx context.Context, key string, idx int) (bool, error) {
 	var val int
 	err := pool.Do(radix.Cmd(&val, "GETBIT", key, fmt.Sprint(idx)))
 	return val == 1, err
 }
 
-func (k *service) Decr(key string, val int, ttl time.Duration) (int, error) {
-	return k.Incr(key, -val, ttl)
+func (k *service) Decr(ctx context.Context, key string, val int, ttl time.Duration) (int, error) {
+	return k.Incr(ctx, key, -val, ttl)
 }
 
-func (k *service) Incr(key string, val int, ttl time.Duration) (int, error) {
+func (k *service) Incr(ctx context.Context, key string, val int, ttl time.Duration) (int, error) {
 	if ttl != 0 && ttl < time.Second {
 		return 0, errors.New("invalid ttl")
 	}
@@ -99,12 +100,12 @@ func (k *service) Incr(key string, val int, ttl time.Duration) (int, error) {
 	return res, err
 }
 
-func (k *service) TTL(key string) (time.Duration, error) {
+func (k *service) TTL(ctx context.Context, key string) (time.Duration, error) {
 	var res int
 	err := pool.Do(radix.Cmd(&res, "TTL", key))
 	return time.Second * time.Duration(res), err
 }
 
-func (k *service) Delete(key string) error {
+func (k *service) Delete(ctx context.Context, key string) error {
 	return pool.Do(radix.Cmd(nil, "DEL", key))
 }

@@ -3,6 +3,7 @@ module github.com/okian/servo/v2
 go 1.17
 
 require (
+	github.com/davecgh/go-spew v1.1.1
 	github.com/go-playground/validator/v10 v10.9.0
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/hashicorp/go-multierror v1.1.1
@@ -11,6 +12,7 @@ require (
 	github.com/lib/pq v1.10.2
 	github.com/mediocregopher/radix/v3 v3.7.1
 	github.com/minio/minio-go/v7 v7.0.13
+	github.com/opentracing-contrib/go-stdlib v1.0.0
 	github.com/opentracing/opentracing-go v1.2.0
 	github.com/prometheus/client_golang v1.11.0
 	github.com/spf13/viper v1.8.1
