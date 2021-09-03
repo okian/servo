@@ -1,4 +1,4 @@
-package jaeger
+package tracing
 
 import (
 	"context"
@@ -6,6 +6,7 @@ import (
 
 	"github.com/okian/servo/v2/config"
 	"github.com/okian/servo/v2/rest"
+	"github.com/opentracing/opentracing-go"
 	"github.com/spf13/viper"
 )
 
@@ -24,10 +25,14 @@ func (s *service) Initialize(ctx context.Context) error {
 	if err := s.initJaeger(name); err != nil {
 		return err
 	}
-	rest.Use(Trace(s))
+
+	rest.Use(Trace(opentracing.GlobalTracer()))
 	return nil
 }
 
 func (s *service) Finalize() error {
-	return s.Close()
+	if s.closer != nil {
+		return s.closer.Close()
+	}
+	return nil
 }

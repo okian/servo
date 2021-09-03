@@ -1,4 +1,4 @@
-package jaeger
+package tracing
 
 import "github.com/okian/servo/v2"
 
