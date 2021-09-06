@@ -12,5 +12,4 @@ type service struct {
 
 func Namespace() string {
 	return viper.GetString("monitoring_namespace")
-
 }
