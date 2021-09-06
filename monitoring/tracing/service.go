@@ -3,6 +3,7 @@ package tracing
 import (
 	"context"
 	"io"
+	"net/http"
 
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/log"
@@ -79,15 +80,23 @@ func tags(s string) []opentracing.Tag {
 	return tg
 }
 
-func Trace(ctx context.Context, name string, logs ...log.Field) func(err error) error {
+func Inject(ctx context.Context, h *http.Header) {
 	sp := opentracing.SpanFromContext(ctx)
 	if sp == nil {
-		return func(err error) error {
+		return
+	}
+	opentracing.GlobalTracer().Inject(sp.Context(), opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(*h))
+}
+
+func Trace(ctx context.Context, name string) func(err error, logs ...log.Field) error {
+	sp := opentracing.SpanFromContext(ctx)
+	if sp == nil {
+		return func(err error, logs ...log.Field) error {
 			return err
 		}
 	}
 	ch := opentracing.StartSpan(name, opentracing.ChildOf(sp.Context()))
-	return func(e error) error {
+	return func(e error, logs ...log.Field) error {
 		if e != nil {
 			logs = append(logs, log.Error(e))
 			ch.SetTag("error", true)
