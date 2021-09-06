@@ -88,15 +88,16 @@ func Inject(ctx context.Context, h *http.Header) {
 	opentracing.GlobalTracer().Inject(sp.Context(), opentracing.HTTPHeaders, opentracing.HTTPHeadersCarrier(*h))
 }
 
-func Trace(ctx context.Context, name string) func(err error, logs ...log.Field) error {
+func Trace(ctx context.Context, name string) (context.Context, func(err error, logs ...log.Field) error) {
 	sp := opentracing.SpanFromContext(ctx)
 	if sp == nil {
-		return func(err error, logs ...log.Field) error {
+		return ctx, func(err error, logs ...log.Field) error {
 			return err
 		}
 	}
 	ch := opentracing.StartSpan(name, opentracing.ChildOf(sp.Context()))
-	return func(e error, logs ...log.Field) error {
+
+	return opentracing.ContextWithSpan(ctx, ch), func(e error, logs ...log.Field) error {
 		if e != nil {
 			logs = append(logs, log.Error(e))
 			ch.SetTag("error", true)
