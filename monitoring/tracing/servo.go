@@ -26,7 +26,7 @@ func (s *service) Initialize(ctx context.Context) error {
 		return err
 	}
 
-	rest.Use(Trace(opentracing.GlobalTracer()))
+	rest.Use(trace(opentracing.GlobalTracer()))
 	return nil
 }
 

@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/log"
 	"github.com/spf13/viper"
 	"github.com/uber/jaeger-client-go"
 	"github.com/uber/jaeger-client-go/config"
@@ -76,6 +77,25 @@ func tags(s string) []opentracing.Tag {
 		})
 	}
 	return tg
+}
+
+func Trace(ctx context.Context, name string, logs ...log.Field) func(err error) error {
+	sp := opentracing.SpanFromContext(ctx)
+	if sp == nil {
+		return func(err error) error {
+			return err
+		}
+	}
+	ch := opentracing.StartSpan(name, opentracing.ChildOf(sp.Context()))
+	return func(e error) error {
+		if e != nil {
+			logs = append(logs, log.Error(e))
+			ch.SetTag("error", true)
+		}
+		ch.LogFields(logs...)
+		ch.Finish()
+		return e
+	}
 }
 
 // initJaeger returns an instance of Jaeger Tracer that samples 100% of traces and logs all spans to stdout.

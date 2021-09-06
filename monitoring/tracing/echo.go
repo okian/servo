@@ -61,16 +61,16 @@ var (
 
 // Trace returns a Trace middleware.
 // Trace middleware traces http requests and reporting errors.
-func Trace(tracer opentracing.Tracer) echo.MiddlewareFunc {
+func trace(tracer opentracing.Tracer) echo.MiddlewareFunc {
 	c := DefaultTraceConfig
 	c.Tracer = tracer
 	c.ComponentName = defaultComponentName
-	return TraceWithConfig(c)
+	return traceWithConfig(c)
 }
 
 // TraceWithConfig returns a Trace middleware with config.
 // See: `Trace()`.
-func TraceWithConfig(config TraceConfig) echo.MiddlewareFunc {
+func traceWithConfig(config TraceConfig) echo.MiddlewareFunc {
 	if config.Tracer == nil {
 		panic("echo: trace middleware requires opentracing tracer")
 	}
