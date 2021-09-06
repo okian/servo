@@ -6,8 +6,9 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
-	"github.com/okian/servo/v2/lg"
 	"github.com/spf13/viper"
+
+	"github.com/okian/servo/v2/lg"
 )
 
 const portKey string = "rest_port"
@@ -17,6 +18,9 @@ func (s *service) Name() string {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
+	if !viper.GetBool("rest") {
+		return nil
+	}
 	h := viper.GetString("rest_host")
 	p := viper.GetString(portKey)
 	if p == "" {

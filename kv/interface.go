@@ -97,8 +97,8 @@ func trace(ctx context.Context, key string) func(err error) error {
 		if e != nil {
 			logs = append(logs, log.Error(e))
 			ch.SetTag("error", true)
-			ch.LogFields(logs...)
 		}
+		ch.LogFields(logs...)
 		ch.Finish()
 		return e
 	}
