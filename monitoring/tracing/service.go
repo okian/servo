@@ -110,9 +110,7 @@ func Trace(ctx context.Context, name string) (context.Context, func(err error, l
 
 // initJaeger returns an instance of Jaeger Tracer that samples 100% of traces and logs all spans to stdout.
 func (s *service) initJaeger(service string) error {
-	if !viper.GetBool("tracing") {
-		return nil
-	}
+
 	j := config.Configuration{
 		ServiceName: service,
 		Sampler: &config.SamplerConfig{

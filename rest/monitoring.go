@@ -14,7 +14,7 @@ import (
 
 var (
 	requestsCounter *prometheus.CounterVec
-	responseTime    *prometheus.SummaryVec
+	responseTime    *prometheus.HistogramVec
 	responseSize    *prometheus.CounterVec
 	requestSize     *prometheus.CounterVec
 )
@@ -34,10 +34,11 @@ func (s *service) Statictis() {
 		"method",
 	})
 
-	responseTime = promauto.NewSummaryVec(prometheus.SummaryOpts{
+	responseTime = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: prometheus2.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_time",
+		Buckets:   prometheus.ExponentialBuckets(1, 1.15, 70),
 	}, []string{
 		"path",
 		"code",

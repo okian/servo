@@ -15,6 +15,9 @@ func (s *service) Name() string {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
+	if !viper.GetBool("tracing") {
+		return nil
+	}
 	var name string
 	if v := viper.GetString("JAEGER_SERVICE_NAME"); v != "" {
 		name = v
