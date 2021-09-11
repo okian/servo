@@ -75,9 +75,6 @@ func connection(ctx context.Context, host string) (d *sqlx.DB, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := d.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("fail to ping %s", host)
-	}
 	if m := viper.GetInt("db_max_open_connection"); m != 0 {
 		d.SetMaxOpenConns(m)
 	}
@@ -94,6 +91,14 @@ func connection(ctx context.Context, host string) (d *sqlx.DB, err error) {
 	if viper.GetBool("db_monitoring") {
 		go monitor(ctx, d, host)
 	}
+	if err := d.PingContext(ctx); err != nil {
+		err := fmt.Errorf("fail to ping %s", host)
+		if viper.GetBool("db_required") {
+			return nil, err
+		}
+		lg.Warn(err)
+	}
+
 	return d, nil
 }
 
