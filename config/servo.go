@@ -10,30 +10,32 @@ import (
 	"github.com/spf13/viper"
 )
 
-const configFile = "config"
+var config *viper.Viper
 
-type cfg struct{}
+type cfg struct {
+}
 
 func (c *cfg) Name() string {
 	return "config"
 }
 
 func (c *cfg) Initialize(_ context.Context) error {
-	viper.SetEnvPrefix(AppName())
-	viper.AddConfigPath(fmt.Sprintf("/etc/%s/", AppName()))
-	viper.AddConfigPath(fmt.Sprintf("$HOME/.%s/", AppName()))
-	viper.AddConfigPath(".")
-	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
-	viper.AutomaticEnv()
-	_ = viper.ReadInConfig()
-	if viper.GetString("tz") != "" {
-		z, err := time.LoadLocation(viper.GetString("tz"))
+	v := viper.New()
+	v.SetEnvPrefix(AppName())
+	v.AddConfigPath(fmt.Sprintf("/etc/%s/", AppName()))
+	v.AddConfigPath(fmt.Sprintf("$HOME/.%s/", AppName()))
+	v.AddConfigPath(".")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
+	v.AutomaticEnv()
+	_ = v.ReadInConfig()
+	if v.GetString("tz") != "" {
+		z, err := time.LoadLocation(config.GetString("tz"))
 		if err != nil {
 			return err
 		}
 		time.Local = z
-
 	}
+	config = v
 	return nil
 }
 
