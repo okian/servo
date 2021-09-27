@@ -12,5 +12,5 @@ func (l *logger) Error(msg string) {
 }
 
 func (l *logger) Infof(msg string, args ...interface{}) {
-	lg.Infof(msg, args)
+	lg.Infof(msg, args...)
 }

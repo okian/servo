@@ -2,6 +2,7 @@ package tracing
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/okian/servo/v2/config"
@@ -19,7 +20,7 @@ func (s *service) Initialize(ctx context.Context) error {
 		return nil
 	}
 	var name string
-	if v := viper.GetString("JAEGER_SERVICE_NAME"); v != "" {
+	if v := os.Getenv("JAEGER_SERVICE_NAME"); v != "" {
 		name = v
 	}
 	if name == "" {

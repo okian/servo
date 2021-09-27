@@ -9,6 +9,7 @@ import (
 )
 
 type Interface interface {
+	Name() string
 	BitSet(ctx context.Context, key string, idx int, val bool, ttl time.Duration) error
 	BitSets(ctx context.Context, key string, val bool, ttl time.Duration, idx ...int) error
 	BitGet(ctx context.Context, key string, idx int) (bool, error)
@@ -91,8 +92,8 @@ func trace(ctx context.Context, key string) func(err error) error {
 			return err
 		}
 	}
-	ch := opentracing.StartSpan("kv", opentracing.ChildOf(sp.Context()))
-	logs := []log.Field{log.String("kv_key", key)}
+	ch := opentracing.StartSpan(impl.Name(), opentracing.ChildOf(sp.Context()))
+	logs := []log.Field{log.String(impl.Name()+"_key", key)}
 	return func(e error) error {
 		if e != nil {
 			logs = append(logs, log.Error(e))
