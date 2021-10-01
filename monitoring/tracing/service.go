@@ -35,42 +35,42 @@ func tags(s string) []opentracing.Tag {
 		Key:   "svc",
 		Value: s,
 	})
-	if config.GetBool("tracking_tags_app") {
+	if cfg.GetBool("tracking_tags_app") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_app",
 			Value: cfg.AppName(),
 		})
 	}
 
-	if config.GetBool("tracking_tags_commit") {
+	if cfg.GetBool("tracking_tags_commit") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_commit",
 			Value: cfg.Commit(),
 		})
 	}
 
-	if config.GetBool("tracking_tags_date") {
+	if cfg.GetBool("tracking_tags_date") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_date",
 			Value: cfg.Date(),
 		})
 	}
 
-	if config.GetBool("tracking_tags_tag") {
+	if cfg.GetBool("tracking_tags_tag") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_tag",
 			Value: cfg.Tag(),
 		})
 	}
 
-	if config.GetBool("tracking_tags_branch") {
+	if cfg.GetBool("tracking_tags_branch") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_branch",
 			Value: cfg.Branch(),
 		})
 	}
 
-	if config.GetBool("tracking_tags_version") {
+	if cfg.GetBool("tracking_tags_version") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_version",
 			Value: cfg.Version(),
@@ -117,8 +117,8 @@ func (s *service) initJaeger(service string) error {
 			Param: 5,
 		},
 		Reporter: &config.ReporterConfig{
-			User:      config.GetString("jaeger_user"),
-			Password:  config.GetString("jaeger_password"),
+			User:      cfg.GetString("jaeger_user"),
+			Password:  cfg.GetString("jaeger_password"),
 			LogSpans:  true,
 			QueueSize: 100,
 		},
