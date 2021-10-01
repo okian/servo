@@ -38,7 +38,7 @@ func (s *service) Statictis() {
 		Namespace: prometheus2.Namespace(),
 		Subsystem: subsystem,
 		Name:      "response_time",
-		Buckets:   prometheus.ExponentialBuckets(1, 1.15, 70),
+		Buckets:   prometheus.ExponentialBuckets(0.1, 1.15, 100),
 	}, []string{
 		"path",
 		"code",

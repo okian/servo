@@ -5,9 +5,9 @@ import (
 	"net"
 	"net/http"
 
+	"github.com/okian/servo/v2/config"
 	"github.com/okian/servo/v2/lg"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/spf13/viper"
 )
 
 func (s *service) Name() string {
@@ -24,11 +24,11 @@ func checkPort(h, p string) error {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
-	if !viper.GetBool("monitoring") {
+	if !config.GetBool("monitoring") {
 		return nil
 	}
-	host := viper.GetString("monitoring_host")
-	port := viper.GetString("monitoring_port")
+	host := config.GetString("monitoring_host")
+	port := config.GetString("monitoring_port")
 	if port == "" {
 		port = "9001"
 	}

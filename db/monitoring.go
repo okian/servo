@@ -2,8 +2,11 @@ package db
 
 import (
 	"context"
-	prometheus2 "github.com/okian/servo/v2/monitoring/prometheus"
 	"time"
+
+	prometheus2 "github.com/okian/servo/v2/monitoring/prometheus"
+	"github.com/opentracing/opentracing-go"
+	"github.com/opentracing/opentracing-go/log"
 
 	"github.com/jmoiron/sqlx"
 	"github.com/prometheus/client_golang/prometheus"
@@ -63,5 +66,44 @@ func monitor(ctx context.Context, d *sqlx.DB, host string) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func trace(ctx context.Context, q string) func(err error) error {
+	sp := opentracing.SpanFromContext(ctx)
+	if sp == nil {
+		return func(err error) error {
+			return err
+		}
+	}
+	ch := opentracing.StartSpan("SQL", opentracing.ChildOf(sp.Context()))
+	logs := []log.Field{log.String("query", q)}
+	return func(e error) error {
+		if e != nil {
+			logs = append(logs, log.Error(e))
+			ch.SetTag("error", true)
+		}
+		ch.LogFields(logs...)
+		ch.Finish()
+		return e
+	}
+}
+
+func traceTrans(ctx context.Context) func(err error, l []log.Field) error {
+	sp := opentracing.SpanFromContext(ctx)
+	if sp == nil {
+		return func(err error, l []log.Field) error {
+			return err
+		}
+	}
+	ch := opentracing.StartSpan("SQL Tran", opentracing.ChildOf(sp.Context()))
+	return func(e error, l []log.Field) error {
+		if e != nil {
+			l = append(l, log.Error(e))
+			ch.SetTag("error", true)
+		}
+		ch.LogFields(l...)
+		ch.Finish()
+		return e
 	}
 }

@@ -3,7 +3,7 @@ package prometheus
 import (
 	"net/http"
 
-	"github.com/spf13/viper"
+	"github.com/okian/servo/v2/config"
 )
 
 type service struct {
@@ -11,5 +11,5 @@ type service struct {
 }
 
 func Namespace() string {
-	return viper.GetString("monitoring_namespace")
+	return config.GetString("monitoring_namespace")
 }

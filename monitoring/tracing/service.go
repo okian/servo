@@ -7,7 +7,6 @@ import (
 
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/log"
-	"github.com/spf13/viper"
 	"github.com/uber/jaeger-client-go"
 	"github.com/uber/jaeger-client-go/config"
 	"github.com/uber/jaeger-lib/metrics/prometheus"
@@ -36,42 +35,42 @@ func tags(s string) []opentracing.Tag {
 		Key:   "svc",
 		Value: s,
 	})
-	if viper.GetBool("tracking_tags_app") {
+	if config.GetBool("tracking_tags_app") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_app",
 			Value: cfg.AppName(),
 		})
 	}
 
-	if viper.GetBool("tracking_tags_commit") {
+	if config.GetBool("tracking_tags_commit") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_commit",
 			Value: cfg.Commit(),
 		})
 	}
 
-	if viper.GetBool("tracking_tags_date") {
+	if config.GetBool("tracking_tags_date") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_date",
 			Value: cfg.Date(),
 		})
 	}
 
-	if viper.GetBool("tracking_tags_tag") {
+	if config.GetBool("tracking_tags_tag") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_tag",
 			Value: cfg.Tag(),
 		})
 	}
 
-	if viper.GetBool("tracking_tags_branch") {
+	if config.GetBool("tracking_tags_branch") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_branch",
 			Value: cfg.Branch(),
 		})
 	}
 
-	if viper.GetBool("tracking_tags_version") {
+	if config.GetBool("tracking_tags_version") {
 		tg = append(tg, opentracing.Tag{
 			Key:   "ext_version",
 			Value: cfg.Version(),
@@ -118,8 +117,8 @@ func (s *service) initJaeger(service string) error {
 			Param: 5,
 		},
 		Reporter: &config.ReporterConfig{
-			User:      viper.GetString("jaeger_user"),
-			Password:  viper.GetString("jaeger_password"),
+			User:      config.GetString("jaeger_user"),
+			Password:  config.GetString("jaeger_password"),
 			LogSpans:  true,
 			QueueSize: 100,
 		},

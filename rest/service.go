@@ -6,7 +6,7 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
-	"github.com/spf13/viper"
+	"github.com/okian/servo/v2/config"
 )
 
 type service struct {
@@ -14,7 +14,7 @@ type service struct {
 }
 
 func (s *service) validator() {
-	if viper.GetBool("rest_validator") {
+	if config.GetBool("rest_validator") {
 		if customValidator != nil {
 			s.e.Validator = customValidator
 			return
@@ -26,27 +26,27 @@ func (s *service) validator() {
 }
 
 func (s *service) middlewares() {
-	if viper.GetBool("rest_middleware_recover") {
+	if config.GetBool("rest_middleware_recover") {
 		s.e.Use(middleware.Recover())
 	}
-	if viper.GetBool("rest_middleware_core") {
+	if config.GetBool("rest_middleware_core") {
 		s.e.Use(middleware.CORS())
 	}
-	if viper.GetBool("rest_middleware_remove_trailing_slash") {
+	if config.GetBool("rest_middleware_remove_trailing_slash") {
 		s.e.Use(middleware.RemoveTrailingSlash())
 	}
-	if viper.GetBool("rest_middleware_gzip") {
+	if config.GetBool("rest_middleware_gzip") {
 		s.e.Use(middleware.Gzip())
 	}
-	if viper.GetString("rest_middleware_body_limit") != "" {
-		s.e.Use(middleware.BodyLimit(viper.GetString("rest_middleware_body_limit")))
+	if config.GetString("rest_middleware_body_limit") != "" {
+		s.e.Use(middleware.BodyLimit(config.GetString("rest_middleware_body_limit")))
 	}
-	if viper.GetBool("rest_monitoring") {
+	if config.GetBool("rest_monitoring") {
 		s.Statictis()
 		s.e.Use(statictis)
 	}
 
-	if viper.GetBool("rest_log") {
+	if config.GetBool("rest_log") {
 		s.e.Use(logger)
 	}
 	s.e.Use(middlewares...)

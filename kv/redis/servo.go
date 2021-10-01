@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/mediocregopher/radix/v3"
+	"github.com/okian/servo/v2/config"
 	"github.com/okian/servo/v2/kv"
-	"github.com/spf13/viper"
 )
 
 type service struct {
@@ -68,20 +68,20 @@ func connection() (*radix.Pool, error) {
 	var opt = []radix.DialOpt{
 		radix.DialTimeout(time.Second * 10),
 	}
-	user := viper.GetString(user)
-	pass := viper.GetString(pass)
+	user := config.GetString(user)
+	pass := config.GetString(pass)
 	switch {
 	case user != "" && pass != "":
 		opt = append(opt, radix.DialAuthUser(user, pass))
 	case pass != "":
 		opt = append(opt, radix.DialAuthPass(pass))
 	}
-	if db := viper.GetInt(db); db != 0 {
+	if db := config.GetInt(db); db != 0 {
 		opt = append(opt, radix.DialSelectDB(db))
 	}
 
-	host := viper.GetString(host)
-	port := viper.GetString(port)
+	host := config.GetString(host)
+	port := config.GetString(port)
 	addr := fmt.Sprintf("%s:%s", host, port)
 	var connfunc = func(network, addr string) (radix.Conn, error) {
 		return radix.Dial(network, addr, opt...)

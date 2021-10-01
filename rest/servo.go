@@ -6,8 +6,8 @@ import (
 	"net/http"
 
 	"github.com/labstack/echo/v4"
-	"github.com/spf13/viper"
 
+	"github.com/okian/servo/v2/config"
 	"github.com/okian/servo/v2/lg"
 )
 
@@ -18,11 +18,11 @@ func (s *service) Name() string {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
-	if !viper.GetBool("rest") {
+	if !config.GetBool("rest") {
 		return nil
 	}
-	h := viper.GetString("rest_host")
-	p := viper.GetString(portKey)
+	h := config.GetString("rest_host")
+	p := config.GetString(portKey)
 	if p == "" {
 		p = "9000"
 	}

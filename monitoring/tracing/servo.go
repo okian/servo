@@ -8,7 +8,6 @@ import (
 	"github.com/okian/servo/v2/config"
 	"github.com/okian/servo/v2/rest"
 	"github.com/opentracing/opentracing-go"
-	"github.com/spf13/viper"
 )
 
 func (s *service) Name() string {
@@ -16,7 +15,7 @@ func (s *service) Name() string {
 }
 
 func (s *service) Initialize(ctx context.Context) error {
-	if !viper.GetBool("tracing") {
+	if !config.GetBool("tracing") {
 		return nil
 	}
 	var name string

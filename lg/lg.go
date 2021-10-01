@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/davecgh/go-spew/spew"
+	"github.com/okian/servo/v2/config"
 	"github.com/opentracing/opentracing-go"
 	"github.com/opentracing/opentracing-go/log"
-	"github.com/spf13/viper"
 )
 
 func (s *service) Info(args ...interface{}) {
@@ -14,7 +14,7 @@ func (s *service) Info(args ...interface{}) {
 }
 
 func (s *service) Debug(args ...interface{}) {
-	if viper.GetBool("lg_dump") {
+	if config.GetBool("lg_dump") {
 		spew.Dump(args...)
 		return
 	}

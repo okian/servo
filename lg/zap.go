@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/okian/servo/v2/config"
-	"github.com/spf13/viper"
 	"go.uber.org/zap/zapcore"
 
 	"go.uber.org/zap"
@@ -36,7 +35,7 @@ func logLevel(s string) zapcore.LevelEnabler {
 }
 
 func encoder() zapcore.Encoder {
-	if strings.ToUpper(viper.GetString("environment")) == "PRODUCTION" {
+	if strings.ToUpper(config.GetString("environment")) == "PRODUCTION" {
 		return zapcore.NewJSONEncoder(zapcore.EncoderConfig{
 			MessageKey:     "msg",
 			LevelKey:       "level",
@@ -71,14 +70,14 @@ func encoder() zapcore.Encoder {
 func (s *service) setup() error {
 
 	var cores []zapcore.Core
-	if l := logLevel(viper.GetString("log_file")); l != nil {
+	if l := logLevel(config.GetString("log_file")); l != nil {
 		f, err := fileWriter()
 		if err != nil {
 			return err
 		}
 		cores = append(cores, zapcore.NewCore(encoder(), f, l))
 	}
-	if l := logLevel(viper.GetString("log_syslog")); l != nil {
+	if l := logLevel(config.GetString("log_syslog")); l != nil {
 		w, err := newSysLog()
 		if err != nil {
 			return err
@@ -86,7 +85,7 @@ func (s *service) setup() error {
 		cores = append(cores, zapcore.NewCore(encoder(), w, l))
 	}
 
-	l := logLevel(viper.GetString("log_console"))
+	l := logLevel(config.GetString("log_console"))
 	if len(cores) == 0 && l == nil {
 		l = zap.DebugLevel
 	}
@@ -108,7 +107,7 @@ func (s *service) setup() error {
 
 func extra() []zapcore.Field {
 	var fs []zap.Field
-	if viper.GetBool("service.extra.appname") && config.AppName() != "" {
+	if config.GetBool("service.extra.appname") && config.AppName() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_name",
 			Type:   zapcore.StringType,
@@ -116,7 +115,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("service.extra.branch") && config.Branch() != "" {
+	if config.GetBool("service.extra.branch") && config.Branch() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_branch",
 			Type:   zapcore.StringType,
@@ -124,7 +123,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("service.extra.tag") && config.Tag() != "" {
+	if config.GetBool("service.extra.tag") && config.Tag() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_tag",
 			Type:   zapcore.StringType,
@@ -132,7 +131,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("service.extra.commit") && config.Commit() != "" {
+	if config.GetBool("service.extra.commit") && config.Commit() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_commit",
 			Type:   zapcore.StringType,
@@ -140,7 +139,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("service.extra.version") && config.Version() != "" {
+	if config.GetBool("service.extra.version") && config.Version() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_version",
 			Type:   zapcore.StringType,
@@ -148,7 +147,7 @@ func extra() []zapcore.Field {
 		})
 	}
 
-	if viper.GetBool("service.extra.date") && config.Date() != "" {
+	if config.GetBool("service.extra.date") && config.Date() != "" {
 		fs = append(fs, zapcore.Field{
 			Key:    "app_date",
 			Type:   zapcore.StringType,
