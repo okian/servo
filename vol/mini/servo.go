@@ -24,6 +24,9 @@ func (s *service) Initialize(ctx context.Context) error {
 			viper.GetString("vol_token")),
 		Secure: viper.GetBool("vol_secure"),
 	})
+	if err != nil {
+		return err
+	}
 	ok, err := c.BucketExists(ctx, viper.GetString("vol_bucket"))
 	if err != nil {
 		return err
