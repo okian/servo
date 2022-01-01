@@ -27,7 +27,7 @@ type service struct {
 	options []Option
 	ticker  <-chan time.Time
 	// the allowed percentage to pass for example if the value is set to 7 any
-	// request with the chance of 93% or will pass
+	// request with the chance of 93% or more will pass
 	threshold      uint
 	updateDuration time.Duration
 	ignoreEvents   []error
@@ -127,10 +127,23 @@ func new(name string, ops ...Option) *service {
 
 var nameRex = regexp.MustCompile("^[a-zA-Z_]+$")
 
-func NewService(name string, ops ...Option) (<-chan bool, chan<- error) {
+type Interface interface {
+	Allow() <-chan bool
+	Event() chan<- error
+}
+
+func NewService(name string, ops ...Option) Interface {
 	s := new(name, ops...)
 	servo.Register(s, 500)
-	return s.allowance, s.events
+	return s
+}
+
+func (s *service) Allow() <-chan bool {
+	return s.allowance
+}
+
+func (s *service) Event() chan<- error {
+	return s.events
 }
 
 func WithIgnoreErrors(er ...error) Option {
@@ -140,7 +153,7 @@ func WithIgnoreErrors(er ...error) Option {
 	}
 }
 
-func WithStartChance(c uint8) Option {
+func WithInitChance(c uint8) Option {
 	return func(s *service) error {
 		if c > 100 {
 			return fmt.Errorf("%s: %d is invalid value for chance, it should be between 0 and 100", s.Name(), c)
@@ -150,12 +163,12 @@ func WithStartChance(c uint8) Option {
 	}
 }
 
-func WithStartChanceFrom(c string) Option {
+func WithInitChanceENV(c string) Option {
 	return func(s *service) error {
 		if c == "" {
 			return fmt.Errorf("%s: %s is invalid value for change ENV", s.Name(), c)
 		}
-		v := viper.GetInt(fmt.Sprintf("%s_%s", s.Name(), c))
+		v := viper.GetInt(fmt.Sprintf("%s_init_chance", s.Name()))
 		if v < 0 || v > 100 {
 			return fmt.Errorf("%s: %d is invalid value for chance, it should be between 0 and 100", s.Name(), v)
 		}
@@ -174,9 +187,9 @@ func WithUpdate(u time.Duration) Option {
 	}
 }
 
-func WithUpdateFrom(k string) Option {
+func WithUpdateENV() Option {
 	return func(s *service) error {
-		u := viper.GetDuration(fmt.Sprintf("%s_%s", s.Name(), k))
+		u := viper.GetDuration(fmt.Sprintf("%s_update", s.Name()))
 		if u < time.Millisecond*10 {
 			return fmt.Errorf("%s: %s is invalid update duration. it should be 10 millisecond or more", s.Name(), u)
 		}
@@ -185,6 +198,8 @@ func WithUpdateFrom(k string) Option {
 	}
 }
 
+// WithThreshold is the allowed percentage to pass for example if the value is set to 7 any
+// request with the chance of 93% or more will pass
 func WithThreshold(t uint) Option {
 	return func(s *service) error {
 		if t < 2 || t > 99 {
