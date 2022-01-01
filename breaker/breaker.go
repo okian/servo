@@ -17,6 +17,11 @@ import (
 	"github.com/spf13/viper"
 )
 
+type (
+	Mood   int
+	Option func(s *service) error
+)
+
 const (
 	OPTIMISTIC Mood = iota
 	PESSIMISTIC
@@ -40,6 +45,7 @@ type service struct {
 	sync.RWMutex
 	chanceMonitoring func(c float64)
 	statusMonitoring func(s string)
+	autoTune         func(int) int
 }
 
 func (s *service) Name() string {
@@ -52,8 +58,9 @@ func (s *service) Initialize(ctx context.Context) error {
 	s.updateDuration = time.Second
 	s.ignoreEvents = nil
 	s.chance = 50
-	s.chanceMonitoring = func(float64) {}
-	s.statusMonitoring = func(string) {}
+	s.chanceMonitoring = noopChanceMonitoring
+	s.statusMonitoring = noopStatusMonitoring
+	s.autoTune = noopautoTune
 	for i := range s.options {
 		if err := s.options[i](s); err != nil {
 			return err
@@ -90,7 +97,7 @@ BIG:
 			return
 		case <-s.ticker:
 			s.Lock()
-			s.chance = calc(s.chance, s.eCounter, s.nCounter)
+			s.chance = s.calculate(s.chance, s.eCounter, s.nCounter)
 			s.chanceMonitoring(float64(s.chance))
 			s.Unlock()
 			s.eCounter, s.nCounter = 0, 0
@@ -110,8 +117,6 @@ BIG:
 		}
 	}
 }
-
-type Option func(s *service) error
 
 func new(name string, ops ...Option) *service {
 	if !nameRex.Match([]byte(name)) {
@@ -217,6 +222,37 @@ func WithBuffer(b uint) Option {
 	}
 }
 
+// WithAutoTune will help reduce / increase the odds in the absence of an event
+func WithAutoTune(m Mood, step, until int) Option {
+	return func(s *service) error {
+		switch m {
+		case PESSIMISTIC:
+			s.autoTune = func(i int) int {
+				if i < until {
+					return i
+				}
+				if j := i - step; j < until {
+					return j
+				}
+				return until
+			}
+		case OPTIMISTIC:
+			s.autoTune = func(i int) int {
+				if i > until {
+					return i
+				}
+				if j := i + step; j > until {
+					return j
+				}
+				return until
+			}
+		default:
+			return fmt.Errorf("%s: unsupported mood", s.Name())
+		}
+		return nil
+	}
+}
+
 func WithPrometheus() Option {
 	return func(s *service) error {
 		ch := promauto.NewCounterVec(prometheus.CounterOpts{
@@ -240,7 +276,7 @@ func WithPrometheus() Option {
 	}
 }
 
-func calc(chance int, err, none int) int {
+func (s *service) calculate(chance int, err, none int) int {
 	switch {
 	case err != 0 && none != 0:
 		if err > none {
@@ -251,7 +287,7 @@ func calc(chance int, err, none int) int {
 	case err != 0 && none == 0:
 		chance -= reach(err)
 	case err == 0 && none == 0:
-		return mood(chance, PESSIMISTIC)
+		return s.autoTune(chance)
 	case err == 0 && none != 0:
 		chance += reach(none)
 	}
@@ -264,24 +300,8 @@ func calc(chance int, err, none int) int {
 	return chance
 }
 
-type Mood int
-
-func mood(c int, m Mood) int {
-	switch m {
-	case OPTIMISTIC:
-		if c < 60 {
-			return c + 1
-		}
-	case PESSIMISTIC:
-		if c > 10 {
-			return c - 1
-		}
-	}
-	return c
-}
-
 const (
-	max = 8
+	max = 6
 	min = 1
 )
 
@@ -301,3 +321,7 @@ func (s *service) allow(n int) bool {
 	}
 	return n >= 100 || int(rand.Int31n(101-int32(s.threshold))) < n
 }
+
+func noopChanceMonitoring(float64) {}
+func noopStatusMonitoring(string)  {}
+func noopautoTune(i int) int       { return i }
