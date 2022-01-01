@@ -59,6 +59,7 @@ func (s *service) Initialize(ctx context.Context) error {
 			return err
 		}
 	}
+	s.ticker = time.Tick(s.updateDuration)
 	go s.rate()
 	go s.status()
 	return nil
