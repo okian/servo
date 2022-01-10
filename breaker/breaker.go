@@ -201,11 +201,8 @@ func WithInitChance(c uint8) Option {
 	}
 }
 
-func WithInitChanceENV(c string) Option {
+func WithInitChanceENV() Option {
 	return func(s *service) error {
-		if c == "" {
-			return fmt.Errorf("%s: %s is invalid value for change ENV", s.Name(), c)
-		}
 		v := viper.GetInt(fmt.Sprintf("%s_init_chance", s.Name()))
 		if v < 0 || v > 100 {
 			return fmt.Errorf("%s: %d is invalid value for chance, it should be between 0 and 100", s.Name(), v)
