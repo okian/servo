@@ -23,7 +23,8 @@ type (
 )
 
 const (
-	OPTIMISTIC Mood = iota
+	NOOP Mood = iota
+	OPTIMISTIC
 	PESSIMISTIC
 )
 
@@ -43,9 +44,12 @@ type service struct {
 	allowance chan bool
 	events    chan error
 	sync.RWMutex
-	chanceMonitoring func(c float64)
-	statusMonitoring func(s string)
-	autoTune         func(int) int
+	chanceMonitoring    func(c float64)
+	statusMonitoring    func(s string)
+	allowanceMonitoring func(bool)
+	autoTune            func(int) int
+	maxStep             int
+	minStep             int
 }
 
 func (s *service) Name() string {
@@ -60,15 +64,22 @@ func (s *service) Initialize(ctx context.Context) error {
 	s.chance = 50
 	s.chanceMonitoring = noopChanceMonitoring
 	s.statusMonitoring = noopStatusMonitoring
+	s.allowanceMonitoring = noopAllowanceMonitoring
 	s.autoTune = noopautoTune
+	s.minStep = 1
+	s.maxStep = 5
 	for i := range s.options {
 		if err := s.options[i](s); err != nil {
 			return err
 		}
 	}
+	if s.maxStep < s.minStep {
+		return fmt.Errorf("%s: max step (%d) should be bigger then min step (%d)", s.Name(), s.maxStep, s.minStep)
+	}
 	s.ticker = time.Tick(s.updateDuration)
 	go s.rate()
 	go s.status()
+	go s.autoBalance()
 	return nil
 }
 
@@ -133,7 +144,7 @@ func new(name string, ops ...Option) *service {
 var nameRex = regexp.MustCompile("^[a-zA-Z_]+$")
 
 type Interface interface {
-	Allow() <-chan bool
+	Allow() bool
 	Event() chan<- error
 }
 
@@ -143,8 +154,10 @@ func NewService(name string, ops ...Option) Interface {
 	return s
 }
 
-func (s *service) Allow() <-chan bool {
-	return s.allowance
+func (s *service) Allow() bool {
+	r := <-s.allowance
+	s.allowanceMonitoring(r)
+	return r
 }
 
 func (s *service) Event() chan<- error {
@@ -154,6 +167,26 @@ func (s *service) Event() chan<- error {
 func WithIgnoreErrors(er ...error) Option {
 	return func(s *service) error {
 		s.ignoreEvents = er
+		return nil
+	}
+}
+
+func WithMaxStep(c uint8) Option {
+	return func(s *service) error {
+		if c > 100 {
+			return fmt.Errorf("%s: %d is invalid value for max step, it should be between 1 and 100", s.Name(), c)
+		}
+		s.maxStep = int(c)
+		return nil
+	}
+}
+
+func WithMinStep(c uint8) Option {
+	return func(s *service) error {
+		if c < 1 {
+			return fmt.Errorf("%s: %d is invalid value for min step, it should be between 1 and 100", s.Name(), c)
+		}
+		s.minStep = int(c)
 		return nil
 	}
 }
@@ -215,9 +248,30 @@ func WithThreshold(t uint) Option {
 	}
 }
 
+func WithThresholdENV() Option {
+	return func(s *service) error {
+		t := viper.GetUint(fmt.Sprintf("%s_threshold", s.Name()))
+		if t < 2 || t > 99 {
+			return nil
+		}
+		s.threshold = t
+		return nil
+	}
+}
+
 func WithBuffer(b uint) Option {
 	return func(s *service) error {
 		s.allowance = make(chan bool, b)
+		return nil
+	}
+}
+
+func WithBufferENV() Option {
+	return func(s *service) error {
+		b := viper.GetInt(fmt.Sprintf("%s_buffer", s.Name()))
+		if b > 0 {
+			s.allowance = make(chan bool, b)
+		}
 		return nil
 	}
 }
@@ -253,6 +307,43 @@ func WithAutoTune(m Mood, step, until int) Option {
 	}
 }
 
+// WithAutoTuneENV will help reduce / increase the odds in the absence of an event
+func WithAutoTuneENV() Option {
+	return func(s *service) error {
+		m := Mood(viper.GetInt(fmt.Sprintf("%s_autotune_mood", s.Name())))
+		t := viper.GetInt(fmt.Sprintf("%s_autotune_step", s.Name()))
+		u := viper.GetInt(fmt.Sprintf("%s_autotune_until", s.Name()))
+
+		switch m {
+		case NOOP:
+			s.autoTune = noopautoTune
+		case PESSIMISTIC:
+			s.autoTune = func(i int) int {
+				if i < u {
+					return i
+				}
+				if j := i - t; j < u {
+					return j
+				}
+				return u
+			}
+		case OPTIMISTIC:
+			s.autoTune = func(i int) int {
+				if i > u {
+					return i
+				}
+				if j := i + t; j > u {
+					return j
+				}
+				return u
+			}
+		default:
+			return fmt.Errorf("%s: unsupported mood env", s.Name())
+		}
+		return nil
+	}
+}
+
 func WithPrometheus() Option {
 	return func(s *service) error {
 		ch := promauto.NewCounterVec(prometheus.CounterOpts{
@@ -272,6 +363,15 @@ func WithPrometheus() Option {
 		s.chanceMonitoring = func(c float64) {
 			ga.WithLabelValues().Set(c)
 		}
+		al := promauto.NewCounterVec(prometheus.CounterOpts{
+			Namespace: p1.Namespace(),
+			Subsystem: s.Name(),
+			Name:      "allowance",
+		}, []string{"value"})
+
+		s.allowanceMonitoring = func(b bool) {
+			al.WithLabelValues(fmt.Sprint(b)).Inc()
+		}
 		return nil
 	}
 }
@@ -280,16 +380,16 @@ func (s *service) calculate(chance int, err, none int) int {
 	switch {
 	case err != 0 && none != 0:
 		if err > none {
-			chance -= reach((err / none) % 100)
+			chance -= s.reach((err / none) % 100)
 			break
 		}
-		chance += reach((none / err) % 100)
+		chance += s.reach((none / err) % 100)
 	case err != 0 && none == 0:
-		chance -= reach(err)
+		chance -= s.reach(err)
 	case err == 0 && none == 0:
 		return s.autoTune(chance)
 	case err == 0 && none != 0:
-		chance += reach(none)
+		chance += s.reach(none)
 	}
 	if chance < 0 {
 		return 0
@@ -300,28 +400,34 @@ func (s *service) calculate(chance int, err, none int) int {
 	return chance
 }
 
-const (
-	max = 6
-	min = 1
-)
-
-func reach(t int) int {
-	if t > max {
-		return int(rand.Int31n(max/2) + max/2)
+func (s *service) reach(t int) int {
+	if t > s.maxStep {
+		return int(rand.Int31n(int32(s.maxStep)))
 	}
-	if t < min {
-		return min
+	if t < s.minStep {
+		return s.minStep
 	}
 	return t
 }
 
-func (s *service) allow(n int) bool {
-	if n == 0 {
-		return n == int(rand.Int31n(200))
+// autoBalance is needed to escape 0 percent chance
+func (s *service) autoBalance() {
+	t := time.Tick(time.Second * 2)
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case <-t:
+			s.allowance <- s.allow(-1)
+		}
 	}
-	return n >= 100 || int(rand.Int31n(101-int32(s.threshold))) < n
+}
+
+func (s *service) allow(n int) bool {
+	return n >= 100 || n < 0 || int(rand.Int31n(101-int32(s.threshold))) < n
 }
 
 func noopChanceMonitoring(float64) {}
+func noopAllowanceMonitoring(bool) {}
 func noopStatusMonitoring(string)  {}
 func noopautoTune(i int) int       { return i }
