@@ -225,7 +225,9 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 
 				if err = c.Initialize(ctx); err == nil {
 					log(fmt.Sprintf("%s initialized\n", c.Name()))
+					registerLock.Lock()
 					serviceNames[c.Name()] = true
+					registerLock.Unlock()
 				} else {
 					log(fmt.Sprintf("%s failed to initialize: %s\n", c.Name(), err.Error()))
 				}

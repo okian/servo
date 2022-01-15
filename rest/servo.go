@@ -50,7 +50,10 @@ func (s *service) Initialize(ctx context.Context) error {
 }
 
 func (s *service) Finalize() error {
-	return s.e.Shutdown(context.Background())
+	if s.e != nil {
+		return s.e.Shutdown(context.Background())
+	}
+	return nil
 }
 
 func checkPort(h, p string) error {
