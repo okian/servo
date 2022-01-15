@@ -208,6 +208,7 @@ func finalize() {
 }
 
 func run(ctx context.Context, mode runMode, svc []Service) error {
+	l := sync.RWMutex{}
 	wg := sync.WaitGroup{}
 	wg.Add(len(svc))
 	done := make(chan bool)
@@ -225,17 +226,20 @@ func run(ctx context.Context, mode runMode, svc []Service) error {
 
 				if err = c.Initialize(ctx); err == nil {
 					log(fmt.Sprintf("%s initialized\n", c.Name()))
-					registerLock.Lock()
+					l.Lock()
 					serviceNames[c.Name()] = true
-					registerLock.Unlock()
+					l.Unlock()
 				} else {
 					log(fmt.Sprintf("%s failed to initialize: %s\n", c.Name(), err.Error()))
 				}
 
 			} else if mode == Stop {
+				l.RLock()
 				if !serviceNames[c.Name()] {
+					l.RUnlock()
 					return
 				}
+				l.RUnlock()
 				log(fmt.Sprintf("finalizing %s\n", c.Name()))
 				err = c.Finalize()
 			}
