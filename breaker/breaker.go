@@ -203,7 +203,11 @@ func WithInitChance(c uint8) Option {
 
 func WithInitChanceENV() Option {
 	return func(s *service) error {
-		v := viper.GetInt(fmt.Sprintf("%s_init_chance", s.Name()))
+		k := fmt.Sprintf("%s_init_chance", s.Name())
+		if !viper.IsSet(k) {
+			return nil
+		}
+		v := viper.GetInt(k)
 		if v < 0 || v > 100 {
 			return fmt.Errorf("%s: %d is invalid value for chance, it should be between 0 and 100", s.Name(), v)
 		}
@@ -224,7 +228,11 @@ func WithUpdate(u time.Duration) Option {
 
 func WithUpdateENV() Option {
 	return func(s *service) error {
-		u := viper.GetDuration(fmt.Sprintf("%s_update", s.Name()))
+		k := fmt.Sprintf("%s_update", s.Name())
+		if !viper.IsSet(k) {
+			return nil
+		}
+		u := viper.GetDuration(k)
 		if u < time.Millisecond*10 {
 			return fmt.Errorf("%s: %s is invalid update duration. it should be 10 millisecond or more", s.Name(), u)
 		}
@@ -247,7 +255,11 @@ func WithThreshold(t uint) Option {
 
 func WithThresholdENV() Option {
 	return func(s *service) error {
-		t := viper.GetUint(fmt.Sprintf("%s_threshold", s.Name()))
+		k := fmt.Sprintf("%s_threshold", s.Name())
+		if !viper.IsSet(k) {
+			return nil
+		}
+		t := viper.GetUint(k)
 		if t < 2 || t > 99 {
 			return nil
 		}
@@ -265,7 +277,11 @@ func WithBuffer(b uint) Option {
 
 func WithBufferENV() Option {
 	return func(s *service) error {
-		b := viper.GetInt(fmt.Sprintf("%s_buffer", s.Name()))
+		k := fmt.Sprintf("%s_buffer", s.Name())
+		if !viper.IsSet(k) {
+			return nil
+		}
+		b := viper.GetInt(k)
 		if b > 0 {
 			s.allowance = make(chan bool, b)
 		}
@@ -307,9 +323,17 @@ func WithAutoTune(m Mood, step, until int) Option {
 // WithAutoTuneENV will help reduce / increase the odds in the absence of an event
 func WithAutoTuneENV() Option {
 	return func(s *service) error {
-		m := Mood(viper.GetInt(fmt.Sprintf("%s_autotune_mood", s.Name())))
-		t := viper.GetInt(fmt.Sprintf("%s_autotune_step", s.Name()))
-		u := viper.GetInt(fmt.Sprintf("%s_autotune_until", s.Name()))
+		km := fmt.Sprintf("%s_autotune_mood", s.Name())
+		kt := fmt.Sprintf("%s_autotune_step", s.Name())
+		ku := fmt.Sprintf("%s_autotune_until", s.Name())
+
+		if !viper.IsSet(km) || !viper.IsSet(kt) || !viper.IsSet(ku) {
+			return nil
+		}
+
+		m := Mood(viper.GetInt(km))
+		t := viper.GetInt(kt)
+		u := viper.GetInt(ku)
 
 		switch m {
 		case NOOP:
