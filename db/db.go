@@ -59,7 +59,17 @@ func postgresCS(host string) string {
 }
 
 func mysqlCS(host string) string {
-	return fmt.Sprintf(viper.GetString("db_dsn"), viper.GetString("db_password"), host)
+	port := "3306"
+	if viper.GetString("db_port") != "" {
+		port = viper.GetString("db_port")
+	}
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s",
+		viper.GetString("db_user"),
+		viper.GetString("db_password"),
+		host,
+		port,
+		viper.GetString("db_dbname"),
+	)
 }
 
 func connection(ctx context.Context, host string) (d *sqlx.DB, err error) {
