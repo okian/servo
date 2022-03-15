@@ -63,7 +63,7 @@ func mysqlCS(host string) string {
 	if viper.GetString("db_port") != "" {
 		port = viper.GetString("db_port")
 	}
-	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s",
+	return fmt.Sprintf("%s:%s@tcp(%s:%s)/%s?parseTime=true&charset=utf8",
 		viper.GetString("db_user"),
 		viper.GetString("db_password"),
 		host,
