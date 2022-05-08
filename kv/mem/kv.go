@@ -14,7 +14,7 @@ func New(ctx context.Context) *service {
 		data:      make(map[string]obj),
 		Collector: make(map[string]map[string]struct{}),
 	}
-	_ = s.Initialize(ctx)
+	go s.collector(ctx)
 	return s
 }
 

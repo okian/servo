@@ -13,8 +13,7 @@ type service struct {
 }
 
 func (k *service) Finalize() error {
-	k.data = make(map[string]obj)
-
+	return nil
 }
 
 func (k *service) Name() string {
@@ -23,7 +22,7 @@ func (k *service) Name() string {
 
 func (k *service) Initialize(ctx context.Context) error {
 	k.data = make(map[string]obj)
-	k.Collector = map[string]map[string]struct{}{}
+	k.Collector = make(map[string]map[string]struct{})
 	go k.collector(ctx)
 	kv.Register(k)
 	return nil

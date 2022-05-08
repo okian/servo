@@ -16,14 +16,14 @@ func TestBits(t *testing.T) {
 		ctx, cl := context.WithTimeout(context.Background(), time.Second*60)
 		defer cl()
 		kv := mem.New(ctx)
-		v, err := kv.Incr("a", 1, time.Second*2)
+		v, err := kv.Incr(ctx, "a", 1, time.Second*2)
 		So(err, ShouldBeNil)
 		So(v, ShouldEqual, 1)
-		v, err = kv.Incr("a", 1, time.Second*2)
+		v, err = kv.Incr(ctx, "a", 1, time.Second*2)
 		So(err, ShouldBeNil)
 		So(v, ShouldEqual, 2)
 		time.Sleep(time.Second * 6)
-		v, err = kv.Incr("a", 1, time.Second*2)
+		v, err = kv.Incr(ctx, "a", 1, time.Second*2)
 		So(err, ShouldBeNil)
 		So(v, ShouldEqual, 1)
 	})
@@ -42,7 +42,7 @@ func TestMSet(t *testing.T) {
 		ctx, cl := context.WithTimeout(context.Background(), time.Second*60)
 		defer cl()
 		kv := mem.New(ctx)
-		err := kv.MSet("john", Person{
+		err := kv.MSet(ctx, "john", Person{
 			Name:     "John",
 			LastName: "Doe",
 			Age:      45,
@@ -50,7 +50,7 @@ func TestMSet(t *testing.T) {
 		}, time.Second*2)
 		So(err, ShouldBeNil)
 		p := new(Person)
-		err = kv.MGet("john", p)
+		err = kv.MGet(ctx, "john", p)
 		So(err, ShouldBeNil)
 
 		So(p.Name, ShouldEqual, "John")
@@ -66,7 +66,7 @@ func BenchmarkMSet(b *testing.B) {
 	defer cl()
 	kv := mem.New(ctx)
 	for n := 0; n < b.N; n++ {
-		_ = kv.MSet(fmt.Sprintf("%d", n), Person{
+		_ = kv.MSet(ctx, fmt.Sprintf("%d", n), Person{
 			Name:     "John",
 			LastName: "Doe",
 			Age:      n,
@@ -81,7 +81,7 @@ func BenchmarkBits(b *testing.B) {
 	kv := mem.New(ctx)
 	var v int
 	for n := 0; n < b.N; n++ {
-		v, _ = kv.Incr("a", 1, time.Second*2)
+		v, _ = kv.Incr(ctx, "a", 1, time.Second*2)
 	}
 	fmt.Println(v)
 
