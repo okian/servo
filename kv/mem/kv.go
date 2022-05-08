@@ -179,7 +179,7 @@ func (k *service) Set(ctx context.Context, key string, val string, ttl time.Dura
 func (k *service) Get(ctx context.Context, key string, rcv *string) error {
 	k.RLock()
 	v, ok := k.data[key]
-	k.Unlock()
+	k.RUnlock()
 	if !ok {
 		return nil
 	}
