@@ -183,6 +183,9 @@ func Initialize(ctx context.Context) func() {
 		log(fmt.Sprintf("initializing services with order %d\n", i))
 		if e := run(ctx, Start, register[i]); e != nil {
 			log(fmt.Sprintf("service %q returned error: %s\n", i, e.Error()))
+			if strings.ToLower(os.Getenv("DEBUG")) == "true" {
+				time.Sleep(time.Second * 60)
+			}
 			finalize()
 			panic(e.Error())
 		}
