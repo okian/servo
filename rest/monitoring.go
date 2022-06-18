@@ -68,7 +68,7 @@ func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) (err error) {
 
 		reqSize := computeApproximateRequestSize(c.Request())
-		path := c.Request().URL.Path
+		path := c.Path()
 		method := c.Request().Method
 		start := time.Now()
 
