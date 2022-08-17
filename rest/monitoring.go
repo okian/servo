@@ -5,6 +5,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/spf13/viper"
+
 	"github.com/labstack/echo/v4"
 	prometheus2 "github.com/okian/servo/v2/monitoring/prometheus"
 
@@ -66,14 +68,18 @@ func (s *service) Statictis() {
 
 func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) (err error) {
-
 		reqSize := computeApproximateRequestSize(c.Request())
 		path := c.Path()
 		method := c.Request().Method
 		start := time.Now()
+		err = next(c)
 
-		if err = next(c); err != nil {
+		if err != nil {
 			c.Error(err)
+		}
+
+		if err == echo.ErrNotFound && !viper.GetBool(subsystem+".include_not_found") {
+			path = "not_registered"
 		}
 
 		code := strconv.Itoa(c.Response().Status)
@@ -84,7 +90,6 @@ func statictis(next echo.HandlerFunc) echo.HandlerFunc {
 		responseSize.WithLabelValues(path, code).Add(resSz)
 		requestSize.WithLabelValues(path, method).Add(float64(reqSize))
 		return
-
 	}
 }
 
