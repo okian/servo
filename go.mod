@@ -9,7 +9,7 @@ require (
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/hashicorp/go-multierror v1.1.1
 	github.com/jmoiron/sqlx v1.3.4
-	github.com/labstack/echo/v4 v4.7.1
+	github.com/labstack/echo/v4 v4.9.0
 	github.com/lib/pq v1.10.4
 	github.com/mediocregopher/radix/v3 v3.8.0
 	github.com/minio/minio-go/v7 v7.0.23
