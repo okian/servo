@@ -43,6 +43,68 @@ func TestRunNewAdapter(t *testing.T) {
 	}
 }
 
+func TestRunNewMockAdapterMoq(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := runNew("mock-adapter", []string{"moq", "StoreMock"}); err != nil {
+			t.Fatalf("runNew: %v", err)
+		}
+	})
+	if !strings.Contains(out, "func NewStoreMock() *StoreMock { return &StoreMock{} }") {
+		t.Errorf("moq mock-adapter scaffold missing the constructor, got:\n%s", out)
+	}
+}
+
+func TestRunNewMockAdapterMockery(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := runNew("mock-adapter", []string{"mockery", "Store"}); err != nil {
+			t.Fatalf("runNew: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"type StoreMock struct{ *Store }",
+		"func NewStoreMock() *StoreMock { return &StoreMock{Store: &Store{}} }",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("mockery mock-adapter scaffold missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunNewMockAdapterGomock(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := runNew("mock-adapter", []string{"gomock", "MockStore"}); err != nil {
+			t.Fatalf("runNew: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"type MockStoreForServo struct {",
+		"*MockStore",
+		"Finish func()",
+		"func NewMockStoreForServo() *MockStoreForServo {",
+		"gomock.NewController(servotest.PanicReporter{})",
+		"MockStore: NewMockStore(ctrl), Finish: ctrl.Finish",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("gomock mock-adapter scaffold missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestRunNewMockAdapterUnknownTool(t *testing.T) {
+	err := runNew("mock-adapter", []string{"bogus", "Store"})
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("got err=%v, want an 'unknown tool' error", err)
+	}
+}
+
+func TestRunNewMockAdapterWrongArgCount(t *testing.T) {
+	for _, args := range [][]string{nil, {"moq"}, {"moq", "Store", "extra"}} {
+		if err := runNew("mock-adapter", args); err == nil || !strings.Contains(err.Error(), "usage: servo new mock-adapter") {
+			t.Errorf("runNew(mock-adapter, %v): got %v, want a usage error", args, err)
+		}
+	}
+}
+
 func TestRunNewUnknownKind(t *testing.T) {
 	err := runNew("bogus", []string{"x"})
 	if err == nil || !strings.Contains(err.Error(), "unknown kind") {

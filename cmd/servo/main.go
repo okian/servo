@@ -109,7 +109,7 @@ func run(args []string) error {
 
 	case "new":
 		if len(args) < 1 {
-			return fmt.Errorf("usage: servo new component <name> | servo new adapter <pkg>")
+			return fmt.Errorf("usage: servo new component <name> | servo new adapter <pkg> | servo new mock-adapter <moq|mockery|gomock> <GeneratedTypeName>")
 		}
 		return runNew(args[0], args[1:])
 

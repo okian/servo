@@ -28,10 +28,17 @@ jobs:
       - name: Test
         run: go test ./...
 
-      # examples/basic is a separate module (it replaces github.com/okian/servo/v2
-      # with this checkout) so it's built and tested independently.
+      # examples/basic and examples/mocking are separate modules (each
+      # replaces github.com/okian/servo/v2 with this checkout) so they're
+      # built and tested independently.
       - name: Build and test examples/basic
         working-directory: examples/basic
+        run: |
+          go build ./...
+          go test ./...
+
+      - name: Build and test examples/mocking
+        working-directory: examples/mocking
         run: |
           go build ./...
           go test ./...
@@ -41,5 +48,7 @@ jobs:
       # what `servo generate` would produce, so drift between a constructor
       # signature change and a re-run of `servo generate` fails the build
       # instead of shipping a stale generated file.
-      - name: servo check (examples/basic)
-        run: go run ./cmd/servo check --dir examples/basic
+      - name: servo check (examples/basic, examples/mocking)
+        run: |
+          go run ./cmd/servo check --dir examples/basic
+          go run ./cmd/servo check --dir examples/mocking

@@ -113,6 +113,9 @@ func TestRunNewRequiresAtLeastOneArg(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "usage: servo new") {
 		t.Fatalf("got err=%v, want a usage error", err)
 	}
+	if !strings.Contains(err.Error(), "mock-adapter") {
+		t.Errorf("got err=%v, want the usage string to mention mock-adapter too", err)
+	}
 }
 
 func TestRunUnknownCommand(t *testing.T) {

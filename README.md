@@ -260,6 +260,7 @@ same module, used by the [Mocking](#mocking) section below)
 | `servo doctor [--dir]` | Diagnose setup problems (missing build tag, stale/absent generated file) before `go generate` ever runs. |
 | `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v2 skeleton plus a report flagging duplicate order values. |
 | `servo new component <Name>` / `servo new adapter <pkg>` | Scaffold a component or third-party wrapper. Never imports `servo`. |
+| `servo new mock-adapter <moq\|mockery\|gomock> <GeneratedTypeName>` | Scaffold the adapter file a generated mock needs to become a valid provider (see [Mocking](#mocking)). |
 
 `--dir` (default `.`) is where the module scan starts. `generate` and `check` process **every**
 injector they find within it — a monorepo with `cmd/api`, `cmd/worker`, `cmd/migrator` each wiring
@@ -309,11 +310,17 @@ composite literal written in a test file. Hand-written fakes already look like t
 their constructors are built to take a `*testing.T`/`*gomock.Controller` for automatic expectation
 verification — and that's inherently a per-test-function value, not something the graph has. The
 fix in every case below is a few lines in a **separate, hand-written file** (never edit a
-`// Code generated ... DO NOT EDIT` file — regenerating the mock would erase it). Every pattern
-below was written by actually running the tool and wiring the result through a real generated
-`TestApp`, not assumed from documentation.
+`// Code generated ... DO NOT EDIT` file — regenerating the mock would erase it).
+
+[`examples/mocking`](./examples/mocking) wires all three integrations below as real, permanent,
+`go test`-checked apps (a shared `store.Store`/`api.Server` pair, one small binary per tool, each
+with the actual tool run for real and the generated mock committed) — not just prose. `servo new
+mock-adapter <moq|mockery|gomock> <GeneratedTypeName>` scaffolds the adapter file for any of the
+three directly, instead of retyping the pattern below by hand.
 
 ### `moq`
+
+Real, runnable version: [`examples/mocking/moq`](./examples/mocking/moq).
 
 `moq` generates a plain struct with function fields and no constructor at all:
 
@@ -343,6 +350,8 @@ app.storeMock.GetCalls()              // [{Key: "user:42"}]
 ```
 
 ### `testify` + `mockery`
+
+Real, runnable version: [`examples/mocking/mockery`](./examples/mocking/mockery).
 
 Mockery's `Store` type is a plain struct (`mock.Mock` zero-values fine), but its generated
 constructor requires a `*testing.T`-shaped value to auto-register `AssertExpectations` on cleanup:
@@ -386,25 +395,23 @@ no panic, no crash, just a clean, isolated test failure.
 
 ### `go.uber.org/mock` (gomock)
 
+Real, runnable version: [`examples/mocking/gomock`](./examples/mocking/gomock).
+
 Same wrapping requirement as mockery, for the same reason (`NewMockStore(ctrl)` is a valid,
 colliding provider shape). The harder part is `*gomock.Controller` itself — it isn't a zero-value
 struct, and its `TestReporter` (just `Errorf`/`Fatalf`, nothing `*testing.T`-specific) has to come
-from somewhere:
+from somewhere: `servotest.PanicReporter` supplies one, satisfying gomock's `TestReporter`
+structurally without adding a gomock dependency to `servotest` itself.
 
 ```go
 // mockgenstore/adapter.go
-type panicReporter struct{}
-
-func (panicReporter) Errorf(format string, args ...any) { panic(fmt.Sprintf(format, args...)) }
-func (panicReporter) Fatalf(format string, args ...any) { panic(fmt.Sprintf(format, args...)) }
-
 type MockStoreForServo struct {
 	*MockStore
 	Finish func()
 }
 
 func NewMockStoreForServo() *MockStoreForServo {
-	ctrl := gomock.NewController(panicReporter{})
+	ctrl := gomock.NewController(servotest.PanicReporter{})
 	return &MockStoreForServo{MockStore: NewMockStore(ctrl), Finish: ctrl.Finish}
 }
 ```
@@ -422,7 +429,7 @@ got := app.server.Lookup("user:42") // "mocked-value"
 `servo.RunStop`'s own goroutine during `Shutdown`, and an unmet expectation there panics in a
 goroutine nothing can recover, crashing the whole test binary with no indication of which test was
 running. Called directly in the test's own goroutine instead, an unmet expectation still panics
-(`panicReporter` has no `t.Fatalf` to soften it into) — Go's test runner reports which test failed
+(`PanicReporter` has no `t.Fatalf` to soften it into) — Go's test runner reports which test failed
 before it re-panics, but the process still exits, unlike testify's clean, isolated failure. For
 strict expectation-count verification where that matters, construct and drive the mock directly in
 an isolated unit test (`api.New(mockedStore)`, with a real `gomock.NewController(t)`) instead of
@@ -440,8 +447,9 @@ internal/resolve/  roots → closure → order, levels, diagnostics
 internal/emit/     source emission, import manager, name allocator
 internal/render/   text, JSON, DOT, Mermaid graph renderers
 servo/             markers + ~200-line runtime
-servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout
+servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout, PanicReporter
 examples/basic/    a complete, runnable example (separate module)
+examples/mocking/  moq/mockery/gomock integrations, one binary each (separate module)
 ```
 
 Core (`internal/*`, `cmd/servo`) depends on nothing beyond `golang.org/x/tools`; `servotest` alone
