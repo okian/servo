@@ -1,0 +1,316 @@
+package emit
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"golang.org/x/tools/go/packages"
+
+	"github.com/okian/servo/v2/internal/graph"
+	"github.com/okian/servo/v2/internal/load"
+	"github.com/okian/servo/v2/internal/resolve"
+)
+
+// pkgImporter and loadServoPackage let a fixture's types.Config.Check share
+// object identity (for "context.Context" etc.) with the real servo package
+// loaded via go/packages — without this, types.Implements silently fails
+// on every capability with a context.Context parameter. See
+// internal/graph/capabilities_test.go, which hit and documented this first.
+type pkgImporter struct{ byPath map[string]*types.Package }
+
+func newPkgImporter(roots ...*packages.Package) *pkgImporter {
+	idx := &pkgImporter{byPath: map[string]*types.Package{}}
+	var add func(p *packages.Package)
+	add = func(p *packages.Package) {
+		if _, ok := idx.byPath[p.PkgPath]; ok {
+			return
+		}
+		idx.byPath[p.PkgPath] = p.Types
+		for _, dep := range p.Imports {
+			add(dep)
+		}
+	}
+	for _, p := range roots {
+		add(p)
+	}
+	return idx
+}
+
+func (i *pkgImporter) Import(path string) (*types.Package, error) {
+	if path == "unsafe" {
+		return types.Unsafe, nil
+	}
+	if pkg, ok := i.byPath[path]; ok {
+		return pkg, nil
+	}
+	return nil, &importNotFoundError{path}
+}
+
+type importNotFoundError struct{ path string }
+
+func (e *importNotFoundError) Error() string { return "pkgImporter: package not found: " + e.path }
+
+func loadServoPackage(t *testing.T) *packages.Package {
+	t.Helper()
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, graph.ServoPackagePath)
+	if err != nil {
+		t.Fatalf("load servo package: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Types == nil {
+		t.Fatalf("expected exactly one loaded servo package, got %d", len(pkgs))
+	}
+	return pkgs[0]
+}
+
+const fullAppSrc = `
+package app
+
+import "context"
+
+type Logger struct{}
+func NewLogger() *Logger { return &Logger{} }
+func (l *Logger) Stop(ctx context.Context) error { return nil }
+
+type Store interface{ Get(key string) string }
+
+type DB struct{}
+func (d *DB) Get(key string) string { return "" }
+func (d *DB) Init(ctx context.Context) error { return nil }
+func (d *DB) Stop(ctx context.Context) error { return nil }
+func (d *DB) Health(ctx context.Context) error { return nil }
+func NewDB(l *Logger) (*DB, func(), error) { return &DB{}, func() {}, nil }
+
+type Cache struct{}
+func (c *Cache) Init(ctx context.Context) error { return nil }
+func NewCache(l *Logger) *Cache { return &Cache{} }
+
+type Server struct{}
+func (s *Server) Init(ctx context.Context) error { return nil }
+func (s *Server) Run(ctx context.Context) error { return nil }
+func (s *Server) Drain(ctx context.Context) error { return nil }
+func (s *Server) Stop(ctx context.Context) error { return nil }
+func (s *Server) Ready(ctx context.Context) error { return nil }
+func NewServer(st Store, c *Cache) *Server { return &Server{} }
+
+type Worker struct{}
+func (w *Worker) Run(ctx context.Context) error { return nil }
+func NewWorker(l *Logger) *Worker { return &Worker{} }
+`
+
+func checkFullAppFixture(t *testing.T, servoPkg *packages.Package) (*packages.Package, []*graph.Provider) {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", fullAppSrc, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/app", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/app", Types: pkg, Fset: fset}
+	accepted, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/app")
+	return pkgsPkg, accepted
+}
+
+func buildFullAppResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
+	t.Helper()
+	servoPkg := loadServoPackage(t)
+	appPkg, candidates := checkFullAppFixture(t, servoPkg)
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	lookup := func(name string) types.Type { return appPkg.Types.Scope().Lookup(name).Type() }
+	ptr := func(name string) types.Type { return types.NewPointer(lookup(name)) }
+
+	spec := &load.Spec{
+		InjectorPkg: appPkg,
+		Roots: []load.RootDecl{
+			{Key: graph.NewKey(ptr("Server"), ""), Type: ptr("Server"), Pos: token.Position{Filename: "spec.go", Line: 9}},
+			{Key: graph.NewKey(ptr("Worker"), ""), Type: ptr("Worker"), Pos: token.Position{Filename: "spec.go", Line: 10}},
+		},
+		Binds: []load.BindDecl{
+			{Iface: graph.NewKey(lookup("Store"), ""), IfaceType: lookup("Store"), Concrete: graph.NewKey(ptr("DB"), ""), ConcreteType: ptr("DB")},
+		},
+	}
+
+	resolved, diags := resolve.Resolve(resolve.Input{
+		Spec:       spec,
+		Candidates: candidates,
+		Caps:       caps,
+		Scope:      map[string]bool{"example.com/app": true},
+	})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	return resolved, spec
+}
+
+func TestEmitFullApp(t *testing.T) {
+	resolved, spec := buildFullAppResolved(t)
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+
+	wantSubstrings := []string{
+		"//go:build !servoinject",
+		"func New(ctx context.Context) (*App, error)",
+		"func (a *App) Run(ctx context.Context) error",
+		"func (a *App) Shutdown(ctx context.Context) servo.Report",
+		"func (a *App) Health(ctx context.Context) servo.Report",
+		"func (a *App) Ready(ctx context.Context) servo.Report",
+		"func (a *App) Graph() servo.Graph",
+		"func (a *App) Report() servo.StartupReport",
+		"db, dbCleanup, err := NewDB(logger)",                     // construction with cleanup + error
+		"_ = a.stopLogger(ctx)",                                   // rollback stops the one prior stoppable node
+		"errgroup.WithContext(ctx)",                               // both the concurrent Init level and the 2-runner Run need this
+		"a.db.Health(ctx)",                                        // Health only iterates Healther nodes
+		"a.server.Ready(ctx)",                                     // Ready only iterates Readier nodes
+		"signal.Notify(forceExit, os.Interrupt, syscall.SIGTERM)", // double-signal force-exit watcher
+		"servo.RunStop(ctx, servo.DefaultStopBudget, \"*example.com/app.Server\", a.server.Drain)",
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated source missing %q\n---\n%s", want, src)
+		}
+	}
+
+	// Worker has no Init and is not part of any errgroup Init level, and
+	// Cache has no stop-worthy capability, so it must not get a stop method.
+	if strings.Contains(src, "a.worker.Init") {
+		t.Error("Worker has no Initializer capability and must not be Init'd")
+	}
+	if strings.Contains(src, "func (a *App) stopCache(") {
+		t.Error("Cache has no Drain/Flush/Finalizer/cleanup and must not get a stop method")
+	}
+}
+
+func TestEmitDeterministic(t *testing.T) {
+	resolved, spec := buildFullAppResolved(t)
+	first, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit (1st): %v", err)
+	}
+	second, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit (2nd): %v", err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("Emit produced different output across two runs on identical input")
+	}
+}
+
+func TestEmitTestModeUsesTestAppType(t *testing.T) {
+	resolved, spec := buildFullAppResolved(t)
+	out, err := Emit(resolved, spec, true)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+	// TestApp, not App: an override can resolve an entirely different
+	// concrete type for the same interface key, so the two variants can't
+	// safely share a struct (different fields, different capabilities).
+	if !strings.Contains(src, "func NewTestApp(ctx context.Context) (*TestApp, error)") {
+		t.Errorf("test-mode output missing the NewTestApp constructor returning *TestApp:\n%s", src)
+	}
+	if !strings.Contains(src, "type TestApp struct") {
+		t.Errorf("test-mode output missing `type TestApp struct`:\n%s", src)
+	}
+	if strings.Contains(src, "*App)") || strings.Contains(src, "*App{") {
+		t.Errorf("test-mode output must not reference the production App type:\n%s", src)
+	}
+}
+
+// TestEmitGolden compares against a checked-in file, refreshed by running
+// with UPDATE_GOLDEN=1. No separate generic golden-harness package exists
+// since emit is its only consumer.
+func TestEmitGolden(t *testing.T) {
+	resolved, spec := buildFullAppResolved(t)
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+
+	goldenPath := filepath.Join("testdata", "golden", "fullapp.go.golden")
+	if os.Getenv("UPDATE_GOLDEN") == "1" {
+		if err := os.MkdirAll(filepath.Dir(goldenPath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(goldenPath, out, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Skip("golden file updated")
+	}
+
+	want, err := os.ReadFile(goldenPath)
+	if err != nil {
+		t.Fatalf("read golden (run with UPDATE_GOLDEN=1 to create it): %v", err)
+	}
+	if string(want) != string(out) {
+		t.Errorf("output does not match golden file %s (run with UPDATE_GOLDEN=1 to review+accept changes)\n--- got ---\n%s", goldenPath, out)
+	}
+}
+
+// TestEmitTrivialGraphHasNoUnusedImports guards the degenerate case: a
+// single leaf node with no capabilities and no error path at all, where
+// "sync"/"time"/"errors"/"errgroup" must never be registered — Go treats
+// an unused import as a compile error, and this is the shape most likely
+// to trip that if any import registration were unconditional instead of
+// tied to actual use.
+func TestEmitTrivialGraphHasNoUnusedImports(t *testing.T) {
+	const src = `
+package app
+type Leaf struct{}
+func NewLeaf() *Leaf { return &Leaf{} }
+`
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/trivial", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/trivial", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/trivial")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	leafPtr := types.NewPointer(pkg.Scope().Lookup("Leaf").Type())
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(leafPtr, ""), Type: leafPtr, Pos: token.Position{Filename: "spec.go", Line: 5}}},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/trivial": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	for _, unused := range []string{`"sync"`, `"time"`, `"errors"`, `"golang.org/x/sync/errgroup"`} {
+		if strings.Contains(string(out), unused) {
+			t.Errorf("trivial graph must not import %s (nothing uses it, and Go treats unused imports as compile errors):\n%s", unused, out)
+		}
+	}
+}
