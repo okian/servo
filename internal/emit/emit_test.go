@@ -315,6 +315,66 @@ func NewLeaf() *Leaf { return &Leaf{} }
 	}
 }
 
+// TestEmitUnexportedConstructorInInjectorPackage covers a root provided by
+// an unexported constructor living in the injector's own package —
+// internal/graph/scan_test.go only confirms such a function is scanned as
+// a candidate; this exercises it end to end through Resolve and Emit,
+// where the generated call site must reference it bare (unqualified),
+// since the generated file lives in that same package and an unexported
+// identifier can't be package-qualified from outside it anyway.
+func TestEmitUnexportedConstructorInInjectorPackage(t *testing.T) {
+	const src = `
+package app
+type Leaf struct{}
+func newLeaf() *Leaf { return &Leaf{} }
+`
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/unexported", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/unexported", Types: pkg, Fset: fset}
+	// injectorPkgPath == this package, so newLeaf is a legal candidate.
+	candidates, rejected := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/unexported")
+	for _, r := range rejected {
+		if r.Name == "app.newLeaf" {
+			t.Fatalf("newLeaf must be accepted, not rejected, when scanned as its own injector package: %v", r)
+		}
+	}
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	leafPtr := types.NewPointer(pkg.Scope().Lookup("Leaf").Type())
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(leafPtr, ""), Type: leafPtr, Pos: token.Position{Filename: "spec.go", Line: 5}}},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/unexported": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src2 := string(out)
+	if !strings.Contains(src2, "leaf := newLeaf()") {
+		t.Errorf("expected a bare, unqualified call to newLeaf, got:\n%s", src2)
+	}
+	if strings.Contains(src2, "app.newLeaf") {
+		t.Errorf("an unexported identifier can never be package-qualified, got:\n%s", src2)
+	}
+}
+
 // TestEmitZeroRootSpec covers servo.Build() with no Root() calls at all —
 // an empty root set. Resolve must not panic on an empty Spec.Roots loop,
 // and Emit must still produce a valid, if useless, App with a working but

@@ -83,6 +83,16 @@ type Plain struct{}
 
 type OnlyRunner struct{}
 func (OnlyRunner) Run(ctx context.Context) error { return nil }
+
+// FullWrapper embeds *Full by pointer: Go promotes an embedded pointer's
+// methods to the outer type's own value method set, so FullWrapper (not
+// *FullWrapper) should structurally satisfy every capability Full does,
+// without declaring any method itself.
+type FullWrapper struct{ *Full }
+
+// RunnerWrapper embeds OnlyRunner by value, whose Run has a value
+// receiver: promotion should work the same way for a value embed.
+type RunnerWrapper struct{ OnlyRunner }
 `
 
 func TestCapabilitiesDetect(t *testing.T) {
@@ -127,6 +137,46 @@ func TestCapabilitiesDetect(t *testing.T) {
 	got := caps.Detect(onlyRunnerObj)
 	if len(got) != 1 || got[0] != "Runner" {
 		t.Errorf("OnlyRunner: got %v, want [Runner]", got)
+	}
+}
+
+// TestCapabilitiesDetectThroughEmbedding covers a struct that never
+// declares a capability method itself, only inherits one via an embedded
+// field — the "wrap in a distinct type" pattern the README recommends for
+// disambiguating multiple instances of the same underlying type relies on
+// promoted methods still being detected structurally.
+func TestCapabilitiesDetectThroughEmbedding(t *testing.T) {
+	servoPkg := loadServoPackage(t)
+	caps, err := LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "fixture.go", capsFixtureSrc, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	fixturePkg, err := conf.Check("example.com/fixture", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+
+	// FullWrapper embeds *Full: promotion should carry all 7 capabilities
+	// through to FullWrapper's own (bare, non-pointer) method set.
+	fullWrapper := fixturePkg.Scope().Lookup("FullWrapper").Type()
+	got := caps.Detect(fullWrapper)
+	if len(got) != len(AllCapabilities) {
+		t.Errorf("FullWrapper: got capabilities %v, want all of %v", got, AllCapabilities)
+	}
+
+	// RunnerWrapper embeds OnlyRunner by value: promotion should carry
+	// just Runner through, the same as OnlyRunner itself.
+	runnerWrapper := fixturePkg.Scope().Lookup("RunnerWrapper").Type()
+	got = caps.Detect(runnerWrapper)
+	if len(got) != 1 || got[0] != "Runner" {
+		t.Errorf("RunnerWrapper: got %v, want [Runner]", got)
 	}
 }
 

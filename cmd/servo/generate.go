@@ -51,7 +51,7 @@ func generateOne(p *pipeline) error {
 		return err
 	}
 	outPath := filepath.Join(filepath.Dir(p.spec.Pos.Filename), generatedFileName)
-	if err := os.WriteFile(outPath, out, 0o644); err != nil {
+	if err := writeFileAtomic(outPath, out, 0o644); err != nil {
 		return err
 	}
 
@@ -67,5 +67,33 @@ func generateOne(p *pipeline) error {
 		return err
 	}
 	testOutPath := filepath.Join(filepath.Dir(p.spec.Pos.Filename), generatedTestFileName)
-	return os.WriteFile(testOutPath, testOut, 0o644)
+	return writeFileAtomic(testOutPath, testOut, 0o644)
+}
+
+// writeFileAtomic writes data to path by writing a temp file in the same
+// directory and renaming it into place, so a reader (an editor, a build
+// racing a concurrent `servo generate`) never observes a partially-written
+// file, and a process killed mid-write leaves the previous, complete
+// version untouched rather than a truncated one. The temp file must live
+// in the same directory as path: os.Rename is only atomic within a single
+// filesystem, and a directory is the natural boundary for that.
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once the rename below succeeds; cleans up on any earlier error
+
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, perm); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
