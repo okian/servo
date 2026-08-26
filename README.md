@@ -274,6 +274,12 @@ Every command accepts `--json` for machine consumption. `cmd/servo-vet` is a sta
 `go/analysis` analyzer flagging marker calls in files missing the `servoinject` build tag, so a
 misconfigured spec file is caught in the editor, not at runtime.
 
+**CI and pre-commit**: [`.github/workflows/go.yml`](./.github/workflows/go.yml) is a reference
+workflow — build, vet, test, then `servo check` against every injector, so a constructor signature
+change without a matching re-run of `servo generate` fails CI instead of shipping a stale generated
+file. [`githooks/pre-commit`](./githooks/pre-commit) runs the same check locally; enable it in a
+given clone with `git config core.hooksPath githooks` (it is not on by default).
+
 ## Testing (`servotest`)
 
 ```go

@@ -1,0 +1,20 @@
+#!/bin/sh
+# Reference pre-commit hook: fails the commit if any injector's committed
+# generated file doesn't match what `servo generate` would produce right
+# now, catching drift (a constructor signature changed, generate wasn't
+# re-run) before it lands instead of in review or CI.
+#
+# Install by pointing git at this directory instead of copying the file:
+#   git config core.hooksPath githooks
+# (this hook then applies to every clone that runs that command; it is
+# not enabled automatically just by being present in the repository).
+
+set -e
+
+if ! command -v go >/dev/null 2>&1; then
+	echo "pre-commit: go not found on PATH, skipping servo check" >&2
+	exit 0
+fi
+
+echo "pre-commit: servo check"
+go run github.com/okian/servo/v2/cmd/servo check

@@ -7,31 +7,39 @@ on:
     branches: [ master ]
 
 jobs:
-
   build:
-    name: Build
+    name: Build, vet, and test
     runs-on: ubuntu-latest
     steps:
+      - name: Check out code
+        uses: actions/checkout@v4
 
-    - name: Set up Go 1.x
-      uses: actions/setup-go@v2
-      with:
-        go-version: ^1.13
-      id: go
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
 
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v2
+      - name: Build
+        run: go build ./...
 
-    - name: Get dependencies
-      run: |
-        go get -v -t -d ./...
-        if [ -f Gopkg.toml ]; then
-            curl https://raw.githubusercontent.com/golang/dep/master/install.sh | sh
-            dep ensure
-        fi
+      - name: Vet
+        run: go vet ./...
 
-    - name: Build
-      run: go build -v .
+      - name: Test
+        run: go test ./...
 
-    - name: Test
-      run: go test -v .
+      # examples/basic is a separate module (it replaces github.com/okian/servo/v2
+      # with this checkout) so it's built and tested independently.
+      - name: Build and test examples/basic
+        working-directory: examples/basic
+        run: |
+          go build ./...
+          go test ./...
+
+      # The reference check every consumer of servo should run in their own
+      # CI: verify every injector's committed servo_gen.go still matches
+      # what `servo generate` would produce, so drift between a constructor
+      # signature change and a re-run of `servo generate` fails the build
+      # instead of shipping a stale generated file.
+      - name: servo check (examples/basic)
+        run: go run ./cmd/servo check --dir examples/basic
