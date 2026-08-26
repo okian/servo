@@ -9,10 +9,13 @@ import (
 	"github.com/okian/servo/v2/internal/load"
 )
 
-// runDoctor diagnoses setup problems before `go generate` is ever run: can
-// the spec be found at all (which, via FindSpec, already enforces the
-// build-tag requirement), does the generated file exist, is it fresh, and
-// — best-effort, never fatal — is it tracked by VCS.
+// runDoctor diagnoses setup problems before `go generate` is ever run,
+// across every injector found under dir — the same scope generate/check
+// process, not just one: can the spec(s) be found at all (which, via
+// FindSpecs, already enforces the build-tag requirement), is the module
+// otherwise free of build errors outside the injector(s), does each
+// generated file exist, is it fresh, and — best-effort, never fatal — is
+// it tracked by VCS.
 func runDoctor(dir string) error {
 	fmt.Println("servo doctor:")
 	problems := false
@@ -25,24 +28,42 @@ func runDoctor(dir string) error {
 		fmt.Printf("  [%s] %s\n", status, fmt.Sprintf(format, args...))
 	}
 
-	loaded, err := load.Load(load.Config{Dir: dir})
+	loaded, caps, err := loadModule(dir)
 	if err != nil {
 		report(false, "load module: %v", err)
 		return fmt.Errorf("servo doctor: problems found")
 	}
-	spec, err := load.FindSpec(loaded)
+	specs, err := load.FindSpecs(loaded)
 	if err != nil {
-		report(false, "find spec file: %v", err)
+		report(false, "find spec file(s): %v", err)
 		return fmt.Errorf("servo doctor: problems found")
 	}
-	report(true, "spec file found at %s, correctly gated by the servoinject build tag", spec.Pos)
 
-	outPath := filepath.Join(filepath.Dir(spec.Pos.Filename), generatedFileName)
-	if _, err := os.Stat(outPath); err != nil {
-		report(false, "generated file missing: %s (run `servo generate`)", outPath)
+	injectorPaths := make([]string, len(specs))
+	for i, s := range specs {
+		injectorPaths[i] = s.InjectorPkg.PkgPath
+	}
+	if err := loaded.NonInjectorErrors(injectorPaths...); err != nil {
+		report(false, "module has build errors outside the injector(s): %v", err)
 	} else {
+		report(true, "no build errors outside the injector(s)")
+	}
+
+	multi := len(specs) > 1
+	for _, spec := range specs {
+		if multi {
+			fmt.Printf("  -- %s --\n", spec.InjectorPkg.PkgPath)
+		}
+		report(true, "spec file found at %s, correctly gated by the servoinject build tag", spec.Pos)
+
+		outPath := filepath.Join(filepath.Dir(spec.Pos.Filename), generatedFileName)
+		if _, statErr := os.Stat(outPath); statErr != nil {
+			report(false, "generated file missing: %s (run `servo generate`)", outPath)
+			continue
+		}
 		report(true, "generated file present: %s", outPath)
-		if err := runCheck(dir); err != nil {
+
+		if err := checkOne(pipelineFor(loaded, caps, spec)); err != nil {
 			report(false, "generated file is stale (run `servo generate`): %v", err)
 		} else {
 			report(true, "generated file matches a fresh generation")
