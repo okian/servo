@@ -2,6 +2,7 @@ package emit
 
 import (
 	"fmt"
+	"go/token"
 	"go/types"
 	"strings"
 	"unicode"
@@ -21,12 +22,31 @@ func NewNameAllocator() *NameAllocator {
 // Allocate returns a unique identifier for t, based on its own type name.
 func (a *NameAllocator) Allocate(t types.Type) string {
 	base := baseName(t)
-	n := a.used[base]
+	n, seen := a.used[base]
+	if !seen && shouldAvoidBare(base) {
+		// A bare keyword ("range", "type", "select", ...) can never be
+		// emitted as an identifier, and a bare predeclared name ("new",
+		// "len", "error", ...) legally shadows the builtin for the rest of
+		// its scope, which is exactly the kind of thing worth never doing
+		// in generated code even though it would compile. Either way,
+		// seed the count as if one instance already existed, so the first
+		// allocation goes through the same numeric-suffix path a real
+		// collision would ("range" -> "range2", "new" -> "new2").
+		n = 1
+	}
 	a.used[base] = n + 1
 	if n == 0 {
 		return base
 	}
 	return fmt.Sprintf("%s%d", base, n+1)
+}
+
+// shouldAvoidBare reports whether name is a Go keyword or a predeclared
+// identifier (a builtin type, function, or constant such as "int", "len",
+// "new", "true", "nil") — legal to shadow as a local variable, but never
+// worth doing where it can be trivially avoided.
+func shouldAvoidBare(name string) bool {
+	return token.IsKeyword(name) || types.Universe.Lookup(name) != nil
 }
 
 func baseName(t types.Type) string {

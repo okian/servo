@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,6 +59,60 @@ func TestServerLookupUsesMockStore(t *testing.T) {
 
 	if r := app.Shutdown(context.Background()); !r.Clean() {
 		t.Fatalf("Shutdown not clean: %v", r)
+	}
+}
+
+// TestShutdownIsSafeToCallTwice covers a second Shutdown call on an
+// already-shut-down App. Each node's own stop method is idempotent
+// (sync.Once), but the outer Shutdown body has no guard of its own —
+// every call registers its own signal watcher goroutine — so this checks
+// the second call is still clean and, via NoLeaks, that the first call's
+// watcher goroutine actually exited rather than piling up.
+func TestShutdownIsSafeToCallTwice(t *testing.T) {
+	defer servotest.NoLeaks(t)
+
+	app, err := NewTestApp(context.Background())
+	if err != nil {
+		t.Fatalf("NewTestApp: %v", err)
+	}
+
+	first := app.Shutdown(context.Background())
+	if !first.Clean() {
+		t.Fatalf("first Shutdown not clean: %v", first)
+	}
+	second := app.Shutdown(context.Background())
+	if !second.Clean() {
+		t.Fatalf("second Shutdown not clean: %v", second)
+	}
+}
+
+// TestShutdownIsSafeToCallConcurrently covers two goroutines calling
+// Shutdown on the same App at once. sync.Once guarantees each node's stop
+// logic runs exactly once and that every caller observes the same result
+// only after it completes, so both concurrent calls must report clean.
+func TestShutdownIsSafeToCallConcurrently(t *testing.T) {
+	defer servotest.NoLeaks(t)
+
+	app, err := NewTestApp(context.Background())
+	if err != nil {
+		t.Fatalf("NewTestApp: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	reports := make([]servo.Report, 2)
+	for i := range reports {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			reports[i] = app.Shutdown(context.Background())
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range reports {
+		if !r.Clean() {
+			t.Errorf("concurrent Shutdown[%d] not clean: %v", i, r)
+		}
 	}
 }
 

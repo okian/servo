@@ -36,6 +36,14 @@ type Logger struct{}
 type Store interface{ Get(key string) string }
 type IntAlias = int
 
+type MyError struct{}
+func (e *MyError) Error() string { return "boom" }
+
+type MyErrIface interface {
+	error
+	Code() int
+}
+
 func NewDB() *DB { return nil }
 func NewPool() (*Pool, error) { return nil, nil }
 func NewCache() (*Cache, func()) { return nil, nil }
@@ -48,10 +56,18 @@ func NewAny() any { return nil }
 func NewBadShape() (int, int) { return 0, 0 }
 func NewGeneric[T any]() *Cache { return nil }
 func NewBadPtr() *int { return nil }
+func NewDoublePtr() **DB { return nil }
 func NewSlice() []int { return nil }
 func NewArray() [3]int { return [3]int{} }
 func NewMap() map[string]int { return nil }
 func NewChan() chan int { return nil }
+func NewWithNamedError() (*DB, *MyError) { return nil, nil }
+func NewWithCleanupAndNamedError() (*DB, func(), *MyError) { return nil, nil, nil }
+func NewWithErrorIfaceResult() (*DB, MyErrIface) { return nil, nil }
+func NewWithPointerToErrorIface() (*DB, *MyErrIface) { return nil, nil }
+
+type Option func(*DB)
+func NewVariadic(opts ...Option) *DB { return nil }
 
 func newHidden() *DB { return nil }
 
@@ -133,14 +149,20 @@ func TestScanCandidatesRejections(t *testing.T) {
 		{"store.NewAny", "result type is any (empty interface)"},
 		{"store.NewBadShape", "does not match a supported result shape"},
 		{"store.NewGeneric", "generic — unsupported in v1"},
+		{"store.NewVariadic", "variadic parameter — unsupported"},
 		{"store.newHidden", "unexported, outside injector package"},
 		{"store.(*Pool).Session", "method, not a function"},
-		{"store.NewBadPtr", "result type is a pointer to an unnamed type"},
+		{"store.NewBadPtr", "result type is a pointer to an unnamed type (*int)"},
+		{"store.NewDoublePtr", "result type is a pointer to an unnamed type (**example.com/store.DB)"},
 		{"store.NewSlice", "result type is a slice"},
 		{"store.NewArray", "result type is an array"},
 		{"store.NewMap", "result type is a map"},
 		{"store.NewChan", "result type is not a named type, pointer-to-named, or interface"},
 		{"store.Cache.Warm", "method, not a function"},
+		{"store.NewWithNamedError", "second result is *example.com/store.MyError, which implements error but is not the error interface itself — return error, not a type that merely satisfies it"},
+		{"store.NewWithCleanupAndNamedError", "third result is *example.com/store.MyError, which implements error but is not the error interface itself — return error, not a type that merely satisfies it"},
+		{"store.NewWithErrorIfaceResult", "second result is example.com/store.MyErrIface, which implements error but is not the error interface itself — return error, not a type that merely satisfies it"},
+		{"store.NewWithPointerToErrorIface", "does not match a supported result shape"},
 	}
 	for _, c := range cases {
 		r := findRejected(t, rejected, c.name)

@@ -39,6 +39,9 @@ func NewReplica() *Replica { return &Replica{} }
 type Server struct{}
 func NewServer(db DBIface, l *Logger) *Server { return &Server{} }
 
+type RootTwo struct{}
+func NewRootTwo(l *Logger) *RootTwo { return &RootTwo{} }
+
 type Missing struct{}
 
 type Server2 struct{}
@@ -48,6 +51,13 @@ type A struct{}
 type B struct{}
 func NewA(b *B) *A { return &A{} }
 func NewB(a *A) *B { return &B{} }
+
+type X struct{}
+type Y struct{}
+type Z struct{}
+func NewX(y *Y) *X { return &X{} }
+func NewY(z *Z) *Y { return &Y{} }
+func NewZ(x *X) *Z { return &Z{} }
 `
 
 func checkFixture(t *testing.T) (*types.Package, []*graph.Provider) {
@@ -173,6 +183,62 @@ func TestResolveSoleImplementationAutoBind(t *testing.T) {
 	}
 }
 
+// TestResolveInterfaceAsRootAutoBinds covers servo.Root[T]() where T is
+// itself an interface, not just an interface reached as a dependency:
+// resolveKey/selectProvider are the same code path either way, but this is
+// the only test declaring the interface as the root directly.
+func TestResolveInterfaceAsRootAutoBinds(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{
+		findProvider(t, all, "NewMemory"), // the ONLY DBIface implementer in this candidate set
+	}
+	roots := []load.RootDecl{{Key: namedKey(pkg, "DBIface"), Type: namedType(pkg, "DBIface"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	resolved, diags := Resolve(baseInput(pkg, candidates, roots, nil))
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if len(resolved.Roots) != 1 {
+		t.Fatalf("got %d roots, want 1", len(resolved.Roots))
+	}
+	root := resolved.Roots[0]
+	if root.Binding != "sole implementation" {
+		t.Errorf("root binding = %q, want %q", root.Binding, "sole implementation")
+	}
+	if root.Key != ptrKey(pkg, "Memory") {
+		t.Errorf("root resolved to %v, want the Memory provider's key", root.Key)
+	}
+}
+
+// TestResolveInterfaceAsRootAmbiguity is TestResolveAmbiguousInterface's
+// sibling with the interface declared as the root itself: the chain is
+// empty (there is no consumer, the interface IS the root), so the
+// diagnostic must still render sensibly with just a "root" line and no
+// dangling "needed by" line.
+func TestResolveInterfaceAsRootAmbiguity(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{
+		findProvider(t, all, "NewMemory"),
+		findProvider(t, all, "NewPostgres"), // two implementers, no Bind -> ambiguous
+	}
+	roots := []load.RootDecl{{Key: namedKey(pkg, "DBIface"), Type: namedType(pkg, "DBIface"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	_, diags := Resolve(baseInput(pkg, candidates, roots, nil))
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1", len(diags))
+	}
+	msg := diags[0].String()
+	if !strings.Contains(msg, "no provider for example.com/app.DBIface") {
+		t.Errorf("message = %q, want it to name DBIface as unresolved", msg)
+	}
+	if strings.Contains(msg, "needed by") {
+		t.Errorf("message = %q, want no 'needed by' line: DBIface is the root itself, not a dependency", msg)
+	}
+	if !strings.Contains(msg, "root") {
+		t.Errorf("message = %q, want a root line", msg)
+	}
+}
+
 func TestResolveAmbiguousInterface(t *testing.T) {
 	pkg, all := checkFixture(t)
 	candidates := []*graph.Provider{
@@ -293,6 +359,87 @@ func TestResolveCycle(t *testing.T) {
 	}
 	if !strings.Contains(msg, "*example.com/app.A") || !strings.Contains(msg, "*example.com/app.B") {
 		t.Errorf("message = %q, want both A and B named in the loop", msg)
+	}
+}
+
+// TestResolveCycleLongerThanTwoNodes covers cycleDiagnostic's loop-slicing
+// logic at length 3 (X -> Y -> Z -> X), not just the 2-node case
+// TestResolveCycle exercises — the loop must name every node in the cycle,
+// not just the two nodes nearest the re-entry point.
+func TestResolveCycleLongerThanTwoNodes(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewX"), findProvider(t, all, "NewY"), findProvider(t, all, "NewZ")}
+	roots := []load.RootDecl{{Key: ptrKey(pkg, "X"), Type: ptrType(pkg, "X"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	_, diags := Resolve(baseInput(pkg, candidates, roots, nil))
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1", len(diags))
+	}
+	msg := diags[0].String()
+	if !strings.Contains(msg, "dependency cycle") {
+		t.Errorf("message = %q, want a cycle diagnostic", msg)
+	}
+	for _, name := range []string{"*example.com/app.X", "*example.com/app.Y", "*example.com/app.Z"} {
+		if !strings.Contains(msg, name) {
+			t.Errorf("message = %q, want %s named in the loop", msg, name)
+		}
+	}
+	if !strings.Contains(msg, "cycle closes here") {
+		t.Errorf("message = %q, want the closing-line marker", msg)
+	}
+	// X must appear exactly twice: once opening the loop, once closing it.
+	if got := strings.Count(msg, "*example.com/app.X"); got != 2 {
+		t.Errorf("X appears %d times in the message, want exactly 2 (opens and closes the loop)", got)
+	}
+}
+
+// TestResolveSharedDependencyAcrossTwoRootsIsASingleton covers a node
+// reachable from two different declared roots (Postgres and RootTwo both
+// depend directly on Logger): the shared dependency must be constructed
+// exactly once and the same *Node instance shared by both consumers, not
+// two separately-resolved nodes that merely compare equal by key.
+func TestResolveSharedDependencyAcrossTwoRootsIsASingleton(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{
+		findProvider(t, all, "NewLogger"),
+		findProvider(t, all, "NewPostgres"),
+		findProvider(t, all, "NewRootTwo"),
+	}
+	roots := []load.RootDecl{
+		{Key: ptrKey(pkg, "Postgres"), Type: ptrType(pkg, "Postgres"), Pos: token.Position{Filename: "spec.go", Line: 9}},
+		{Key: ptrKey(pkg, "RootTwo"), Type: ptrType(pkg, "RootTwo"), Pos: token.Position{Filename: "spec.go", Line: 10}},
+	}
+
+	resolved, diags := Resolve(baseInput(pkg, candidates, roots, nil))
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if len(resolved.Roots) != 2 {
+		t.Fatalf("got %d roots, want 2", len(resolved.Roots))
+	}
+
+	loggerKey := ptrKey(pkg, "Logger")
+	loggerCount := 0
+	for _, n := range resolved.Order {
+		if n.Key == loggerKey {
+			loggerCount++
+		}
+	}
+	if loggerCount != 1 {
+		t.Fatalf("Logger appears %d times in resolved.Order, want exactly 1 (constructed once)", loggerCount)
+	}
+
+	sharedLogger := resolved.ByKey[loggerKey]
+	if sharedLogger == nil {
+		t.Fatal("Logger missing from resolved.ByKey")
+	}
+	for _, root := range resolved.Roots {
+		if len(root.Deps) != 1 {
+			t.Fatalf("root %s has %d deps, want 1", root.Key, len(root.Deps))
+		}
+		if root.Deps[0] != sharedLogger {
+			t.Errorf("root %s's Logger dependency is a different *Node instance than resolved.ByKey's, not a shared singleton", root.Key)
+		}
 	}
 }
 

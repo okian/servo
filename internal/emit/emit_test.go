@@ -314,3 +314,111 @@ func NewLeaf() *Leaf { return &Leaf{} }
 		}
 	}
 }
+
+// TestEmitZeroRootSpec covers servo.Build() with no Root() calls at all —
+// an empty root set. Resolve must not panic on an empty Spec.Roots loop,
+// and Emit must still produce a valid, if useless, App with a working but
+// entirely empty New/Run/Shutdown.
+func TestEmitZeroRootSpec(t *testing.T) {
+	const src = `
+package app
+type Leaf struct{}
+func NewLeaf() *Leaf { return &Leaf{} }
+`
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/zeroroot", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/zeroroot", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/zeroroot")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	spec := &load.Spec{InjectorPkg: pkgsPkg, Roots: nil}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/zeroroot": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics for an empty root set: %v", diags)
+	}
+	if len(resolved.Order) != 0 || len(resolved.Roots) != 0 {
+		t.Fatalf("expected an empty graph, got %d nodes / %d roots", len(resolved.Order), len(resolved.Roots))
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit on a zero-root graph: %v", err)
+	}
+	src2 := string(out)
+	for _, want := range []string{
+		"type App struct",
+		"func New(ctx context.Context) (*App, error)",
+		"func (a *App) Run(ctx context.Context) error",
+		"func (a *App) Shutdown(ctx context.Context) servo.Report",
+	} {
+		if !strings.Contains(src2, want) {
+			t.Errorf("zero-root output missing %q:\n%s", want, src2)
+		}
+	}
+	// Leaf is a real candidate but unreachable from any root, so it must
+	// never appear in the emitted output at all.
+	if strings.Contains(src2, "Leaf") {
+		t.Errorf("unreachable candidate Leaf must not appear in zero-root output:\n%s", src2)
+	}
+}
+
+// TestEmitTypeNameThatIsAGoKeyword guards a real bug class: a type whose
+// name lowercases to a Go keyword ("Range" -> "range") must not produce a
+// bare `range := ...` declaration, a syntax error format.Source would
+// reject. Emit returning no error already proves the output parses; this
+// additionally confirms the identifier itself was renamed, not just that
+// gofmt happened to tolerate it.
+func TestEmitTypeNameThatIsAGoKeyword(t *testing.T) {
+	const src = `
+package app
+type Range struct{}
+func NewRange() *Range { return &Range{} }
+`
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/keyword", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/keyword", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/keyword")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	rangePtr := types.NewPointer(pkg.Scope().Lookup("Range").Type())
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(rangePtr, ""), Type: rangePtr, Pos: token.Position{Filename: "spec.go", Line: 5}}},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/keyword": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v (a bare `range :=` would fail format.Source)", err)
+	}
+	if !strings.Contains(string(out), "range2 := ") {
+		t.Errorf("expected the keyword-colliding variable to be named range2, got:\n%s", out)
+	}
+}

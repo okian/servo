@@ -56,6 +56,16 @@ func scanFuncs(pkg *packages.Package, injectorPkgPath string, accepted *[]*Provi
 			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "generic — unsupported in v1"})
 			continue
 		}
+		if sig.Variadic() {
+			// The variadic parameter's static type is a slice (e.g.
+			// ...Option becomes []Option), and slices are never valid
+			// provider results (validResultType), so it could never
+			// resolve anyway — reject it here with a specific reason
+			// instead of a confusing "no provider for []T" at resolve
+			// time. Emission has no spread-call support for it either.
+			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "variadic parameter — unsupported"})
+			continue
+		}
 
 		resultType, hasCleanup, hasErr, reason := classifyResults(sig)
 		if reason != "" {
@@ -132,7 +142,11 @@ func recvString(sig *types.Signature) string {
 }
 
 // classifyResults matches sig's results against the four accepted shapes:
-// T; (T, error); (T, func()); (T, func(), error).
+// T; (T, error); (T, func()); (T, func(), error). The second (or third)
+// result must be the error interface itself, not merely a type that
+// satisfies it — a concrete error type gets a specific rejection reason
+// via errorPositionReason rather than falling into the generic
+// "does not match a supported result shape".
 func classifyResults(sig *types.Signature) (result types.Type, hasCleanup, hasErr bool, reason string) {
 	res := sig.Results()
 	switch res.Len() {
@@ -145,10 +159,18 @@ func classifyResults(sig *types.Signature) (result types.Type, hasCleanup, hasEr
 			return res.At(0).Type(), false, true, ""
 		case isCleanupFunc(second):
 			return res.At(0).Type(), true, false, ""
+		case implementsError(second):
+			return nil, false, false, errorPositionReason("second", second)
 		}
 	case 3:
-		if isCleanupFunc(res.At(1).Type()) && isErrorType(res.At(2).Type()) {
-			return res.At(0).Type(), true, true, ""
+		second, third := res.At(1).Type(), res.At(2).Type()
+		if isCleanupFunc(second) {
+			if isErrorType(third) {
+				return res.At(0).Type(), true, true, ""
+			}
+			if implementsError(third) {
+				return nil, false, false, errorPositionReason("third", third)
+			}
 		}
 	}
 	return nil, false, false, "does not match a supported result shape"
@@ -156,6 +178,17 @@ func classifyResults(sig *types.Signature) (result types.Type, hasCleanup, hasEr
 
 func isErrorType(t types.Type) bool {
 	return types.Identical(t, errorType)
+}
+
+// implementsError reports whether t satisfies the error interface
+// structurally without being the error interface itself — the case
+// isErrorType already rejected before this is checked.
+func implementsError(t types.Type) bool {
+	return types.Implements(t, errorType.Underlying().(*types.Interface))
+}
+
+func errorPositionReason(position string, t types.Type) string {
+	return fmt.Sprintf("%s result is %s, which implements error but is not the error interface itself — return error, not a type that merely satisfies it", position, t.String())
 }
 
 func isCleanupFunc(t types.Type) bool {
@@ -175,7 +208,7 @@ func validResultType(t types.Type) (ok bool, reason string) {
 		if _, ok := types.Unalias(u.Elem()).(*types.Named); ok {
 			return true, ""
 		}
-		return false, "result type is a pointer to an unnamed type"
+		return false, fmt.Sprintf("result type is a pointer to an unnamed type (%s)", u.String())
 	case *types.Interface:
 		if u.NumMethods() == 0 {
 			return false, "result type is any (empty interface)"

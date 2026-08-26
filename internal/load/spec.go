@@ -178,14 +178,23 @@ func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (
 			if len(typeArgs) != 2 {
 				return nil, fmt.Errorf("%s: servo.%s expects exactly two type arguments", pos, name)
 			}
+			if isInterfaceType(typeArgs[1]) {
+				return nil, fmt.Errorf("%s: servo.%s's second type argument must be a concrete type, not an interface (%s) — Bind/Override name the concrete implementation, they don't chain to another interface", pos, name, typeArgs[1].String())
+			}
 			decl := BindDecl{
 				Iface: graph.NewKey(typeArgs[0], ""), IfaceType: typeArgs[0],
 				Concrete: graph.NewKey(typeArgs[1], ""), ConcreteType: typeArgs[1],
 				Pos: pos,
 			}
 			if name == "Bind" {
+				if prior, dup := findByIface(spec.Binds, decl.Iface); dup {
+					return nil, fmt.Errorf("%s: servo.Bind[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
+				}
 				spec.Binds = append(spec.Binds, decl)
 			} else {
+				if prior, dup := findByIface(spec.Overrides, decl.Iface); dup {
+					return nil, fmt.Errorf("%s: servo.Override[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
+				}
 				spec.Overrides = append(spec.Overrides, decl)
 			}
 		default:
@@ -193,6 +202,34 @@ func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (
 		}
 	}
 	return spec, nil
+}
+
+// findByIface returns the first declaration in decls bound to iface, so a
+// second Bind (or, separately, a second Override) for the same interface
+// can be reported against the position of the one already accepted,
+// instead of silently letting the second one win with no diagnostic at
+// all. Bind and Override are checked against their own list only:
+// declaring both for the same interface is the documented, intentional way
+// to get a servotest override, not a collision.
+func findByIface(decls []BindDecl, iface graph.Key) (BindDecl, bool) {
+	for _, d := range decls {
+		if d.Iface == iface {
+			return d, true
+		}
+	}
+	return BindDecl{}, false
+}
+
+// isInterfaceType reports whether t is an interface (including the empty
+// interface any) rather than a concrete type. Bind/Override's second type
+// argument resolves via an exact-type lookup keyed on its own type string,
+// which bypasses structural interface search entirely — binding it to
+// another interface silently defeats that search rather than satisfying
+// it, so it is rejected at declaration time instead of surfacing later as
+// an unhelpful "no provider" diagnostic with no candidates listed.
+func isInterfaceType(t types.Type) bool {
+	_, ok := types.Unalias(t).Underlying().(*types.Interface)
+	return ok
 }
 
 // markerCall extracts the marker function name and its explicit generic

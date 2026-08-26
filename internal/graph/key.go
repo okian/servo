@@ -30,7 +30,21 @@ func NewKey(t types.Type, tag string) Key {
 // never abbreviated), after resolving aliases, so it is stable across
 // packages and safe to use as a map key or diagnostic identifier.
 func TypeString(t types.Type) string {
-	return types.TypeString(types.Unalias(t), fullPathQualifier)
+	return types.TypeString(unaliasDeep(t), fullPathQualifier)
+}
+
+// unaliasDeep resolves t's own alias chain, then recurses through pointer
+// indirection: types.Unalias only resolves t itself, not aliases nested
+// inside it, so plain types.Unalias(*Alias) leaves the pointer's element
+// unresolved and "*Alias"/"*Underlying" compute to different strings even
+// though they are the identical type (types.Identical agrees; only the
+// rendered string disagreed).
+func unaliasDeep(t types.Type) types.Type {
+	u := types.Unalias(t)
+	if ptr, ok := u.(*types.Pointer); ok {
+		return types.NewPointer(unaliasDeep(ptr.Elem()))
+	}
+	return u
 }
 
 func fullPathQualifier(pkg *types.Package) string {

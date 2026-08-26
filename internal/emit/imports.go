@@ -66,7 +66,15 @@ func sanitizeIdent(s string) string {
 		return "pkg"
 	}
 	if out[0] >= '0' && out[0] <= '9' {
-		return "_" + out
+		out = "_" + out
+	}
+	if shouldAvoidBare(out) {
+		// A single-segment import path (or joined segments that happen to
+		// spell one) can sanitize to a bare keyword, which is not a legal
+		// import alias — or to a predeclared name ("new", "len", ...),
+		// which is legal but shadows the builtin for every use site in
+		// the file.
+		out += "_"
 	}
 	return out
 }

@@ -34,10 +34,16 @@ type Store interface{ Get(key string) string }
 // postgres/postgres.go
 package postgres
 
-func New(log *logger.Logger) (*DB, error) { ... }
-func (d *DB) Init(ctx context.Context) error  { ... } // connect
-func (d *DB) Stop(ctx context.Context) error  { ... } // disconnect
+func New(log *logger.Logger) (*DB, error)      { ... }
+func (d *DB) Get(key string) string            { ... } // satisfies store.Store
+func (d *DB) Init(ctx context.Context) error   { ... } // connect
+func (d *DB) Stop(ctx context.Context) error   { ... } // disconnect
 func (d *DB) Health(ctx context.Context) error { ... }
+
+// api/api.go
+package api
+
+func New(s store.Store) *Server { ... } // depends on the interface, not postgres directly
 ```
 
 Scaffold a spec file (`servo init`) declaring the roots — everything they transitively depend on
@@ -48,12 +54,17 @@ is what gets built; nothing else is:
 
 package main
 
-import "github.com/okian/servo/v2/servo"
+import (
+	"example.com/app/api"
+	"example.com/app/postgres"
+	"example.com/app/store"
+	"github.com/okian/servo/v2/servo"
+)
 
 func wire() {
 	servo.Build(
 		servo.Root[*api.Server](),
-		servo.Bind[store.Store, *postgres.DB](), // only needed when ambiguous
+		servo.Bind[store.Store, *postgres.DB](), // needed once a 2nd store.Store exists; harmless here
 	)
 }
 ```
@@ -61,7 +72,7 @@ func wire() {
 Run `servo generate`. It emits `servo_gen.go` next to the spec file, containing `New`, `Run`,
 `Shutdown`, `Health`, `Ready`, `Graph`, and `Report` — construction in dependency order, lifecycle
 calls only for the capabilities a type actually implements, reverse-order shutdown with budgets
-and a per-node report. `main.go` stays eight lines:
+and a per-node report. `main.go` never grows with the graph — it stays this same shape:
 
 ```go
 func main() {
@@ -84,6 +95,28 @@ func main() {
 A complete, runnable version of the above — including a genuinely ambiguous interface binding, an
 error-returning constructor with rollback, and every lifecycle capability — lives in
 [`examples/basic`](./examples/basic).
+
+## Interfaces vs. concrete types
+
+A dependency's declared type decides how it resolves — there's no separate mode to opt into:
+
+- **Parameter is an interface** (`func New(s store.Store) *Server`): Servo scans every candidate
+  in scope for the one whose result type structurally implements it (`types.Implements`, checked
+  at generation time, never at runtime). Exactly one implementation auto-binds. Zero is a
+  missing-provider error; two or more is an ambiguity error, resolved by adding
+  `servo.Bind[store.Store, *postgres.DB]()`.
+- **Parameter is a concrete type** (`func New(l *logger.Logger) *DB`): Servo looks for the one
+  function that returns exactly that type. No interface is involved and `Bind` doesn't apply —
+  there's nothing to disambiguate unless a second function also returns that same concrete type
+  (see [Multiple instances of the same type](#multiple-instances-of-the-same-type) below).
+
+An explicit `Bind` always wins even over an otherwise-unambiguous interface match, so it also works
+as a deliberate override, not just a tie-breaker.
+
+Declare an interface where a component should accept any of several implementations; declare a
+concrete type where there's exactly one. Servo follows whichever you wrote — it never converts one
+into the other, and nothing about the *shape* of a dependency changes based on whether other parts
+of the graph happen to use interfaces or concrete types elsewhere.
 
 ## Capabilities
 
@@ -110,9 +143,12 @@ shutdown forces an immediate exit.
 
 ## Multiple instances of the same type
 
-Identity in the graph is purely by type — there is no tagging mechanism (the `Key` type carries a
-`Tag` field for it, but nothing in the public API sets one yet). So two constructors returning the
-same type aren't two instances, they're an ambiguity:
+This section is about a narrower problem than [interface vs. concrete-type
+resolution](#interfaces-vs-concrete-types) above: two constructors returning the exact same
+concrete type, with no interface involved at all. Identity in the graph is purely by type — there
+is no tagging mechanism (the `Key` type carries a `Tag` field for it, but nothing in the public API
+sets one yet). So two constructors returning the same type aren't two instances, they're an
+ambiguity:
 
 ```
 $ servo generate
@@ -155,20 +191,28 @@ func New(orders *queue.OrdersAccount, audit *queue.AuditAccount) *Relay {
 func (r *Relay) Init(ctx context.Context) error {
 	r.OrdersResult = r.orders.Send("order-created")
 	r.AuditResult = r.audit.Send("order-created (audit copy)")
+	log.Println(r.OrdersResult)
+	log.Println(r.AuditResult)
 	return nil
 }
 ```
 
-`servo.Root[*relay.Relay]()` resolves to exactly the shape you'd expect — two independent Level-1
-nodes, both feeding the one Level-2 consumer that needs them:
+`servo explain relay.Relay` confirms exactly the shape you'd expect — two independent level-1
+nodes, both feeding the one level-2 consumer that needs them:
 
 ```
-[L1] *example.com/servobasic/queue.OrdersAccount   deps: none
-[L1] *example.com/servobasic/queue.AuditAccount    deps: none
-[L2] *example.com/servobasic/relay.Relay           deps: OrdersAccount, AuditAccount
+$ servo explain relay.Relay
+*example.com/servobasic/relay.Relay
+  provider:     relay.New (relay/relay.go:24:6)
+  binding:      sole candidate
+  level:        2
+  depends on:   *example.com/servobasic/queue.OrdersAccount, *example.com/servobasic/queue.AuditAccount
+  depended on:  none
+  capabilities: Initializer
 ```
 
-Running the example logs both, distinctly, at startup:
+Running the example logs both, distinctly, at startup (timestamps from Go's `log` package
+trimmed below):
 
 ```
 [account 111111111111] order-created
@@ -189,12 +233,18 @@ never a runtime panic, never a guess:
 $ servo generate
 servo: no provider for example.com/servobasic/store.Store
   needed by *example.com/servobasic/api.Server  api/api.go:15:6
-  root                                          cmd/basic/spec.go:14:2
+  root                                          cmd/basic/spec.go:17:3
 
-  2 types implement example.com/servobasic/store.Store — add one of:
+  3 types implement example.com/servobasic/store.Store — add one of:
       servo.Bind[example.com/servobasic/store.Store, *example.com/servobasic/memory.Store]()      memory/memory.go:15:6
-      servo.Bind[example.com/servobasic/store.Store, *example.com/servobasic/postgres.DB]()        postgres/postgres.go:13:6
+      servo.Bind[example.com/servobasic/store.Store, *example.com/servobasic/mockstore.Store]()      mockstore/mockstore.go:29:6
+      servo.Bind[example.com/servobasic/store.Store, *example.com/servobasic/postgres.DB]()      postgres/postgres.go:13:6
 ```
+
+(reproduced by deleting the `servo.Bind[store.Store, *postgres.DB]()` line from
+[`examples/basic/cmd/basic/spec.go`](./examples/basic/cmd/basic/spec.go) and running `servo generate`
+— `mockstore.Store` shows up too because it's a real second-and-third implementation living in the
+same module, used by the [Mocking](#mocking) section below)
 
 ## CLI
 
@@ -228,10 +278,14 @@ misconfigured spec file is caught in the editor, not at runtime.
 
 ```go
 func TestApp(t *testing.T) {
-	defer servotest.NoLeaks(t)                    // goleak, clean by construction
-	servotest.Timeout(t, 50*time.Millisecond)      // exercise the abandoned-node path without a slow suite
+	defer servotest.NoLeaks(t)                // goleak, clean by construction
+	servotest.Timeout(t, 50*time.Millisecond) // exercise the abandoned-node path without a slow suite
 
+	ctx := context.Background()
 	app, err := NewTestApp(ctx) // generated only when the spec declares servo.Override
+	if err != nil {
+		t.Fatal(err)
+	}
 	...
 	rec := servotest.NewRecorder(app.Report(), app.Shutdown(ctx))
 	servotest.AssertStopOrder(t, rec, "*api.Server", "*postgres.DB") // asserted, not assumed
@@ -372,16 +426,16 @@ not for gomock's stricter verification style.
 ## Layout
 
 ```
-cmd/servo/            CLI: generate, check, graph, explain, why, list, init, doctor, migrate, new
-cmd/servo-vet/         standalone go/analysis binary
-internal/load/         go/packages → typed syntax, spec-file discovery
-internal/graph/        Key, Provider, candidate index, capability detection
-internal/resolve/      roots → closure → order, levels, diagnostics
-internal/emit/         source emission, import manager, name allocator
-internal/render/       text, JSON, DOT, Mermaid graph renderers
-servo/                 markers + ~200-line runtime
-servotest/              NoLeaks, Recorder, AssertStopOrder, Timeout
-examples/basic/         a complete, runnable example (separate module)
+cmd/servo/         CLI: generate, check, graph, explain, why, list, init, doctor, migrate, new
+cmd/servo-vet/     standalone go/analysis binary
+internal/load/     go/packages → typed syntax, spec-file discovery
+internal/graph/    Key, Provider, candidate index, capability detection
+internal/resolve/  roots → closure → order, levels, diagnostics
+internal/emit/     source emission, import manager, name allocator
+internal/render/   text, JSON, DOT, Mermaid graph renderers
+servo/             markers + ~200-line runtime
+servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout
+examples/basic/    a complete, runnable example (separate module)
 ```
 
 Core (`internal/*`, `cmd/servo`) depends on nothing beyond `golang.org/x/tools`; `servotest` alone
