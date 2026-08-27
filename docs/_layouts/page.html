@@ -1,0 +1,25 @@
+---
+layout: default
+---
+{%- comment -%}
+  Standalone prose pages (preface, comparison, limitations). Same shell and
+  same .prose measure as a tutorial chapter, minus the chapter sidebar and
+  prev/next pager: these pages sit outside the numbered reading order, so a
+  pager would imply a sequence that does not exist.
+
+  The breadcrumb is two levels rather than three for the same reason — there
+  is no parent section to name.
+{%- endcomment -%}
+<div class="page-shell">
+  <main class="content" id="content">
+    <article class="prose">
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ '/' | relative_url }}">servo</a>
+        <span aria-hidden="true">/</span>
+        <span>{{ page.title }}</span>
+      </nav>
+
+      {{ content }}
+    </article>
+  </main>
+</div>

@@ -7,7 +7,10 @@ layout: null
   per page to keep the whole index a single small download.
 {%- endcomment -%}
 [
-{%- assign pages = site.pages | where_exp: "p", "p.url contains '/tutorial/'" -%}
+{%- assign tutorial_pages = site.pages | where_exp: "p", "p.url contains '/tutorial/'" -%}
+{%- assign prose_urls = "/preface.html,/comparison.html,/limitations.html" | split: "," -%}
+{%- assign prose_pages = site.pages | where_exp: "p", "prose_urls contains p.url" -%}
+{%- assign pages = tutorial_pages | concat: prose_pages -%}
 {%- assign emitted = 0 -%}
 {%- for p in pages -%}
   {%- assign nav_title = nil -%}
@@ -23,6 +26,22 @@ layout: null
   {%- if p.url == '/tutorial/' -%}
     {%- assign nav_title = "Tutorial introduction" -%}
     {%- assign nav_section = "Overview" -%}
+  {%- endif -%}
+  {%- comment -%}
+    The three prose pages are not in nav.yml (they sit outside the tutorial's
+    reading order), so their titles are set here rather than looked up.
+  {%- endcomment -%}
+  {%- if p.url == '/preface.html' -%}
+    {%- assign nav_title = "Preface" -%}
+    {%- assign nav_section = "Start here" -%}
+  {%- endif -%}
+  {%- if p.url == '/comparison.html' -%}
+    {%- assign nav_title = "How servo compares" -%}
+    {%- assign nav_section = "Start here" -%}
+  {%- endif -%}
+  {%- if p.url == '/limitations.html' -%}
+    {%- assign nav_title = "Limitations" -%}
+    {%- assign nav_section = "Start here" -%}
   {%- endif -%}
   {%- comment -%}
     Comma is driven by how many entries actually got written, not by
