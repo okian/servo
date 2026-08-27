@@ -1,0 +1,15 @@
+# Allowlist for the `typos` spell checker.
+#
+# `Healther` is a public interface name in package servo — the capability a
+# component satisfies by having a Health(ctx context.Context) error method,
+# named for symmetry with Initializer, Runner, Drainer, Flusher, Finalizer
+# and Readier. It is not a misspelling of "Healthier". The identifier reaches
+# the exported API, every generated servo_gen.go that wires a health-checked
+# component, the emit golden files, and the docs, so without this entry the
+# checker fires on routine commits across the whole repository.
+# `unparseable` (cmd/servo/migrate.go) is a standard variant spelling
+# alongside "unparsable"; both are current. Allowlisted rather than rewritten
+# so the checker does not block routine edits to that file.
+[default.extend-words]
+Healther = "Healther"
+unparseable = "unparseable"

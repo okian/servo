@@ -53,7 +53,7 @@ func scanFuncs(pkg *packages.Package, injectorPkgPath string, accepted *[]*Provi
 			continue
 		}
 		if sig.TypeParams().Len() > 0 {
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "generic — unsupported in v1"})
+			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "generic function — unsupported"})
 			continue
 		}
 		if sig.Variadic() {

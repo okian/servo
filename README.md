@@ -4,6 +4,7 @@
 [![codecov](https://codecov.io/gh/okian/servo/branch/master/graph/badge.svg)](https://codecov.io/gh/okian/servo)
 [![Go version](https://img.shields.io/github/go-mod/go-version/okian/servo)](go.mod)
 [![License: MIT](https://img.shields.io/github/license/okian/servo)](LICENSE.md)
+[![Docs](https://img.shields.io/badge/docs-okian.github.io%2Fservo-00ADD8)](https://okian.github.io/servo/)
 
 # servo v3
 
@@ -15,6 +16,12 @@ No reflection. No runtime registry. No `init()`. No hand-written wiring.
 
 The generated file is ordinary Go: compiler-checked, IDE-navigable, steppable in a debugger, and
 readable by a human at 3am.
+
+**Documentation: [okian.github.io/servo](https://okian.github.io/servo/)** — start with the
+[preface](https://okian.github.io/servo/preface.html) if dependency injection is new to you,
+[how servo compares](https://okian.github.io/servo/comparison.html) if you are weighing it against
+wire, fx, or dig, and [limitations](https://okian.github.io/servo/limitations.html) before you
+adopt it.
 
 **v3 is a from-scratch rewrite of `servo` and shares no API with what came before it (informally,
 v1).** v1 was a runtime lifecycle sequencer built on a global registry, a hand-maintained
@@ -291,7 +298,8 @@ specific injector's own directory (e.g. `--dir cmd/api`) scopes the scan to just
 `package main` can never import another `package main`, so sibling injectors are structurally
 unreachable from it.
 
-Every command accepts `--json` for machine consumption. `cmd/servo-vet` is a standalone
+`explain`, `why`, and `list` accept `--json` for machine consumption, and `graph` takes
+`--format=json` alongside its text, DOT, and Mermaid renderers. `cmd/servo-vet` is a standalone
 `go/analysis` analyzer flagging marker calls in files missing the `servoinject` build tag, so a
 misconfigured spec file is caught in the editor, not at runtime.
 
