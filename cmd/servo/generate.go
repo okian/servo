@@ -83,10 +83,13 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath) // no-op once the rename below succeeds; cleans up on any earlier error
+	// No-op once the rename below succeeds; cleans up on any earlier error.
+	// The error is dropped deliberately — there is nothing useful to do when
+	// removing a temp file fails, and any real error is already on its way up.
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
+		_ = tmp.Close() // the write error is the one worth reporting
 		return err
 	}
 	if err := tmp.Close(); err != nil {
