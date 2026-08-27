@@ -1,0 +1,18 @@
+# GitHub Pages config for the site served from this directory (source:
+# master branch, /docs folder). Only files under docs/ are published, which
+# is why the tutorial's links to repo files outside it are absolute URLs
+# rather than ../../ paths — those would escape the site root.
+title: servo
+description: >-
+  Build-time dependency injection for Go. Resolves your object graph from
+  constructor signatures and generates plain, readable wiring.
+theme: jekyll-theme-cayman
+show_downloads: false
+
+# examples/ and the repo's own Go modules live outside docs/ and are never
+# part of the site, but exclude defensively so a future move can't drag a
+# vendored tree into the build.
+exclude:
+  - "**/*.go"
+  - "**/go.mod"
+  - "**/go.sum"

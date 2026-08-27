@@ -14,7 +14,7 @@ go get github.com/okian/servo/v3
 ```
 
 That's the whole setup — one module, one dependency so far. (The tutorial's own copy, at
-[`examples/tutorial`](../../examples/tutorial) inside the servo repo, points
+[`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) inside the servo repo, points
 `github.com/okian/servo/v3` at the local checkout with a `replace` directive instead of a published
 version, because it's developing servo itself alongside the tutorial. You won't need that; plain
 `go get` is enough.)
@@ -53,7 +53,7 @@ One thing worth deciding now, before it's a habit: every package here is flat, w
 nesting. That's deliberate — this module has exactly one consumer (you, running it), so there's
 nothing `internal/` would protect against that an ordinary package boundary doesn't already give
 you. A library meant for other people to import is a different situation; servo's own
-[`internal/` layout](../../ARCHITECTURE.md) is worth a look for what that case looks like.
+[`internal/` layout](https://github.com/okian/servo/blob/master/ARCHITECTURE.md) is worth a look for what that case looks like.
 
 ## Install what you'll need
 

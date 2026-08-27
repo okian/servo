@@ -2,15 +2,15 @@
 
 A step-by-step, from-scratch build of a real order-management service — HTTP API, JWT auth,
 Postgres, Redis, NATS, Prometheus metrics, OpenTelemetry tracing, a circuit breaker, a full test
-suite, CI/CD, and a Docker deployment — using [servo](../../README.md) to wire and run all of it.
+suite, CI/CD, and a Docker deployment — using [servo](https://github.com/okian/servo/blob/master/README.md) to wire and run all of it.
 
-Every chapter's code lives in [`examples/tutorial`](../../examples/tutorial), a real, separate Go
+Every chapter's code lives in [`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial), a real, separate Go
 module you can `cd` into and run at every step. Nothing in these pages is invented: every code
 block is copied from that module, and every command's output shown here was actually run.
 
 ## Why this exists
 
-servo's own [README](../../README.md) and [`examples/basic`](../../examples/basic) show the
+servo's own [README](https://github.com/okian/servo/blob/master/README.md) and [`examples/basic`](https://github.com/okian/servo/tree/master/examples/basic) show the
 mechanics — how one constructor gets wired to another, what a spec file looks like, what
 `servo generate` produces. What they don't show is what it's like to build something with real
 weight to it: a service with a database, a cache, an event to publish, a login flow, tests at

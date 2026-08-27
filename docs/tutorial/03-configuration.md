@@ -76,7 +76,7 @@ from their normal string forms (`"1h"`, `"50"`) with no extra code from us.
 
 `New() (*Config, error)` looks like an ordinary constructor because it is one — this is exactly
 the `(T, error)` shape servo's scanner already knows how to recognize (see servo's own
-[README](../../README.md#interfaces-vs-concrete-types)). Every component we write from here on
+[README](https://github.com/okian/servo/blob/master/README.md#interfaces-vs-concrete-types)). Every component we write from here on
 that needs configuration will just take `*Config` as a constructor parameter, the same way it
 would take any other dependency — no registration step, no global variable to reach into. We won't
 actually wire anything with servo until [chapter 11](11-wiring-with-servo.md), but the constructor
