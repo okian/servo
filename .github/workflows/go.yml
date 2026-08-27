@@ -43,6 +43,15 @@ jobs:
           go build ./...
           go test ./...
 
+      # examples/diagnostics is deliberately unresolvable, so it has no
+      # generated file and nothing to run `servo check` against — only that
+      # it's otherwise ordinary, valid Go. The diagnostics it's meant to
+      # produce are pinned by TestExampleDiagnostic* in cmd/servo, covered
+      # by the root Test step above.
+      - name: Build examples/diagnostics
+        working-directory: examples/diagnostics
+        run: go build ./...
+
       # The reference check every consumer of servo should run in their own
       # CI: verify every injector's committed servo_gen.go still matches
       # what `servo generate` would produce, so drift between a constructor

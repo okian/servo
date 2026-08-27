@@ -251,6 +251,11 @@ servo: no provider for example.com/servobasic/store.Store
 — `mockstore.Store` shows up too because it's a real second-and-third implementation living in the
 same module, used by the [Mocking](#mocking) section below)
 
+[`examples/diagnostics`](./examples/diagnostics) has three small, permanently broken fixtures —
+one per failure mode above plus a dependency cycle — each runnable on its own
+(`go run ./cmd/servo generate --dir examples/diagnostics/<name>`) to see exactly that diagnostic in
+isolation.
+
 ## CLI
 
 | Command | Purpose |
