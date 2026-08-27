@@ -14,6 +14,7 @@ layout: default
       {%- assign cur = ch.num -%}
       {%- assign cur_title = ch.title -%}
       {%- assign cur_section = section.title -%}
+      {%- assign cur_numeral = section.numeral -%}
     {%- endif -%}
   {%- endfor -%}
 {%- endfor -%}
@@ -29,7 +30,7 @@ layout: default
       </a>
       {%- for section in site.data.nav.sections %}
       <div class="sidebar__section">
-        <h2 class="sidebar__title">{{ section.title }}</h2>
+        <h2 class="sidebar__title"><span class="sidebar__part">{{ section.numeral }}</span>{{ section.title }}</h2>
         <ul>
           {%- for ch in section.chapters %}
           <li>
@@ -50,7 +51,7 @@ layout: default
     </nav>
   </aside>
 
-  <main class="content" id="content">
+  <main class="content" id="content" tabindex="-1">
     <article class="prose">
       {%- if cur > 0 %}
       <nav class="breadcrumb" aria-label="Breadcrumb">
@@ -58,7 +59,7 @@ layout: default
         <span aria-hidden="true">/</span>
         <a href="{{ '/tutorial/' | relative_url }}">Tutorial</a>
         <span aria-hidden="true">/</span>
-        <span>{{ cur_section }}</span>
+        <span>{{ cur_numeral }} · {{ cur_section }}</span>
       </nav>
       {%- endif %}
 
