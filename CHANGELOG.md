@@ -23,7 +23,7 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
-## [Unreleased]
+## [3.0.0] - 2026-08-27
 
 ### Changed
 - **Breaking — module path**: `github.com/okian/servo/v2` → `github.com/okian/servo/v3`. This
