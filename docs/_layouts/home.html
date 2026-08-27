@@ -1,167 +1,151 @@
 ---
 layout: default
 ---
-<main class="home" id="content">
+{%- comment -%}
+  The landing page as an editorial cover: an oversized serif hero, then bands
+  separated by hairline rules, then the tutorial as a real table of contents.
+  There are no cards here by design — parts are numbered in roman (stored in
+  _data/nav.yml, since Liquid cannot convert) and chapters are a list.
 
-  <section class="hero">
-    <div class="hero__inner">
-      <p class="hero__eyebrow">v3.0.0 · MIT licensed</p>
-      <h1 class="hero__title">Wiring you can read at&nbsp;3am.</h1>
-      <p class="hero__lede">
-        Servo resolves your Go application's object graph from constructor signatures at build
-        time, and emits plain Go source that constructs, starts, supervises, and shuts the whole
-        thing down in dependency order.
+  index.md's own markdown is injected at {{ content }}, inside its own band, so
+  prose written there lands in the same rhythm as everything around it.
+{%- endcomment -%}
+<main class="home" id="content" tabindex="-1">
+
+  <section class="hero sheet">
+    <p class="hero__eyebrow">Build-time dependency injection for Go</p>
+    <h1 class="hero__title">Wiring you can read at 3am.</h1>
+    <p class="hero__lede">
+      Servo reads your constructors, resolves the object graph <strong>before you
+      build</strong>, and writes out plain Go that constructs, starts, supervises
+      and shuts down your application in dependency order.
+    </p>
+    <p class="hero__negative">no reflection · no runtime registry · no init() · no hand-written wiring</p>
+    <div class="hero__install">go install {{ site.go_module }}/cmd/servo@latest</div>
+    <div class="hero__cta">
+      <a class="cta" href="{{ '/preface.html' | relative_url }}">Start with the preface</a>
+      <a class="cta cta--quiet" href="{{ '/tutorial/' | relative_url }}">Read the tutorial</a>
+      <a class="cta cta--quiet" href="{{ '/comparison.html' | relative_url }}">How it compares</a>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="band__inner">
+      <p class="section-eyebrow">The whole idea</p>
+      <h2 class="section-title">You write constructors. Servo writes the file that calls them.</h2>
+      <p class="section-lede">
+        Nothing imports servo. A component joins the lifecycle by <strong>having a
+        method</strong>, not by registering for one — detection is structural, and
+        it happens at generation time.
       </p>
-      <p class="hero__negative">
-        <span>No reflection.</span><span>No runtime registry.</span><span>No <code>init()</code>.</span><span>No hand-written wiring.</span>
-      </p>
+      <div class="split">
+        <figure>
+          <figcaption>What you write</figcaption>
+{% highlight go %}
+// three ordinary constructors
+func New(cfg *config.Config) (*postgres.DB, error)
+func New(db *postgres.DB) *OrderService
+func New(s *OrderService) *Server
 
-      <div class="hero__install">
-        <code>go install {{ site.go_module }}/cmd/servo@latest</code>
-        <button class="copy-btn" type="button" data-copy="go install {{ site.go_module }}/cmd/servo@latest" aria-label="Copy install command">Copy</button>
-      </div>
+// one spec file, never compiled into the binary
+servo.Build(
+    servo.Root[*api.Server](),
+)
+{% endhighlight %}
+        </figure>
+        <figure>
+          <figcaption>What servo generates</figcaption>
+{% highlight go %}
+func New(ctx context.Context) (*App, error) {
+    a := &App{}
 
-      <div class="hero__cta">
-        <a class="btn btn--primary" href="{{ '/tutorial/' | relative_url }}">Start the tutorial</a>
-        <a class="btn" href="{{ site.repo }}">View on GitHub</a>
-        <a class="btn" href="https://pkg.go.dev/{{ site.go_module }}">API reference</a>
+    cfg := config.New()
+    db, err := postgres.New(cfg)
+    if err != nil {
+        return nil, err
+    }
+
+    orders := orders.New(db)
+    a.server = api.New(orders)
+    return a, nil
+}
+{% endhighlight %}
+        </figure>
       </div>
     </div>
   </section>
 
   <section class="band">
     <div class="band__inner">
-      <h2 class="section-title">The generated file is ordinary Go</h2>
+      <p class="section-eyebrow">Why before you build</p>
+      <h2 class="section-title">A missing dependency stops the build, not the deployment.</h2>
       <p class="section-lede">
-        Compiler-checked, IDE-navigable, steppable in a debugger, and reviewable in a pull request.
-        You write constructors; servo writes the part you'd otherwise maintain by hand.
+        Runtime containers catch the same mistakes — later, through a reflection
+        stack trace, in whichever environment ran the binary first. Servo reports
+        them with a file and a line, like any other compile error.
       </p>
+      <div class="terminal">servo: no provider for store.Store
+  needed by *api.Server              api/api.go:15:6
+  root                               cmd/app/spec.go:17:3
 
-      <div class="split">
-        <div class="split__col">
-          <h3 class="split__label">You write</h3>
-{% highlight go %}
-func NewDB(cfg Config) (*postgres.DB, error)
-func NewCache(cfg Config) *redis.Cache
-func NewStore(db *postgres.DB,
-              c *redis.Cache) store.Store
-func NewServer(s store.Store) *api.Server
-{% endhighlight %}
-        </div>
-        <div class="split__col">
-          <h3 class="split__label">servo generates</h3>
-{% highlight go %}
-func New(ctx context.Context) (*App, error) {
-    db, err := postgres.NewDB(cfg)
-    // ...error handling, ordered init,
-    // rollback, supervision, shutdown
-}
-{% endhighlight %}
-        </div>
-      </div>
+  3 types implement store.Store — add one of:
+      servo.Bind[store.Store, *memory.Store]()      memory/memory.go:15:6
+      servo.Bind[store.Store, *mockstore.Store]()   mockstore/mockstore.go:29:6
+      servo.Bind[store.Store, *postgres.DB]()       postgres/postgres.go:13:6</div>
+      <p class="section-lede">
+        Ambiguity, dependency cycles and unreachable providers fail the same way.
+        <a href="{{ '/limitations.html' | relative_url }}">Limitations</a> is honest
+        about what servo cannot resolve at all.
+      </p>
     </div>
   </section>
 
   {%- comment -%}
-    index.md's own body lands here. Prose and diagrams live there rather than
-    in this layout because a ```mermaid fence only gets processed in markdown —
-    inside a layout it would render as literal text.
+    index.md's prose — the pipeline and lifecycle diagrams — lands here.
   {%- endcomment -%}
-  <section class="band band--alt">
-    <div class="band__inner prose prose--wide">
+  <section class="band">
+    <div class="band__inner prose">
       {{ content }}
     </div>
   </section>
 
-  <section class="band">
+  <section class="band" id="tutorial">
     <div class="band__inner">
-      <h2 class="section-title">Why build-time</h2>
-      <div class="cards">
-        <div class="card">
-          <h3>Errors at compile time</h3>
-          <p>A missing provider, an ambiguous binding, or a dependency cycle is a build failure with a source position — not a nil pointer at 3am.</p>
-        </div>
-        <div class="card">
-          <h3>Nothing to step over</h3>
-          <p>No container, no reflection, no registry to inspect. The debugger walks straight through ordinary constructor calls.</p>
-        </div>
-        <div class="card">
-          <h3>Ordered lifecycle</h3>
-          <p>Start-up runs in dependency order with rollback on failure; shutdown runs in reverse, under a budget, reporting what refused to stop.</p>
-        </div>
-        <div class="card">
-          <h3>Reviewable diffs</h3>
-          <p>The generated file is committed. Changing a constructor signature shows up as a readable diff, and <code>servo check</code> fails CI when it goes stale.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  {%- comment -%}
-    Three prose pages that sit outside the tutorial's reading order: the
-    concept introduction, the tool comparison, and the boundaries. Repeated
-    here because the header links pointing at them are hidden at small widths.
-  {%- endcomment %}
-  <section class="band" id="start-here">
-    <div class="band__inner">
-      <h2 class="section-title">Start here</h2>
-      <p class="section-lede">
-        Three short pages before the eighteen-chapter tutorial: what problem this solves, how it
-        compares to the alternatives, and where its limits are.
-      </p>
-      <div class="chapter-list">
-        <a class="chapter" href="{{ '/preface.html' | relative_url }}">
-          <span class="chapter__body">
-            <span class="chapter__title">Preface</span>
-            <span class="chapter__blurb">Start here if dependency injection is new to you, or if you've heard the term and assumed it wasn't a Go idea. Eight minutes, no prior tooling assumed.</span>
-          </span>
-        </a>
-        <a class="chapter" href="{{ '/comparison.html' | relative_url }}">
-          <span class="chapter__body">
-            <span class="chapter__title">How servo compares</span>
-            <span class="chapter__blurb">servo beside google/wire, uber-go/fx, uber-go/dig, and writing it by hand — including the cases where one of those is the better answer.</span>
-          </span>
-        </a>
-        <a class="chapter" href="{{ '/limitations.html' | relative_url }}">
-          <span class="chapter__body">
-            <span class="chapter__title">Limitations</span>
-            <span class="chapter__blurb">What servo can't do, and which limits are permanent versus merely unbuilt. The fastest way to find out this is the wrong tool for you.</span>
-          </span>
-        </a>
-      </div>
-    </div>
-  </section>
-
-  <section class="band band--alt" id="tutorial">
-    <div class="band__inner">
+      <p class="section-eyebrow">The tutorial</p>
       <h2 class="section-title">Building a microservice with servo</h2>
       <p class="section-lede">
-        Eighteen chapters that build one real order-management service from an empty directory:
-        HTTP API, JWT auth, Postgres, Redis, NATS, metrics, tracing, a circuit breaker, three
-        levels of tests, CI/CD, and a Docker deployment. Every code block is copied from
+        Eighteen chapters that build one real order-management service from an
+        empty directory: HTTP API, JWT auth, Postgres, Redis, NATS, metrics,
+        tracing, a circuit breaker, three levels of tests, CI/CD and a container.
+        Every code block is copied from
         <a href="{{ site.repo }}/tree/{{ site.repo_branch }}/examples/tutorial">a real module</a>
         you can run at every step.
       </p>
 
-      {%- for section in site.data.nav.sections %}
-      <div class="chapter-group">
-        <div class="chapter-group__head">
-          <h3>{{ section.title }}</h3>
-          <p>{{ section.summary }}</p>
+      <div class="toc-parts">
+        {%- for section in site.data.nav.sections %}
+        <div class="part">
+          <div class="part__head">
+            <span class="part__num">{{ section.numeral }}</span>
+            <h3 class="part__title">{{ section.title }}</h3>
+            <span class="part__summary">{{ section.summary }}</span>
+          </div>
+          <ol>
+            {%- for ch in section.chapters %}
+            <li>
+              <a class="chapter" href="{{ ch.url | relative_url }}">
+                <span class="chapter__num">{{ ch.num }}</span>
+                <span>
+                  <span class="chapter__title">{{ ch.title }}</span>
+                  <span class="chapter__blurb">{{ ch.blurb }}</span>
+                </span>
+              </a>
+            </li>
+            {%- endfor %}
+          </ol>
         </div>
-        <div class="chapter-list">
-          {%- for ch in section.chapters %}
-          <a class="chapter" href="{{ ch.url | relative_url }}">
-            <span class="chapter__num">{{ ch.num }}</span>
-            <span class="chapter__body">
-              <span class="chapter__title">{{ ch.title }}</span>
-              <span class="chapter__blurb">{{ ch.blurb }}</span>
-            </span>
-          </a>
-          {%- endfor %}
-        </div>
+        {%- endfor %}
       </div>
-      {%- endfor %}
     </div>
   </section>
 

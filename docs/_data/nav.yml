@@ -2,10 +2,12 @@
 # Kept here rather than in each chapter's front matter so the 18 tutorial
 # files stay plain markdown that reads correctly in GitHub's file browser.
 # Order in this file is the reading order; prev/next is derived by flattening
-# every section's chapters in sequence.
+# every section's chapters in sequence. `numeral` is the part's roman number,
+# stored rather than computed because Liquid has no roman conversion.
 
 sections:
   - title: Foundations
+    numeral: I
     summary: The shape of the service, and the groundwork every later layer assumes.
     chapters:
       - num: 1
@@ -22,6 +24,7 @@ sections:
         blurb: Feeding every package what it needs from the outside world.
 
   - title: Core layers
+    numeral: II
     summary: One layer at a time, each one only talking to the layer below it.
     chapters:
       - num: 4
@@ -46,6 +49,7 @@ sections:
         blurb: Orchestrating the focused pieces underneath into actual business logic.
 
   - title: Reaching the outside
+    numeral: III
     summary: Making the service callable, and knowing who is calling it.
     chapters:
       - num: 9
@@ -58,6 +62,7 @@ sections:
         blurb: Everything assembled so far, finally reachable over HTTP.
 
   - title: Wiring it together
+    numeral: IV
     summary: Where servo itself enters the picture.
     chapters:
       - num: 11
@@ -66,6 +71,7 @@ sections:
         blurb: Nine packages, nine constructors, and nothing connecting them — until now.
 
   - title: Running it for real
+    numeral: V
     summary: What a service needs before anyone should depend on it.
     chapters:
       - num: 12
@@ -78,6 +84,7 @@ sections:
         blurb: Failure handling, fallbacks, and a circuit breaker that means it.
 
   - title: Shipping
+    numeral: VI
     summary: From a laptop to a pipeline to a deployed container.
     chapters:
       - num: 14
@@ -94,6 +101,7 @@ sections:
         blurb: Leaving `go run` behind for a real container and a real deployment.
 
   - title: Reference
+    numeral: VII
     summary: What to reach for when something breaks, or when a choice needs revisiting.
     chapters:
       - num: 17
