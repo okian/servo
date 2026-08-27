@@ -272,14 +272,16 @@ isolation.
 | `servo new component <Name>` / `servo new adapter <pkg>` | Scaffold a component or third-party wrapper. Never imports `servo`. |
 | `servo new mock-adapter <moq\|mockery\|gomock> <GeneratedTypeName>` | Scaffold the adapter file a generated mock needs to become a valid provider (see [Mocking](#mocking)). |
 
-`--dir` (default `.`) is where the module scan starts. `generate` and `check` process **every**
-injector they find within it — a monorepo with `cmd/api`, `cmd/worker`, `cmd/migrator` each wiring
-their own graph gets all three generated/checked in one pass, the same way `wire ./...` does, and a
-CI job doesn't need updating when a new service is added. Commands that answer a question about
-*one* graph (`graph`, `explain`, `why`, `list`, `doctor`) instead ask you to disambiguate with
-`--dir` when more than one injector is in scope — pointing it at a specific injector's own
-directory (e.g. `--dir cmd/api`) scopes the scan to just that one, since a `package main` can never
-import another `package main`, so sibling injectors are structurally unreachable from it.
+`--dir` (default `.`) is where the module scan starts. `generate`, `check`, and `doctor` process
+**every** injector they find within it — a monorepo with `cmd/api`, `cmd/worker`, `cmd/migrator`
+each wiring their own graph gets all three generated/checked/diagnosed in one pass, the same way
+`wire ./...` does, and a CI job doesn't need updating when a new service is added (see
+[`examples/basic`](./examples/basic), whose `cmd/basic` and `cmd/migrator` are exactly this).
+Commands that answer a question about *one* graph (`graph`, `explain`, `why`, `list`) instead ask
+you to disambiguate with `--dir` when more than one injector is in scope — pointing it at a
+specific injector's own directory (e.g. `--dir cmd/api`) scopes the scan to just that one, since a
+`package main` can never import another `package main`, so sibling injectors are structurally
+unreachable from it.
 
 Every command accepts `--json` for machine consumption. `cmd/servo-vet` is a standalone
 `go/analysis` analyzer flagging marker calls in files missing the `servoinject` build tag, so a
