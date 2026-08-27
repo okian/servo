@@ -32,6 +32,11 @@ services:
     image: nats:2-alpine
     ports:
       - "4222:4222"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "4222"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
 
   jaeger:
     image: jaegertracing/all-in-one:1.60
@@ -40,3 +45,49 @@ services:
     ports:
       - "16686:16686" # web UI
       - "4318:4318"   # OTLP over HTTP -- what OTLPEndpoint points at
+
+  # orders is the service itself, built from the same Dockerfile a reader
+  # would build by hand (chapter 16). Its build context is the repo root,
+  # not this directory — see deploy/Dockerfile's own top comment for why —
+  # so this compose file must also be invoked with that in mind; `make up`
+  # does this for you (see the Makefile) rather than a bare `docker compose
+  # up` run from inside deploy/.
+  #
+  # postgres/redis/nats all get a real synchronous connection attempt
+  # during this service's startup (each one's Init, run before servo
+  # considers the graph ready) with no retry loop of its own — so unlike
+  # Docker's default depends_on, which only waits for a container to have
+  # started, orders waits for condition: service_healthy on all three, or
+  # it would race a NATS/Postgres/Redis server that's still coming up and
+  # fail on its first attempt. jaeger has no such requirement: span export
+  # is asynchronous and just silently has nothing to send to until jaeger
+  # is ready, so plain depends_on is enough there.
+  #
+  # No healthcheck is defined for orders itself: the runtime image is
+  # gcr.io/distroless/static-debian12, which ships only the compiled
+  # binary and CA certificates — no shell, no wget/curl/nc to run a check
+  # with. Its own /healthz (see chapter 10) is still real and reachable
+  # from the host at :8081/healthz; there just isn't a tool inside this
+  # particular container to ask docker compose to poll it with.
+  orders:
+    build:
+      context: ../../..
+      dockerfile: examples/tutorial/deploy/Dockerfile
+    environment:
+      POSTGRES_DSN: postgres://orders:orders@postgres:5432/orders?sslmode=disable
+      REDIS_ADDR: redis:6379
+      NATS_URL: nats://nats:4222
+      JWT_SECRET: dev-secret-do-not-use-in-production
+      OTLP_ENDPOINT: jaeger:4318
+    ports:
+      - "8080:8080"
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      jaeger:
+        condition: service_started

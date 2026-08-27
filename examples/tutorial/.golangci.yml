@@ -1,0 +1,21 @@
+version: "2"
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        - (*github.com/nats-io/nats.go.Conn).Drain
+        - (*github.com/nats-io/nats.go.Subscription).Unsubscribe
+        - (github.com/jackc/pgx/v5.Tx).Rollback
+        - (*net/http.Server).Shutdown
+        - (*encoding/json.Encoder).Encode
+  exclusions:
+    rules:
+      # Test cleanup calls (t.Cleanup(func() { x.Stop(...) }), deferred
+      # Unsubscribe/Flush) are best-effort teardown of infrastructure the
+      # test itself already exercised and asserted on — a failure here
+      # would not be a silent bug the way an unchecked error in production
+      # code would be, so the same rigor doesn't apply.
+      - path: _test\.go
+        linters:
+          - errcheck

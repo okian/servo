@@ -1,0 +1,147 @@
+name: Tutorial
+
+# Scoped to examples/tutorial and its docs, separately from the main Go
+# workflow (go.yml): this module needs real Postgres/Redis/NATS service
+# containers and a Docker build, both of which would slow down every push
+# to the rest of the repo for no benefit if bundled into the fast pipeline.
+on:
+  push:
+    branches: [ master ]
+    paths:
+      - 'examples/tutorial/**'
+      - 'docs/tutorial/**'
+      - '.github/workflows/tutorial.yml'
+  pull_request:
+    branches: [ master ]
+    paths:
+      - 'examples/tutorial/**'
+      - 'docs/tutorial/**'
+      - '.github/workflows/tutorial.yml'
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: examples/tutorial
+
+  build-and-unit-test:
+    name: Build, vet, and unit test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/tutorial
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: gofmt
+        run: |
+          diff <(gofmt -l .) <(echo -n "")
+
+      # No TEST_POSTGRES_DSN/TEST_REDIS_ADDR/TEST_NATS_URL here — every
+      # integration test (see e.g. postgres/postgres_test.go) skips itself
+      # when its env var isn't set, rather than failing, so this step only
+      # ever exercises the mock-backed unit tests. See
+      # docs/tutorial/14-testing-strategy.md for why the split matters:
+      # this job has no services: block at all, so a test that forgot to
+      # skip would fail here with a connection error, not silently pass.
+      - name: Unit test
+        run: go test ./...
+
+      # The reference check every consumer of servo should run in CI:
+      # verifies cmd/orders/servo_gen.go still matches what `servo
+      # generate` would produce right now, so a constructor signature
+      # change without a re-run of `servo generate` fails the build
+      # instead of shipping a stale generated file. Run from the repo
+      # root, same as go.yml does for examples/basic and
+      # examples/mocking, since cmd/servo is a root-module binary.
+      - name: servo check
+        working-directory: .
+        run: go run ./cmd/servo check --dir examples/tutorial
+
+  integration-test:
+    name: Integration test (real Postgres/Redis/NATS)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/tutorial
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: orders
+          POSTGRES_PASSWORD: orders
+          POSTGRES_DB: orders
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      nats:
+        image: nats:2-alpine
+        ports:
+          - 4222:4222
+        options: >-
+          --health-cmd "nc -z localhost 4222"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      # GitHub Actions publishes service container ports to the runner's
+      # own localhost, so these are the same values docker-compose.yml
+      # uses for local dev — no service-discovery translation needed
+      # between the two.
+      - name: Integration test
+        env:
+          TEST_POSTGRES_DSN: postgres://orders:orders@localhost:5432/orders?sslmode=disable
+          TEST_REDIS_ADDR: localhost:6379
+          TEST_NATS_URL: nats://localhost:4222
+        run: go test ./... -v
+
+  docker-build:
+    name: Docker build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Built with the repo root as context, not examples/tutorial/ — see
+      # deploy/Dockerfile's own top comment: this module's go.mod replaces
+      # github.com/okian/servo/v3 with ../.., which only resolves if that
+      # path is actually present in the build context. Not pushed: no
+      # registry credentials are available to this workflow, and a
+      # tutorial has no image to publish anywhere. This step exists to
+      # catch a Dockerfile that's silently drifted from a source change
+      # (a new dependency, a renamed package) before a reader hits it.
+      - name: Build image
+        run: docker build -f examples/tutorial/deploy/Dockerfile -t servoorders:ci .

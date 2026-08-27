@@ -408,6 +408,23 @@ exactly the way `main.go` wires it for real, running in well under a second, wit
 - **A test calling `TestApp.Run` hangs or fails to connect** — `notifier` isn't behind an
   overridden interface; don't call `Run` in a test that has no real NATS available. Test the HTTP
   surface directly through `app.server.Handler()` instead, as shown above.
+- **A `NewTestApp`-based HTTP test gets back an unexpected `500` instead of an obvious crash** —
+  check the test's logged output for a line like `"msg":"api: panic recovered","panic":"Unexpected
+  call to *mocks.MockOrderRepository.Create(...) because: there are no expected calls..."`. A
+  `PanicReporter` panic raised from *inside* a request handler (a missing or wrong `.EXPECT()` on
+  the mock that handler calls) still happens inside `recoverMiddleware`'s reach ([chapter
+  10](10-api-layer.md)) — so it gets caught, logged, and turned into an ordinary `500` response,
+  exactly the way a real, unrelated panic would. The test doesn't crash; it just fails with a
+  confusing status code. The fix is almost always a missing or misconfigured `.EXPECT()`, not a bug
+  in the handler.
+- **A `NewTestApp`-based test crashes the whole process with a full Go stack trace mentioning
+  `servotest.PanicReporter`** — unlike the case above, this is a `PanicReporter` panic firing
+  *outside* any request (most often from `ctrl.Finish()` inside a `t.Cleanup`, verifying every
+  `.EXPECT()` was actually called) — nothing wraps it in a `recover`, so it takes the test binary
+  down with it. The panic message itself names the problem directly — `missing call(s) to
+  *mocks.MockOrderCache.Set(...)` or `Unexpected call to ... because: there are no expected
+  calls...` — and the receiver type in that message (`*mocks.MockOrderCache`, `*mocks.
+  MockOrderRepository`, etc.) is exactly which mock to go fix the expectations on.
 - **`servo check` reports drift right after a manual edit to `servo_gen.go`** — expected; the file
   is marked `DO NOT EDIT` for exactly this reason. Change the source, not the generated output, and
   regenerate.

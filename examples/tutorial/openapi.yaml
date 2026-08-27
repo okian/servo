@@ -1,0 +1,262 @@
+openapi: 3.0.3
+info:
+  title: servoorders
+  description: >
+    The order service built in docs/tutorial/. Covers the public HTTP API
+    only (port 8080) — /healthz, /readyz, and /metrics live on a separate
+    admin listener (port 8081, see docs/tutorial/10-api-layer.md) and are
+    deliberately left out of this spec: they're operational surface for
+    load balancers and Prometheus, not part of the application's business
+    contract, and none of them take request bodies or return anything an
+    API consumer would need documented beyond "GET it, read the status
+    code."
+  version: "1.0"
+servers:
+  - url: http://localhost:8080
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      operationId: loginUser
+      summary: Exchange a username and password for a JWT
+      security: [] # the one endpoint that doesn't require a token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Login succeeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        "400":
+          description: Malformed request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: >
+            Wrong password or unknown username — deliberately
+            indistinguishable (see docs/tutorial/09-authentication.md),
+            since telling an attacker which one was wrong is a free
+            username-enumeration oracle.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /orders:
+    post:
+      operationId: createOrder
+      summary: Create an order for the authenticated user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: Order created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: Malformed body, or item/quantity failed validation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing, malformed, or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+    get:
+      operationId: listOrders
+      summary: List the authenticated user's orders, most recent first
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+          description: >
+            Values outside (0, 100] silently fall back to the default of
+            20 rather than erroring — see docs/tutorial/10-api-layer.md's
+            do's and don'ts on why this endpoint chose clamping over
+            a 400 for an out-of-range page size.
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+      responses:
+        "200":
+          description: A page of orders
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListOrdersResponse"
+        "401":
+          description: Missing, malformed, or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      summary: Get a single order by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: id is not a valid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing, malformed, or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            The order exists but belongs to a different user. Returned
+            instead of 404 only because this tutorial's authorization
+            model has nothing to hide the order's existence *for* — see
+            docs/tutorial/10-api-layer.md's note on when 404 would be the
+            more defensible choice instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No order with that ID exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+components:
+  responses:
+    RateLimited:
+      description: >
+        Rate limit exceeded. The limiter (see docs/tutorial/13-resilience.md)
+        is one shared bucket for the whole service, not one per client or
+        per route, so any request to any operation below can receive this
+        response, not just the one it happens to be documented on here.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          example: alice
+        password:
+          type: string
+          format: password
+          example: password123
+
+    LoginResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: HS256 JWT, valid for JWT_EXPIRY (default 1h)
+
+    CreateOrderRequest:
+      type: object
+      required: [item, quantity]
+      properties:
+        item:
+          type: string
+          minLength: 1
+          example: widget
+        quantity:
+          type: integer
+          minimum: 1
+          example: 2
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        item:
+          type: string
+        quantity:
+          type: integer
+        status:
+          type: string
+          enum: [pending]
+          description: >
+            The only status this tutorial ever assigns — there's no order
+            lifecycle beyond creation here (no fulfillment, cancellation,
+            etc.). A real system would grow this into a proper state
+            machine; see docs/tutorial/18-alternatives-and-further-reading.md.
+        created_at:
+          type: string
+          format: date-time
+
+    ListOrdersResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          items:
+            $ref: "#/components/schemas/Order"
+
+    Error:
+      type: object
+      properties:
+        error:
+          type: string

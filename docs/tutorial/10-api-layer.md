@@ -268,6 +268,19 @@ func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
+Notice what `handleGetOrder` does *not* do: it never checks whether `order.UserID` matches
+`claims.UserID` itself. That check lives in `authorize` back in [chapter 8](08-service-layer.md),
+one layer down — the API layer's job stops at translating whatever `domain` error comes back into a
+status code. When the order belongs to someone else, that's `domain.ErrForbidden`, which
+`writeDomainError` maps to `403`, not `404`. That's a deliberate, debatable choice, not an
+oversight: a `403` confirms the order exists, just not for this caller; a `404` would hide even
+that much. For a resource where existence itself is sensitive — someone else's private message
+thread, say, rather than an order ID nobody could guess anyway — returning `404` for "not yours" and
+for "doesn't exist" alike is the more defensible default, at the cost of a slightly worse error
+message for legitimate callers who mistyped an ID. This tutorial uses `403` because an order ID is
+an opaque UUID with nothing worth hiding behind it; don't copy that choice onto a resource where it
+doesn't hold.
+
 `r.PathValue("id")` is Go 1.22+'s stdlib router reading `{id}` out of the route pattern registered
 below — no third-party router needed for this. `handleListOrders` adds pagination, clamped rather
 than trusted:
@@ -567,6 +580,88 @@ this graph implements `Readier` yet, so there's nothing distinct from `Health` f
 That's not a bug to fix; it's what "no component needs a separately-meaningful readiness signal"
 honestly looks like. [Chapter 11](11-wiring-with-servo.md) covers every capability this graph
 actually uses, side by side.
+
+## Write it down: openapi.yaml
+
+Everything above was verified by hand, with `curl`, one endpoint at a time. That's enough to prove
+it works; it isn't enough for someone integrating against this API to discover what it promises
+without reading the handler source. `openapi.yaml`, at the module root, writes the same contract
+down in a form tooling can consume — client generators, `Try it out`-style documentation viewers,
+contract-testing tools. One operation out of the full spec, `GET /orders/{id}`, shown here
+(trimmed of its own trailing `content:`/`schema:` blocks and the shared `429` every operation in
+the real file also declares — see the file itself for those):
+
+```yaml
+paths:
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      summary: Get a single order by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+        "400":
+          description: id is not a valid UUID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Missing, malformed, or expired bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: >
+            The order exists but belongs to a different user. Returned
+            instead of 404 only because this tutorial's authorization
+            model has nothing to hide the order's existence *for* — see
+            docs/tutorial/10-api-layer.md's note on when 404 would be the
+            more defensible choice instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No order with that ID exists
+```
+
+Every schema in the `components:` section is a direct transcription of the real DTOs in
+`api/dto.go` — `Order` mirrors `orderResponse` field for field, right down to `status` being
+constrained to the single value `pending` this service ever actually assigns, rather than an
+aspirational enum of statuses nothing here implements yet. A spec that describes a richer API than
+the code actually serves is worse than no spec at all: it fails silently, by lying, exactly where a
+missing spec at least fails honestly by not existing.
+
+The spec deliberately covers only the business API on `HTTPAddr` (port 8080) — `/healthz`,
+`/readyz`, and `/metrics` on `AdminAddr` are operational surface for load balancers and Prometheus,
+not part of the contract an API consumer integrates against, and none of them take a request body
+worth documenting beyond "GET it, read the status code." Validate the spec itself the same way you'd
+validate any other generated artifact, rather than trusting it by inspection:
+
+```
+$ npx @redocly/cli lint openapi.yaml
+...
+openapi.yaml: validated in 17ms
+
+Woohoo! Your API description is valid. 🎉
+You have 2 warnings.
+```
+
+The two remaining warnings (no `license` in `info`, and a `localhost` server URL) are both
+intentional for a tutorial spec, not oversights left unfixed.
 
 ## Diagnostics
 
