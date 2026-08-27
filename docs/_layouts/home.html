@@ -97,6 +97,41 @@ func New(ctx context.Context) (*App, error) {
     </div>
   </section>
 
+  {%- comment -%}
+    Three prose pages that sit outside the tutorial's reading order: the
+    concept introduction, the tool comparison, and the boundaries. Repeated
+    here because the header links pointing at them are hidden at small widths.
+  {%- endcomment %}
+  <section class="band" id="start-here">
+    <div class="band__inner">
+      <h2 class="section-title">Start here</h2>
+      <p class="section-lede">
+        Three short pages before the eighteen-chapter tutorial: what problem this solves, how it
+        compares to the alternatives, and where its limits are.
+      </p>
+      <div class="chapter-list">
+        <a class="chapter" href="{{ '/preface.html' | relative_url }}">
+          <span class="chapter__body">
+            <span class="chapter__title">Preface</span>
+            <span class="chapter__blurb">Start here if dependency injection is new to you, or if you've heard the term and assumed it wasn't a Go idea. Eight minutes, no prior tooling assumed.</span>
+          </span>
+        </a>
+        <a class="chapter" href="{{ '/comparison.html' | relative_url }}">
+          <span class="chapter__body">
+            <span class="chapter__title">How servo compares</span>
+            <span class="chapter__blurb">servo beside google/wire, uber-go/fx, uber-go/dig, and writing it by hand — including the cases where one of those is the better answer.</span>
+          </span>
+        </a>
+        <a class="chapter" href="{{ '/limitations.html' | relative_url }}">
+          <span class="chapter__body">
+            <span class="chapter__title">Limitations</span>
+            <span class="chapter__blurb">What servo can't do, and which limits are permanent versus merely unbuilt. The fastest way to find out this is the wrong tool for you.</span>
+          </span>
+        </a>
+      </div>
+    </div>
+  </section>
+
   <section class="band band--alt" id="tutorial">
     <div class="band__inner">
       <h2 class="section-title">Building a microservice with servo</h2>

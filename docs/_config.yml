@@ -39,6 +39,30 @@ defaults:
       path: index.md
     values:
       layout: home
+  # Standalone prose pages: the plain shell, no tutorial sidebar. Scoped one
+  # file at a time for the same reason as above — a catch-all would swallow
+  # assets/ and search.json.
+  - scope:
+      path: preface.md
+    values:
+      layout: page
+      description: >-
+        Why wiring a Go service by hand stops scaling, what dependency
+        injection actually means in Go, and where servo fits.
+  - scope:
+      path: comparison.md
+    values:
+      layout: page
+      description: >-
+        servo next to google/wire, uber-go/fx, uber-go/dig, and hand-written
+        wiring — including when one of those is the better choice.
+  - scope:
+      path: limitations.md
+    values:
+      layout: page
+      description: >-
+        What servo cannot do, separated into permanent consequences of
+        build-time resolution, deliberate omissions, and gaps.
 
 # examples/ and the repo's own Go modules live outside docs/ and are never
 # part of the site, but exclude defensively so a future move can't drag a
