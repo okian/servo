@@ -1,5 +1,9 @@
 # 1. Architecture overview
 
+Before any code, it's worth spending one chapter on the shape we're building toward and why —
+otherwise the first few chapters are just packages appearing with no sense of how they'll fit
+together. This chapter has no exercises; read it, then chapter 2 starts actually building.
+
 ## Why layers
 
 A layered architecture separates code by *what it depends on*, not by what feature it belongs to.
@@ -46,12 +50,12 @@ construction, startup, and shutdown — checked by the compiler, steppable in a 
 in a pull request like any other generated code. [Chapter 11](11-wiring-with-servo.md) is where
 this actually happens, once there's a real graph worth wiring.
 
-## The service this tutorial builds
+## The service you're about to build
 
 An order service: authenticated users place orders and look them up. It's deliberately small — no
 user signup, no payment processing, no order-status transitions beyond "pending" — because the
-point is the architecture and the wiring, not the business domain. Every layer is still real:
-real Postgres, real Redis, real NATS, a real JWT, not simplified stand-ins.
+point is the architecture and the wiring, not the business domain. Every layer is still real,
+though: real Postgres, real Redis, real NATS, a real JWT, not simplified stand-ins.
 
 | Endpoint | Auth | Does |
 |---|---|---|
@@ -106,4 +110,4 @@ If you're deciding whether to reach for this shape at all:
 ## Next
 
 [Chapter 2: Project setup](02-project-setup.md) — initializing the module and installing the
-tools this tutorial depends on.
+tools you'll be using throughout.

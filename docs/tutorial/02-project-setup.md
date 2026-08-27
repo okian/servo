@@ -1,6 +1,11 @@
 # 2. Project setup
 
-## Initializing the module
+Before writing anything, let's set up the module and get oriented — where files will go, what
+tools you'll want on hand, and the handful of commands you'll be running constantly for the rest
+of this tutorial. None of this is exciting on its own, but skipping it means stopping to figure
+this out later, in the middle of a chapter where it'll be more disruptive.
+
+## Create the module
 
 ```
 mkdir servoorders && cd servoorders
@@ -8,64 +13,65 @@ go mod init example.com/servoorders
 go get github.com/okian/servo/v3
 ```
 
-(The tutorial's own copy lives at [`examples/tutorial`](../../examples/tutorial) inside the servo
-repo, and points `github.com/okian/servo/v3` at the local checkout with a `replace` directive
-instead of a published version — that's specific to developing servo itself. In your own project,
-plain `go get github.com/okian/servo/v3` is all you need.)
+That's the whole setup — one module, one dependency so far. (The tutorial's own copy, at
+[`examples/tutorial`](../../examples/tutorial) inside the servo repo, points
+`github.com/okian/servo/v3` at the local checkout with a `replace` directive instead of a published
+version, because it's developing servo itself alongside the tutorial. You won't need that; plain
+`go get` is enough.)
 
-## Layout
+## Where things will go
 
-This is where the finished project ends up. You won't have all of this after this chapter — it's
-here so you know where each later chapter's code will land.
+You don't need to create any of this yet — each directory shows up in the chapter that actually
+needs it. Keep this page open as a map for "where does this belong":
 
 ```
 servoorders/
   go.mod
-  Makefile                 local dev commands (see below)
-  config/                  typed configuration (chapter 3)
-  domain/                  core types, no dependencies on anything else here (chapter 4)
-  repository/              OrderRepository, UserRepository interfaces (chapter 5)
-  postgres/                Postgres implementation of both (chapter 5)
-  migrations/              embedded SQL, applied on startup (chapter 5)
-  cache/                   OrderCache interface (chapter 6)
-  redis/                   Redis implementation (chapter 6)
-  broker/                  EventPublisher interface (chapter 7)
-  nats/                    NATS implementation (chapter 7)
-  notifier/                a subscriber consuming events (chapter 7)
-  service/                 OrderService: the business logic (chapter 8)
-  auth/                    JWT issuing and verification (chapter 9)
-  api/                     HTTP server, router, handlers (chapter 10)
-  cmd/orders/              spec.go + main.go — the injector (chapter 11)
-  observability/           logging, metrics, tracing setup (chapter 12)
-  resilience/              circuit breaker, rate limiting (chapter 13)
-  mocks/                   generated mocks for tests (chapter 14)
-  deploy/                  docker-compose.yml, Dockerfile (chapter 16)
-  openapi.yaml             API contract (chapter 10)
+  Makefile                 local dev commands (below)
+  config/                  typed configuration                 chapter 3
+  domain/                  core types, no dependency on anything else here   chapter 4
+  repository/              OrderRepository, UserRepository interfaces        chapter 5
+  postgres/                Postgres implementation of both                   chapter 5
+  migrations/              embedded SQL, applied on startup                  chapter 5
+  cache/                   OrderCache interface                              chapter 6
+  redis/                   Redis implementation                              chapter 6
+  broker/                  EventPublisher interface                          chapter 7
+  natsbroker/              NATS implementation                               chapter 7
+  notifier/                a subscriber consuming events                     chapter 7
+  service/                 OrderService: the business logic                  chapter 8
+  auth/                    JWT issuing and verification                     chapter 9
+  api/                     HTTP server, router, handlers                     chapter 10
+  cmd/orders/              spec.go + main.go — the injector                  chapter 11
+  observability/           logging, metrics, tracing setup                   chapter 12
+  resilience/              circuit breaker, rate limiting                    chapter 13
+  mocks/                   generated mocks for tests                        chapter 8 onward
+  deploy/                  docker-compose.yml, Dockerfile                    chapter 16
+  openapi.yaml             API contract                                     chapter 10
 ```
 
-Every package is flat — no `internal/` nesting. That's a deliberate choice, not an oversight: this
-module has one consumer (you, running it), so there's nothing `internal/` would protect against
-that a normal package boundary doesn't already provide. A library with external consumers is a
-different situation; see [`internal/` in servo's own layout](../../ARCHITECTURE.md) for a case
-where it does matter.
+One thing worth deciding now, before it's a habit: every package here is flat, with no `internal/`
+nesting. That's deliberate — this module has exactly one consumer (you, running it), so there's
+nothing `internal/` would protect against that an ordinary package boundary doesn't already give
+you. A library meant for other people to import is a different situation; servo's own
+[`internal/` layout](../../ARCHITECTURE.md) is worth a look for what that case looks like.
 
-## Tools you'll want installed
+## Install what you'll need
 
-| Tool | Used for | Install |
+| Tool | You'll use it for | Install |
 |---|---|---|
 | `servo` | Generating and checking the wiring (chapter 11) | `go install github.com/okian/servo/v3/cmd/servo@latest` |
 | Docker + `docker compose` | Running Postgres, Redis, NATS locally | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| `golangci-lint` | CI lint step (chapter 15) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
+| `golangci-lint` | The CI lint step (chapter 15) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 
-You don't need `servo` installed globally to follow along — every command in this tutorial also
-works as `go run github.com/okian/servo/v3/cmd/servo <command>`, which is what the Makefile below
-actually uses, so a fresh clone works with nothing pre-installed except Go and Docker.
+You can actually skip installing `servo` globally — every command in this tutorial works equally
+well as `go run github.com/okian/servo/v3/cmd/servo <command>`, and that's what the Makefile below
+uses, so a fresh clone of the finished project works with nothing pre-installed except Go and
+Docker.
 
-## The Makefile
+## Write the Makefile
 
-Real projects accumulate a handful of commands everyone on the team needs to remember (start the
-local dependencies, run migrations, run the fast tests, run the slow ones). A `Makefile` is a
-low-ceremony place to put them:
+Add a `Makefile` at the root now. You'll be reaching for these commands from chapter 5 onward, and
+it's one less thing to assemble under pressure later:
 
 ```makefile
 .PHONY: up down test test-integration run generate check
@@ -95,30 +101,31 @@ check:
 	go run github.com/okian/servo/v3/cmd/servo check
 ```
 
-`test` and `test-integration` are deliberately separate targets. `test` never touches the network —
-every package skips its integration tests when the corresponding `TEST_*_DSN`/`TEST_*_ADDR`
-variable is unset, so it's always safe to run and always fast. `test-integration` is what actually
-exercises Postgres, Redis, and NATS for real; it needs `make up` first. [Chapter
-14](14-testing-strategy.md) explains why the split is worth keeping once the suite grows.
+Two test targets, not one, and that split is worth understanding now rather than discovering by
+accident: `test` never touches the network. Every package we write will skip its own integration
+tests automatically when the matching `TEST_*_DSN`/`TEST_*_ADDR` variable is unset, so `make test`
+stays safe to run constantly, from anywhere, with nothing running in the background. `make
+test-integration` is the one that actually needs Postgres, Redis, and NATS up first (`make up`) —
+you'll use it starting in chapter 5, the moment there's a real database to test against.
 
 ## Diagnostics
 
 - **`go: github.com/okian/servo/v3@...: reading github.com/okian/...: 404 Not Found`** — you're
   following along outside the servo repo and haven't run `go get github.com/okian/servo/v3` yet
-  (or it hasn't been published as a real module yet, if you're doing this against an unpublished
-  fork — use a `replace` directive pointing at your local checkout in that case, exactly as
-  `examples/tutorial/go.mod` does for servo's own repo).
-- **`make: docker: command not found`** — install Docker first; nothing past chapter 5 works
-  without it.
+  (or you're pointed at an unpublished fork — use a `replace` directive at your local checkout in
+  that case, the same way `examples/tutorial/go.mod` does).
+- **`make: docker: command not found`** — install Docker before continuing; nothing from chapter 5
+  onward works without it.
 
 ## Do's and don'ts
 
-- **Do** commit `go.sum` — it's what makes `go build` reproducible across machines. Never add it to
-  `.gitignore`.
-- **Don't** reach for a task runner heavier than `make` until `make` actually runs out of
-  expressiveness (usually: needing real conditionals, or cross-platform `sh` differences). Five
-  targets doesn't justify [`just`](https://github.com/casey/just) or a shell-script framework yet.
+- **Do** commit `go.sum` once it exists — it's what makes `go build` reproducible across machines.
+  Never gitignore it.
+- **Don't** reach for a task runner heavier than `make` until `make` genuinely runs out of
+  expressiveness (usually: real conditionals, or cross-platform `sh` differences). Five targets
+  doesn't justify [`just`](https://github.com/casey/just) or a shell-script framework yet.
 
 ## Next
 
-[Chapter 3: Configuration](03-configuration.md) — the first package this service actually needs.
+[Chapter 3: Configuration](03-configuration.md) — the first package this service actually needs,
+and the first thing every other package will depend on.

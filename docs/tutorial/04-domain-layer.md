@@ -1,18 +1,37 @@
 # 4. Domain layer
 
-## What belongs here
+Before writing anything that talks to a database or an HTTP request, we need to decide what an
+"order" and a "user" actually *are* in this system — independent of how they'll be stored, cached,
+or served. That's the whole job of this chapter, and it's deliberately the smallest one: a package
+with no dependency on anything else we'll write, so every later chapter has something stable to
+build against instead of chasing a moving target.
 
-The domain layer is the smallest, most boring package in the service, and that's the point: it's
-plain types and sentinel errors, with no import of `net/http`, `pgx`, `redis`, or `servo` itself.
-Everything else in this tutorial depends on `domain`; `domain` depends on nothing but the standard
-library and `github.com/google/uuid`.
+## Create the domain package
+
+Create `domain/domain.go`. Start with what an order status can be:
 
 ```go
-// examples/tutorial/domain/domain.go
+package domain
+
+import (
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+)
+
 type OrderStatus string
 
 const OrderStatusPending OrderStatus = "pending"
+```
 
+Just one status for now — this service never transitions an order out of `pending`. If it needed
+to later (`shipped`, `cancelled`), this is where that would live, along with whatever rules govern
+which transitions are legal; a `const` type is enough for a closed set of values on its own.
+
+Now the two types everything else in this tutorial will pass around:
+
+```go
 type Order struct {
 	ID        uuid.UUID
 	UserID    uuid.UUID
@@ -27,7 +46,19 @@ type User struct {
 	Username     string
 	PasswordHash string
 }
+```
 
+Notice `ID` and `UserID` are `uuid.UUID`, generated in our own code (`uuid.New()`), not integers a
+database assigns. Two reasons this matters, not just a style choice: an ID never has to round-trip
+through Postgres before the rest of the code can use it — the service layer will generate an
+order's ID, publish it in an event, and write it to the database, in whatever order is convenient,
+because nothing is waiting on the database to hand back an auto-incremented value first (see
+[chapter 7](07-messaging-layer.md)). And an ID is never guessable or enumerable, which matters the
+moment one shows up in a URL (`GET /orders/{id}`) that only its owner should be able to fetch.
+
+## Add the errors every other layer will check for
+
+```go
 var (
 	ErrNotFound   = errors.New("resource not found")
 	ErrForbidden  = errors.New("access forbidden")
@@ -35,13 +66,11 @@ var (
 )
 ```
 
-## Why sentinel errors, and why here
-
-`ErrNotFound`, `ErrForbidden`, and `ErrValidation` are checked with `errors.Is` by every layer
-above `domain` — the repository returns `domain.ErrNotFound` when a row doesn't exist
-([chapter 5](05-repository-layer.md)), the service layer returns `domain.ErrForbidden` when a user
-requests someone else's order ([chapter 8](08-service-layer.md)), and the API layer is the *one*
-place that maps each of them to an HTTP status code ([chapter 10](10-api-layer.md)):
+These three sentinel errors are what the rest of the service will use to talk about failure,
+instead of each layer inventing its own. The repository we build in the next chapter will return
+`ErrNotFound` when a row doesn't exist; the service layer will return `ErrForbidden` when someone
+requests an order that isn't theirs; and only the API layer, right at the edge, will translate each
+one into an HTTP status code:
 
 ```mermaid
 flowchart LR
@@ -51,47 +80,45 @@ flowchart LR
     PG --> Svc --> API
 ```
 
-Defining these in `domain` rather than in `postgres` or `api` is what keeps that mapping honest:
-if the *repository* defined `ErrNotFound`, the service layer would have a compile-time dependency
-on `postgres` just to check an error — exactly the layering violation
-[chapter 1](01-architecture-overview.md#why-layers) is about avoiding.
+The reason these live in `domain` and not, say, `postgres` (where the not-found case first comes
+up) is what makes that translation trustworthy: if the *repository* had defined `ErrNotFound`,
+the service layer would need a compile-time dependency on `postgres` just to check an error — the
+exact layering violation [chapter 1](01-architecture-overview.md#why-layers) set out to avoid.
+Defining them here means every layer above can depend on the error without depending on whichever
+package first produced it.
 
-## Why UUIDs instead of auto-incrementing integers
+## What doesn't belong here
 
-`Order.ID` and `User.ID` are `uuid.UUID`, generated in application code
-(`uuid.New()`), not database-assigned `SERIAL` integers. Two real reasons, not just a style
-preference: an ID never has to round-trip through the database before the rest of the code (the
-service layer can generate an order's ID, publish it in an event, and write it to Postgres in any
-order — see [chapter 7](07-messaging-layer.md)); and IDs are never guessable or sequentially
-enumerable, which matters the moment an ID appears in a URL (`GET /orders/{id}`) that only an
-owner should be able to fetch.
+It's worth naming the boundary explicitly, since it's easy to blur once real code starts landing
+in this file. A `json:"..."` struct tag is fine — it doesn't imply a specific transport. A method
+that returns an `http.StatusCode`, or a field typed as something from `database/sql`, is not: the
+moment `domain` needs to import `net/http` or a driver package, the layering has quietly stopped
+meaning anything. If validation rules grow later (a maximum quantity, an allowed set of items), a
+`Validate() error` method on `Order` would belong here too, so the rule is enforced no matter which
+layer constructs one. This tutorial's validation is simple enough that it lives inline in
+[the service layer](08-service-layer.md) instead — a reflection of how little there is to validate
+yet, not a rule to copy.
+
+## Nothing to test yet
+
+There's no test file for this chapter, and that's deliberate rather than an oversight: everything
+in `domain.go` right now is a type or constant declaration with no branching logic, and a test
+would just restate the code back to itself. That changes the moment real logic — like the
+`Validate()` method above — actually lands here.
 
 ## Diagnostics
 
-- **A function in a "domain" package needs to import `context`** — that's fine. Domain types
-  themselves don't do I/O, but nothing says the package can't hold pure functions that take a
-  `context.Context` if you later add domain-level operations that should be cancellable. What's not
-  fine is importing `database/sql`, `net/http`, or anything that implies a specific transport or
-  storage technology.
-- **Tempted to add a `Validate() error` method to `Order`?** That's a reasonable evolution once
-  validation rules exist (a maximum quantity, an allowed set of items) — put it here, not in the
-  API layer's request-decoding code, so the rule is enforced no matter which layer constructs an
-  `Order`. This tutorial's validation is simple enough to live inline in
-  [the service layer](08-service-layer.md) instead; don't take that as a rule, just as this
-  example's actual complexity budget.
+- **Tempted to import `context` here?** That's fine on its own — domain types don't do I/O, but
+  nothing stops the package from holding pure, cancellable functions later. What's not fine is
+  importing anything that implies a specific transport or storage technology.
 
 ## Do's and don'ts
 
-- **Do** keep this package free of struct tags that only matter to one consumer — a `json:"..."`
-  tag is fine since it's genuinely shape-neutral, but a `db:"..."` tag tied to a specific SQL
-  library's scanning convention belongs in `postgres`, not here.
-- **Don't** put `OrderStatus` state-transition logic in this file if it grows (e.g. "pending can
-  become shipped or cancelled, but not the reverse"). A `const` type is fine for a closed set of
-  values; validating *transitions* between them is business logic and belongs in
-  [`service`](08-service-layer.md).
-- **Don't** write unit tests for this file as it stands — there's no branching logic to exercise,
-  only type and constant declarations. A test here would just restate the code. That changes the
-  moment real logic (like a `Validate()` method) lands.
+- **Don't** put `OrderStatus` transition logic directly on the type without a plan — validating
+  *which* transitions are legal is business logic, and belongs in [`service`](08-service-layer.md),
+  not scattered across whichever layer happens to set the field.
+- **Don't** add a struct tag here that only one consumer cares about — a `db:"..."` tag tied to a
+  specific SQL library's scanning convention belongs in `postgres`, not here.
 
 ## Next
 

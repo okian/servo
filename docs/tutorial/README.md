@@ -8,6 +8,27 @@ Every chapter's code lives in [`examples/tutorial`](../../examples/tutorial), a 
 module you can `cd` into and run at every step. Nothing in these pages is invented: every code
 block is copied from that module, and every command's output shown here was actually run.
 
+## Why this exists
+
+servo's own [README](../../README.md) and [`examples/basic`](../../examples/basic) show the
+mechanics — how one constructor gets wired to another, what a spec file looks like, what
+`servo generate` produces. What they don't show is what it's like to build something with real
+weight to it: a service with a database, a cache, an event to publish, a login flow, tests at
+three different levels, and a pipeline that ships it. That gap — "I understand what servo does" to
+"I could build a real service with it" — is what this tutorial is for. Every chapter adds one
+layer or concern to the same running service, in the order you'd actually add them, so by the last
+chapter nothing is hypothetical: it's a service you've built, one working piece at a time, that
+happens to also be a complete reference for how the pieces fit together.
+
+## How to read this
+
+Each chapter follows the same shape: what problem this layer solves and why it exists, the real
+code that solves it (with enough surrounding explanation that you're not just staring at syntax),
+a diagram where the shape of something is easier to see than to describe, a "try it yourself"
+section with commands you can actually run, then diagnostics, do's and don'ts, and pointers to
+alternatives. Read chapters in order the first time — each one builds on code the previous ones
+already wrote. After that, they hold up fine as standalone reference.
+
 ## Who this is for
 
 You should be comfortable writing Go and using `go test`, but this tutorial assumes nothing about
