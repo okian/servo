@@ -17,6 +17,9 @@ with no parameters — components found each other through package-level globals
 of that: dependencies are declared only by constructor parameters, and resolution happens at
 build time, not runtime.
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for how the load → scan → resolve → emit pipeline fits
+together and why it's shaped the way it is.
+
 ## Quick start
 
 ```
