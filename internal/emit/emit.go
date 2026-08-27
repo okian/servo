@@ -183,13 +183,25 @@ func (e *emitter) qualifiedTypeString(t types.Type) string {
 		return "*" + e.qualifiedTypeString(u.Elem())
 	case *types.Named:
 		obj := u.Obj()
-		if obj.Pkg() == nil {
-			return obj.Name()
+		name := obj.Name()
+		if obj.Pkg() != nil {
+			if ident := e.pkgIdent(obj.Pkg()); ident != "" {
+				name = ident + "." + name
+			}
 		}
-		if ident := e.pkgIdent(obj.Pkg()); ident != "" {
-			return ident + "." + obj.Name()
+		// An instantiated generic type must carry its type arguments:
+		// Cache[string] rendered as a bare "Cache" is the uninstantiated
+		// generic, which is not a usable type ("cannot use generic type
+		// without instantiation"). Arguments recurse so they get qualified
+		// and imported the same way the outer type does.
+		if targs := u.TypeArgs(); targs != nil && targs.Len() > 0 {
+			args := make([]string, targs.Len())
+			for i := range args {
+				args[i] = e.qualifiedTypeString(targs.At(i))
+			}
+			name += "[" + strings.Join(args, ", ") + "]"
 		}
-		return obj.Name()
+		return name
 	case *types.Interface:
 		if u.NumMethods() == 0 {
 			return "any"
