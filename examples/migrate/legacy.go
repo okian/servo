@@ -5,11 +5,18 @@
 // meant to catch, not a mistake in this fixture.
 package legacy
 
-type Logger struct{}
-type DB struct{}
-type Cache struct{}
-type Server struct{}
+type (
+	Logger struct{}
+	DB     struct{}
+	Cache  struct{}
+	Server struct{}
+)
 
+// setup is deliberately never called. servo migrate reads the syntax of the
+// Register calls below without executing them, so a caller would misrepresent
+// what this fixture demonstrates.
+//
+//nolint:unused // intentionally uncalled fixture; see above
 func setup() {
 	Register(&Logger{}, 1)
 	Register(&DB{}, 2)
