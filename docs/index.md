@@ -22,3 +22,31 @@ share one type-checking session.
 Resolution either produces a complete ordered plan or a set of diagnostics — never a partial
 graph. [ARCHITECTURE.md](https://github.com/okian/servo/blob/master/ARCHITECTURE.md) covers how
 each stage is built and why it's shaped that way.
+
+## What the generated app does at runtime
+
+The emitted `New`, `Run` and `Shutdown` are the whole lifecycle. Start-up runs in dependency
+order and rolls back on failure; shutdown runs in reverse under a time budget, and reports any
+node that refused to stop rather than hanging on it.
+
+```mermaid
+flowchart TD
+    C["Construct<br/>constructors called in dependency order"]
+    I["Init<br/>level by level — independent nodes concurrently"]
+    OK{"every Init<br/>returned nil?"}
+    R["Roll back<br/>Shutdown(ctx), joined with the failing error"]
+    RUN["Running"]
+    S["Shutdown<br/>reverse dependency order"]
+    B{"returned inside<br/>the stop budget?"}
+    DONE["StatusOK / StatusFailed"]
+    AB["StatusAbandoned<br/>reported, not waited on"]
+
+    C --> I --> OK
+    OK -- no --> R
+    OK -- yes --> RUN --> S --> B
+    B -- yes --> DONE
+    B -- no --> AB
+```
+
+Nothing here is a framework callback: it is ordinary Go in a file you can read, step through, and
+review in a pull request.
