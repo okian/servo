@@ -18,7 +18,7 @@ type v1Registration struct {
 	pos      token.Position
 }
 
-// runMigrate reads v1 servo.Register(X{}, N) calls and emits a v2 skeleton
+// runMigrate reads v1 servo.Register(X{}, N) calls and emits a v3 skeleton
 // plus a report flagging every duplicated order value. v1 has no
 // constructor parameters at all — components find each other through
 // globals — so there is no real dependency graph to derive a topological
@@ -62,7 +62,7 @@ func runMigrate(dir string) error {
 	fmt.Println()
 	fmt.Println("package main")
 	fmt.Println()
-	fmt.Println(`import "github.com/okian/servo/v2/servo"`)
+	fmt.Println(`import "github.com/okian/servo/v3/servo"`)
 	fmt.Println()
 	fmt.Println("func wire() {")
 	fmt.Println("\tservo.Build(")

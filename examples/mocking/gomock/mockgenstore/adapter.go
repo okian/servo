@@ -3,7 +3,7 @@ package mockgenstore
 import (
 	"go.uber.org/mock/gomock"
 
-	"github.com/okian/servo/v2/servotest"
+	"github.com/okian/servo/v3/servotest"
 )
 
 // MockStoreForServo wraps gomock-generated *MockStore, for the same

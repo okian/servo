@@ -15,7 +15,7 @@ import (
 func TestFindSpecRejectsBindToAnotherInterface(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/bindiface\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/bindiface\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\ntype Other interface{ Get(key string) string }\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
@@ -23,7 +23,7 @@ package spec
 
 import (
 	"example.com/bindiface/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func Wire() {
@@ -50,7 +50,7 @@ func Wire() {
 func TestFindSpecRejectsOverrideToAnyType(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/overrideany\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/overrideany\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
@@ -58,7 +58,7 @@ package spec
 
 import (
 	"example.com/overrideany/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func Wire() {
@@ -82,7 +82,7 @@ func Wire() {
 func TestFindSpecRejectsDuplicateBindForSameInterface(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/dupbind\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/dupbind\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\n")
 	mustWriteFile(t, dir, "a/a.go", "package a\n\ntype A struct{}\n\nfunc (x *A) Get(key string) string { return \"\" }\n\nfunc New() *A { return &A{} }\n")
 	mustWriteFile(t, dir, "b/b.go", "package b\n\ntype B struct{}\n\nfunc (x *B) Get(key string) string { return \"\" }\n\nfunc New() *B { return &B{} }\n")
@@ -94,7 +94,7 @@ import (
 	"example.com/dupbind/a"
 	"example.com/dupbind/b"
 	"example.com/dupbind/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func Wire() {
@@ -119,7 +119,7 @@ func Wire() {
 func TestFindSpecRejectsDuplicateOverrideForSameInterface(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/dupoverride\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/dupoverride\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\n")
 	mustWriteFile(t, dir, "a/a.go", "package a\n\ntype A struct{}\n\nfunc (x *A) Get(key string) string { return \"\" }\n\nfunc New() *A { return &A{} }\n")
 	mustWriteFile(t, dir, "b/b.go", "package b\n\ntype B struct{}\n\nfunc (x *B) Get(key string) string { return \"\" }\n\nfunc New() *B { return &B{} }\n")
@@ -131,7 +131,7 @@ import (
 	"example.com/dupoverride/a"
 	"example.com/dupoverride/b"
 	"example.com/dupoverride/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func Wire() {
@@ -158,7 +158,7 @@ func Wire() {
 // deliberately-unsupported behavior rather than fixing anything:
 // resolveCalledFunc/markerCall only recognize marker calls written as a
 // selector (servo.Build, servo.Root[T]()). A dot-imported spec
-// (`import . "github.com/okian/servo/v2/servo"`, then a bare `Build(...)`
+// (`import . "github.com/okian/servo/v3/servo"`, then a bare `Build(...)`
 // call) parses call.Fun as a plain *ast.Ident, not a *ast.SelectorExpr, so
 // it is invisible to the scan. The failure mode is a clear "no
 // servo.Build(...) call found" — the same message as a spec file with no
@@ -170,7 +170,7 @@ func Wire() {
 func TestFindSpecDoesNotRecognizeDotImportedBuildCall(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/dotimport\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/dotimport\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "api/api.go", "package api\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
@@ -178,7 +178,7 @@ package spec
 
 import (
 	"example.com/dotimport/api"
-	. "github.com/okian/servo/v2/servo"
+	. "github.com/okian/servo/v3/servo"
 )
 
 func Wire() {
@@ -202,12 +202,12 @@ func Wire() {
 func TestFindSpecRejectsNonCallBuildArgument(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/badarg\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/badarg\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
 package spec
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func Wire() {
 	servo.Build(nil)
@@ -228,12 +228,12 @@ func Wire() {
 func TestFindSpecRejectsMarkerCallWithoutTypeArguments(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/notype\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/notype\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
 package spec
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func helper() servo.Marker { return servo.Marker{} }
 
@@ -256,12 +256,12 @@ func Wire() {
 func TestFindSpecRejectsUnqualifiedGenericMarkerShape(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/unqualified\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/unqualified\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
 package spec
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func Ident[T any]() T {
 	var zero T
@@ -290,12 +290,12 @@ func Wire() {
 func TestFindSpecRejectsUnqualifiedMultiArgGenericMarkerShape(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/unqualified2\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/unqualified2\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
 package spec
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func Ident2[A, B any]() A {
 	var zero A
@@ -325,12 +325,12 @@ func Wire() {
 func TestFindSpecStopsAtFirstMalformedBuildCall(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/twobuilds\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/twobuilds\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
 
 package spec
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func WireA() {
 	servo.Build(nil)
@@ -355,7 +355,7 @@ func WireB() {
 func TestFindSpecRejectsForeignGenericFunction(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/foreign\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/foreign\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "other/other.go", `package other
 
 func Ident[T any]() T {
@@ -369,7 +369,7 @@ package spec
 
 import (
 	"example.com/foreign/other"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func Wire() {

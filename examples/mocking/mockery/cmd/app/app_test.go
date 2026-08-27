@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/okian/servo/v2/servotest"
+	"github.com/okian/servo/v3/servotest"
 )
 
 func TestServerLookupUsesMockeryMock(t *testing.T) {

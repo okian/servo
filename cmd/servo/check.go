@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/okian/servo/v2/internal/emit"
+	"github.com/okian/servo/v3/internal/emit"
 )
 
 // runCheck verifies every injector found within dir's scope matches a fresh

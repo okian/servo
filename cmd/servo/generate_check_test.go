@@ -60,7 +60,7 @@ func TestCheckFailsWhenGeneratedFileStale(t *testing.T) {
 func TestGenerateEmitsTestAppWhenOverrideDeclared(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/override\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/override\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\n")
 	mustWriteFile(t, dir, "memory/memory.go", "package memory\n\ntype Mem struct{}\n\nfunc (m *Mem) Get(key string) string { return \"\" }\n\nfunc New() *Mem { return &Mem{} }\n")
 	mustWriteFile(t, dir, "api/api.go", `package api
@@ -79,7 +79,7 @@ import (
 	"example.com/override/api"
 	"example.com/override/memory"
 	"example.com/override/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {
@@ -113,7 +113,7 @@ func wire() {
 func TestGenerateAndCheckProcessEveryInjectorInScope(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/multi\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/multi\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "api/api.go", "package api\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
 	mustWriteFile(t, dir, "worker/worker.go", "package worker\n\ntype Consumer struct{}\n\nfunc New() *Consumer { return &Consumer{} }\n")
 	mustWriteFile(t, dir, "cmd/apisvc/spec.go", `//go:build servoinject
@@ -122,7 +122,7 @@ package main
 
 import (
 	"example.com/multi/api"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() { servo.Build(servo.Root[*api.Server]()) }
@@ -133,7 +133,7 @@ package main
 
 import (
 	"example.com/multi/worker"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() { servo.Build(servo.Root[*worker.Consumer]()) }
@@ -163,7 +163,7 @@ func wire() { servo.Build(servo.Root[*worker.Consumer]()) }
 func TestGenerateProcessesHealthyInjectorDespiteASiblingBeingBroken(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/mixedhealth\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/mixedhealth\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "healthy/healthy.go", "package healthy\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
 	mustWriteFile(t, dir, "broken/broken.go", "package broken\n\ntype Thing struct{}\n\n// NewThing takes an unresolvable dependency: no provider produces int.\nfunc NewThing(missing int) *Thing { return &Thing{} }\n")
 	mustWriteFile(t, dir, "cmd/healthysvc/spec.go", `//go:build servoinject
@@ -172,7 +172,7 @@ package main
 
 import (
 	"example.com/mixedhealth/healthy"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() { servo.Build(servo.Root[*healthy.Server]()) }
@@ -183,7 +183,7 @@ package main
 
 import (
 	"example.com/mixedhealth/broken"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() { servo.Build(servo.Root[*broken.Thing]()) }
@@ -259,7 +259,7 @@ func TestGenerateReportsResolutionErrors(t *testing.T) {
 func TestGenerateWorksForNonMainPackageInjector(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/libinjector\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/libinjector\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "api/api.go", "package api\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
 	mustWriteFile(t, dir, "wiring/spec.go", `//go:build servoinject
 
@@ -267,7 +267,7 @@ package wiring
 
 import (
 	"example.com/libinjector/api"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {

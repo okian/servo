@@ -7,7 +7,7 @@ import (
 	"example.com/servomocking/mockery/mocks"
 	"example.com/servomocking/realstore"
 	"example.com/servomocking/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {

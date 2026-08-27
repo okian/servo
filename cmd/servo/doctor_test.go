@@ -19,7 +19,7 @@ import (
 func TestRunDoctorAggregatesEveryInjector(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/doctormulti\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/doctormulti\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "api/api.go", "package api\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
 	mustWriteFile(t, dir, "worker/worker.go", "package worker\n\ntype Consumer struct{}\n\nfunc New() *Consumer { return &Consumer{} }\n")
 	mustWriteFile(t, dir, "cmd/apisvc/spec.go", `//go:build servoinject
@@ -28,7 +28,7 @@ package main
 
 import (
 	"example.com/doctormulti/api"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() { servo.Build(servo.Root[*api.Server]()) }
@@ -39,7 +39,7 @@ package main
 
 import (
 	"example.com/doctormulti/worker"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() { servo.Build(servo.Root[*worker.Consumer]()) }
@@ -108,8 +108,8 @@ func TestRunDoctorFailsWhenModuleDoesNotLoad(t *testing.T) {
 func TestRunDoctorFailsWhenSpecMissing(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/nospec\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
-	mustWriteFile(t, dir, "main.go", "package main\n\nimport _ \"github.com/okian/servo/v2/servo\"\n\nfunc main() {}\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/nospec\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "main.go", "package main\n\nimport _ \"github.com/okian/servo/v3/servo\"\n\nfunc main() {}\n")
 	runGoModTidy(t, dir)
 
 	var err error

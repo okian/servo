@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 // Store, Postgres, FakeStore, and Server stand in for a real application's

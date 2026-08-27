@@ -9,7 +9,7 @@ import (
 	"example.com/servobasic/relay"
 	"example.com/servobasic/store"
 	"example.com/servobasic/worker"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {

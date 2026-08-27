@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/okian/servo/v2/internal/emit"
+	"github.com/okian/servo/v3/internal/emit"
 )
 
 // generatedFileName is the emitted file's name, placed alongside the spec

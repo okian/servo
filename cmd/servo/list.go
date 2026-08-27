@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/okian/servo/v2/internal/graph"
+	"github.com/okian/servo/v3/internal/graph"
 )
 
 // runList dumps the candidate index, or with rejected=true, every function

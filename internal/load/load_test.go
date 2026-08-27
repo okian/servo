@@ -71,8 +71,8 @@ func TestFindSpecNoBuildCall(t *testing.T) {
 	writeFile := func(rel, content string) {
 		mustWriteFile(t, dir, rel, content)
 	}
-	writeFile("go.mod", "module example.com/empty\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
-	writeFile("main.go", "package main\n\nimport _ \"github.com/okian/servo/v2/servo\"\n\nfunc main() {}\n")
+	writeFile("go.mod", "module example.com/empty\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	writeFile("main.go", "package main\n\nimport _ \"github.com/okian/servo/v3/servo\"\n\nfunc main() {}\n")
 	runGoModTidy(t, dir)
 
 	loaded, err := Load(Config{Dir: dir})
@@ -88,10 +88,10 @@ func TestFindSpecNoBuildCall(t *testing.T) {
 func TestFindSpecMissingBuildTag(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/untagged\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/untagged\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "spec/spec.go", `package spec
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 type App struct{}
 

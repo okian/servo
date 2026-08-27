@@ -28,7 +28,7 @@ func TestRunInitScaffoldsSpecFile(t *testing.T) {
 	if !strings.Contains(content, "package worker") {
 		t.Errorf("scaffold should detect the package name from the existing main.go, got:\n%s", content)
 	}
-	if !strings.Contains(content, "//go:generate go run github.com/okian/servo/v2/cmd/servo generate") {
+	if !strings.Contains(content, "//go:generate go run github.com/okian/servo/v3/cmd/servo generate") {
 		t.Errorf("scaffold missing go:generate directive:\n%s", content)
 	}
 }

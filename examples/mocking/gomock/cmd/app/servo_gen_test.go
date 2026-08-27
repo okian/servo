@@ -16,7 +16,7 @@ import (
 	"context"
 	"example.com/servomocking/api"
 	"example.com/servomocking/gomock/mockgenstore"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 	"os"
 	"os/signal"
 	"syscall"

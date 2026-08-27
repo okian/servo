@@ -3,7 +3,7 @@ package resolve
 import (
 	"go/types"
 
-	"github.com/okian/servo/v2/internal/graph"
+	"github.com/okian/servo/v3/internal/graph"
 )
 
 // selection is the outcome of applying provider-selection precedence for

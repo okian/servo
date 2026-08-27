@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/okian/servo/v2/internal/graph"
-	"github.com/okian/servo/v2/internal/load"
-	"github.com/okian/servo/v2/internal/resolve"
+	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
+	"github.com/okian/servo/v3/internal/resolve"
 )
 
 // pipeline is everything shared by generate/check/graph/explain/why/list:

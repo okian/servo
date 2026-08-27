@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func TestNoLeaksPassesCleanTest(t *testing.T) {

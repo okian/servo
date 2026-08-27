@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/okian/servo/v2/internal/resolve"
+	"github.com/okian/servo/v3/internal/resolve"
 )
 
 // newFunc emits the constructor: sequential DFS-post-order construction

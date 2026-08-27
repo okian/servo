@@ -3,8 +3,8 @@ package servotest_test
 import (
 	"fmt"
 
-	"github.com/okian/servo/v2/servo"
-	"github.com/okian/servo/v2/servotest"
+	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servotest"
 )
 
 // ExampleNewRecorder wraps a generated app's own init and shutdown reports

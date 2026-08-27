@@ -19,9 +19,9 @@ func writeMultiInjectorModule(t *testing.T) string {
 
 go 1.23
 
-require github.com/okian/servo/v2 v2.0.0
+require github.com/okian/servo/v3 v3.0.0
 
-replace github.com/okian/servo/v2 => `+root+`
+replace github.com/okian/servo/v3 => `+root+`
 `)
 
 	write("api/api.go", `package api
@@ -44,7 +44,7 @@ package main
 
 import (
 	"example.com/multiapp/api"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {
@@ -60,7 +60,7 @@ package main
 
 import (
 	"example.com/multiapp/worker"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {
@@ -131,7 +131,7 @@ func TestFindSpecScopedToOneInjectorDirectorySucceeds(t *testing.T) {
 func TestFindSpecsErrorsOnSamePackageAmbiguity(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
-	mustWriteFile(t, dir, "go.mod", "module example.com/dupe\n\ngo 1.23\n\nrequire github.com/okian/servo/v2 v2.0.0\n\nreplace github.com/okian/servo/v2 => "+root+"\n")
+	mustWriteFile(t, dir, "go.mod", "module example.com/dupe\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "api/api.go", "package api\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
 	// Two Build calls in the SAME package (different files) is genuinely
 	// ambiguous — unlike two different packages, that package can only
@@ -142,7 +142,7 @@ package spec
 
 import (
 	"example.com/dupe/api"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func WireA() {
@@ -155,7 +155,7 @@ package spec
 
 import (
 	"example.com/dupe/api"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func WireB() {

@@ -1,4 +1,4 @@
-module github.com/okian/servo/v2
+module github.com/okian/servo/v3
 
 go 1.25.0
 

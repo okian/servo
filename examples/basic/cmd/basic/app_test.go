@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/okian/servo/v2/servo"
-	"github.com/okian/servo/v2/servotest"
+	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servotest"
 )
 
 func TestAppStartsAndStopsCleanly(t *testing.T) {

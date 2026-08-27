@@ -7,8 +7,8 @@ import (
 	"go/token"
 	"go/types"
 
-	"github.com/okian/servo/v2/internal/graph"
-	"github.com/okian/servo/v2/internal/load"
+	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
 )
 
 // Node is one resolved value in the object graph, keyed by its provider's

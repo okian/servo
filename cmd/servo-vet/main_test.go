@@ -11,11 +11,11 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/packages"
 
-	"github.com/okian/servo/v2/internal/graph"
+	"github.com/okian/servo/v3/internal/graph"
 )
 
 // pkgImporter shares object identity with a real go/packages load of the
-// servo package, so the fixture's "github.com/okian/servo/v2/servo" import
+// servo package, so the fixture's "github.com/okian/servo/v3/servo" import
 // resolves to the exact same types.Package the analyzer's own
 // pass.TypesInfo will reference. See internal/graph/capabilities_test.go
 // for why this matters (a second, independent Check of "servo" would
@@ -106,7 +106,7 @@ func runOn(t *testing.T, src string) []string {
 func TestFlagsMarkerCallWithoutBuildTag(t *testing.T) {
 	const src = `package fixture
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func wire() {
 	servo.Build(
@@ -134,7 +134,7 @@ func TestDoesNotFlagCorrectlyTaggedFile(t *testing.T) {
 
 package fixture
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func wire() {
 	servo.Build(
@@ -151,7 +151,7 @@ func wire() {
 func TestFlagsMultiTypeArgMarkerCall(t *testing.T) {
 	const src = `package fixture
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func wire() {
 	servo.Build(

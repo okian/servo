@@ -5,8 +5,8 @@ package render
 import (
 	"sort"
 
-	"github.com/okian/servo/v2/internal/resolve"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/internal/resolve"
+	"github.com/okian/servo/v3/servo"
 )
 
 // ToGraph converts a resolved graph into the same servo.Graph shape the

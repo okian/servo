@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/okian/servo/v2/internal/render"
+	"github.com/okian/servo/v3/internal/render"
 )
 
 // runGraph exports the resolved graph. JSON is the stable machine format;

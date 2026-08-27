@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/okian/servo/v2/internal/load"
+	"github.com/okian/servo/v3/internal/load"
 )
 
 // runDoctor diagnoses setup problems before `go generate` is ever run,

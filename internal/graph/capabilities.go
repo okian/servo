@@ -8,7 +8,7 @@ import (
 // ServoPackagePath is this module's runtime package, whose capability
 // interfaces are the structural shapes every provider's result type is
 // checked against.
-const ServoPackagePath = "github.com/okian/servo/v2/servo"
+const ServoPackagePath = "github.com/okian/servo/v3/servo"
 
 // AllCapabilities is the fixed, stable-ordered set of capability names
 // Capabilities.Detect can return.

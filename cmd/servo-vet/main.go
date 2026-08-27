@@ -13,8 +13,8 @@ import (
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/singlechecker"
 
-	"github.com/okian/servo/v2/internal/graph"
-	"github.com/okian/servo/v2/internal/load"
+	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
 )
 
 var Analyzer = &analysis.Analyzer{

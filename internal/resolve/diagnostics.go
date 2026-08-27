@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/okian/servo/v2/internal/graph"
+	"github.com/okian/servo/v3/internal/graph"
 )
 
 // Diagnostic is one resolution failure. String renders it in

@@ -3,7 +3,7 @@ package render
 import (
 	"encoding/json"
 
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 // JSON is the stable machine format — the same schema App.Graph()

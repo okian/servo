@@ -61,9 +61,9 @@ func writeFixtureModule(t *testing.T, extraSpecArgs string) string {
 
 go 1.23
 
-require github.com/okian/servo/v2 v2.0.0
+require github.com/okian/servo/v3 v3.0.0
 
-replace github.com/okian/servo/v2 => `+root+`
+replace github.com/okian/servo/v3 => `+root+`
 `)
 
 	write("store/store.go", `package store
@@ -97,7 +97,7 @@ import (
 	"example.com/app/api"
 	"example.com/app/memory"
 	"example.com/app/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func Wire() {

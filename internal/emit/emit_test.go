@@ -12,9 +12,9 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
-	"github.com/okian/servo/v2/internal/graph"
-	"github.com/okian/servo/v2/internal/load"
-	"github.com/okian/servo/v2/internal/resolve"
+	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
+	"github.com/okian/servo/v3/internal/resolve"
 )
 
 // pkgImporter and loadServoPackage let a fixture's types.Config.Check share

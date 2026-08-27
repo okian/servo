@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/okian/servo/v2/internal/resolve"
+	"github.com/okian/servo/v3/internal/resolve"
 )
 
 // stopMethods emits one private stop method per node that has anything to

@@ -1,6 +1,6 @@
 ![Go](https://github.com/okian/servo/workflows/Go/badge.svg)
 
-# servo v2
+# servo v3
 
 Servo is a build-time code generator that resolves a Go application's object graph from
 constructor signatures and emits plain Go source that constructs, starts, supervises, and shuts
@@ -11,19 +11,21 @@ No reflection. No runtime registry. No `init()`. No hand-written wiring.
 The generated file is ordinary Go: compiler-checked, IDE-navigable, steppable in a debugger, and
 readable by a human at 3am.
 
-**v2 is a from-scratch rewrite of `servo` and shares no API with v1.** v1 was a runtime lifecycle
-sequencer built on a global registry, a hand-maintained `order int`, and `Initialize(ctx) error`
-with no parameters — components found each other through package-level globals. v2 replaces all
-of that: dependencies are declared only by constructor parameters, and resolution happens at
-build time, not runtime.
+**v3 is a from-scratch rewrite of `servo` and shares no API with what came before it (informally,
+v1).** v1 was a runtime lifecycle sequencer built on a global registry, a hand-maintained
+`order int`, and `Initialize(ctx) error` with no parameters — components found each other through
+package-level globals. Its own last breaking change had already taken the import path to `/v2`;
+this rewrite is different enough to need `/v3`. Dependencies are now declared only by constructor
+parameters, and resolution happens at build time, not runtime.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the load → scan → resolve → emit pipeline fits
-together and why it's shaped the way it is.
+together and why it's shaped the way it is, and [CHANGELOG.md](CHANGELOG.md) for what's changed
+and how this project versions releases.
 
 ## Quick start
 
 ```
-go install github.com/okian/servo/v2/cmd/servo@latest
+go install github.com/okian/servo/v3/cmd/servo@latest
 ```
 
 Write ordinary constructors — no import of `servo` required:
@@ -61,7 +63,7 @@ import (
 	"example.com/app/api"
 	"example.com/app/postgres"
 	"example.com/app/store"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {
@@ -261,7 +263,7 @@ same module, used by the [Mocking](#mocking) section below)
 | `servo list [--rejected] [--all] [--dir]` | The candidate index, or every excluded function and the rule that excluded it. Defaults to the main module; `--all` includes stdlib/third-party. |
 | `servo init [--dir]` | Scaffold a spec file with the correct build tag and a `go:generate` directive. |
 | `servo doctor [--dir]` | Diagnose setup problems (missing build tag, stale/absent generated file) before `go generate` ever runs. |
-| `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v2 skeleton plus a report flagging duplicate order values. |
+| `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v3 skeleton plus a report flagging duplicate order values. |
 | `servo new component <Name>` / `servo new adapter <pkg>` | Scaffold a component or third-party wrapper. Never imports `servo`. |
 | `servo new mock-adapter <moq\|mockery\|gomock> <GeneratedTypeName>` | Scaffold the adapter file a generated mock needs to become a valid provider (see [Mocking](#mocking)). |
 

@@ -3,7 +3,7 @@ package servotest
 import (
 	"testing"
 
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 // Recorder wraps a generated App's own init and shutdown reports so

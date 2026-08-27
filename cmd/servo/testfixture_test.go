@@ -72,9 +72,9 @@ func writeAppModule(t *testing.T, modulePath string, includeBind bool, extraSpec
 
 go 1.23
 
-require github.com/okian/servo/v2 v2.0.0
+require github.com/okian/servo/v3 v3.0.0
 
-replace github.com/okian/servo/v2 => `+root+`
+replace github.com/okian/servo/v3 => `+root+`
 `)
 
 	write("logger/logger.go", `package logger
@@ -169,7 +169,7 @@ import (
 	"`+modulePath+`/postgres"
 	"`+modulePath+`/store"
 	"`+modulePath+`/worker"
-	"github.com/okian/servo/v2/servo"
+	"github.com/okian/servo/v3/servo"
 )
 
 func wire() {

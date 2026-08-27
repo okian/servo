@@ -97,7 +97,7 @@ func New%sMock() *%sMock { return &%sMock{%s: &%s{}} }
 func printGomockAdapterScaffold(typeName string) {
 	fmt.Printf(`// %sForServo wraps gomock-generated *%s. Needs:
 //   "go.uber.org/mock/gomock"
-//   "github.com/okian/servo/v2/servotest"
+//   "github.com/okian/servo/v3/servotest"
 type %sForServo struct {
 	*%s
 	Finish func()

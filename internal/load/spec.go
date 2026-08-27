@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
-	"github.com/okian/servo/v2/internal/graph"
+	"github.com/okian/servo/v3/internal/graph"
 )
 
 // Spec is the resolved contents of the single servo.Build(...) call: the

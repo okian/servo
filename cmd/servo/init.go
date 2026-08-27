@@ -13,9 +13,9 @@ const specTemplate = `//go:build servoinject
 
 package %s
 
-//go:generate go run github.com/okian/servo/v2/cmd/servo generate
+//go:generate go run github.com/okian/servo/v3/cmd/servo generate
 
-import "github.com/okian/servo/v2/servo"
+import "github.com/okian/servo/v3/servo"
 
 func wire() {
 	servo.Build(
