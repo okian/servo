@@ -268,7 +268,7 @@ isolation.
 | `servo list [--rejected] [--all] [--dir]` | The candidate index, or every excluded function and the rule that excluded it. Defaults to the main module; `--all` includes stdlib/third-party. |
 | `servo init [--dir]` | Scaffold a spec file with the correct build tag and a `go:generate` directive. |
 | `servo doctor [--dir]` | Diagnose setup problems (missing build tag, stale/absent generated file) before `go generate` ever runs. |
-| `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v3 skeleton plus a report flagging duplicate order values. |
+| `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v3 skeleton plus a report flagging duplicate order values. See [`examples/migrate`](./examples/migrate) for a worked example. |
 | `servo new component <Name>` / `servo new adapter <pkg>` | Scaffold a component or third-party wrapper. Never imports `servo`. |
 | `servo new mock-adapter <moq\|mockery\|gomock> <GeneratedTypeName>` | Scaffold the adapter file a generated mock needs to become a valid provider (see [Mocking](#mocking)). |
 
