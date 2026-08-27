@@ -180,12 +180,24 @@ func TestRunDoctorCleanWhenTrackedByGit(t *testing.T) {
 		t.Fatalf("runGenerate: %v", err)
 	}
 
+	// Every invocation is isolated from the developer's own git
+	// configuration. core.hooksPath is frequently set globally, and those
+	// hooks would otherwise run inside this throwaway repository and fail
+	// the commit for reasons that have nothing to do with servo (a
+	// protected-branch guard, a formatter, a spell checker). Signing is
+	// disabled for the same reason: a global commit.gpgsign would block a
+	// commit no interactive agent is present to authorize. Both make the
+	// test pass in CI and fail on a contributor's machine.
+	isolated := []string{
+		"-c", "core.hooksPath=/dev/null",
+		"-c", "commit.gpgsign=false",
+	}
 	for _, args := range [][]string{
 		{"init"},
 		{"add", "."},
 		{"-c", "user.email=test@example.com", "-c", "user.name=test", "commit", "-m", "init"},
 	} {
-		cmd := exec.Command("git", args...)
+		cmd := exec.Command("git", append(append([]string{}, isolated...), args...)...)
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)

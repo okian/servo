@@ -148,7 +148,7 @@ func TestScanCandidatesRejections(t *testing.T) {
 		{"store.NewID", "result type is a primitive (string)"},
 		{"store.NewAny", "result type is any (empty interface)"},
 		{"store.NewBadShape", "does not match a supported result shape"},
-		{"store.NewGeneric", "generic — unsupported in v1"},
+		{"store.NewGeneric", "generic function — unsupported"},
 		{"store.NewVariadic", "variadic parameter — unsupported"},
 		{"store.newHidden", "unexported, outside injector package"},
 		{"store.(*Pool).Session", "method, not a function"},
