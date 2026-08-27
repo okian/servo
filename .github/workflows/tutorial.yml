@@ -27,8 +27,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-      - uses: golangci/golangci-lint-action@v6
+      # v6 defaults to golangci-lint v1.64.8, which is a v1 binary built with
+      # go1.24: it cannot read this module's v2-schema .golangci.yml, and it
+      # refuses a module targeting go 1.25.0 outright ("the Go language
+      # version used to build golangci-lint is lower than the targeted Go
+      # version"). v9 runs on node24 and pairs with the v2 line, so the
+      # version is pinned rather than floating on the action's default.
+      - uses: golangci/golangci-lint-action@v9
         with:
+          version: v2.13
           working-directory: examples/tutorial
 
   build-and-unit-test:
