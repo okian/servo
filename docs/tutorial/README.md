@@ -102,7 +102,7 @@ you — nothing here is assembled by hand.
 | 14 | [Testing strategy](14-testing-strategy.md) | Unit, integration, and API-level tests |
 | 15 | [CI/CD](15-cicd.md) | GitHub Actions: lint, test, build, `servo check` |
 | 16 | [Running and deployment](16-running-and-deployment.md) | Docker Compose, Dockerfile, env reference |
-| 17 | [Troubleshooting](17-troubleshooting.md) | Common errors per layer and how to fix them |
+| 17 | [Troubleshooting](17-troubleshooting.md) | Every diagnostic from every chapter, organized by symptom |
 | 18 | [Alternatives and further reading](18-alternatives-and-further-reading.md) | Other valid choices at every layer |
 
 Read them in order the first time through — each one assumes the code from the previous chapters

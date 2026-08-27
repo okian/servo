@@ -2,7 +2,8 @@
 
 This document explains how the pieces fit together and why they're shaped the way they are. For
 usage and the CLI reference, see [README.md](README.md); for the one-line-per-package file list,
-see its [Layout](README.md#layout) section.
+see its [Layout](README.md#layout) section; for a worked example of a real application consuming
+servo end to end rather than servo's own internals, see [docs/tutorial/](docs/tutorial/README.md).
 
 ## Pipeline
 

@@ -81,7 +81,7 @@ though: real Postgres, real Redis, real NATS, a real JWT, not simplified stand-i
 | Metrics | Prometheus via `client_golang` | The de facto standard for pull-based metrics |
 | Tracing | OpenTelemetry | Vendor-neutral; exports to Jaeger locally |
 | Resilience | `sony/gobreaker`, `golang.org/x/time/rate` | Circuit breaker and rate limiting |
-| Testing | `testify`, `go.uber.org/mock` | Assertions and mocks, same tools servo's own examples use |
+| Testing | stdlib `testing` + `go.uber.org/mock` | Plain `if got != want` assertions stay dependency-free; mocks stand in for the three external systems |
 
 ## Do's and don'ts
 

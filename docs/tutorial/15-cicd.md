@@ -78,6 +78,19 @@ lint:
 `go.mod` — nothing tutorial-specific here beyond `working-directory`, since `examples/tutorial` is
 a separate Go module from the repository root and needs to be linted as one.
 
+`examples/tutorial/.golangci.yml` matters more than its size suggests. golangci-lint's default
+rule set enables `errcheck`, which flags every unchecked error return — including things like
+`defer conn.Drain()`, `tx.Rollback(ctx)` in a deferred no-op, or `json.NewEncoder(w).Encode(...)`
+writing to an HTTP response that's already been written to once. None of those have a meaningful
+error-handling action to take (the connection is shutting down anyway; the transaction is already
+lost; there's no way to send a *different* response after the first `Write`), so this config
+excludes exactly those specific calls by name, plus `errcheck` entirely inside `_test.go` files
+(test cleanup code failing to check a `Stop`/`Unsubscribe`/`Flush` error isn't the same risk as
+production code doing it — the test's own assertions already caught anything that mattered). This
+isn't a blanket "disable errcheck" — running `golangci-lint run ./...` with zero config here
+reports 24 issues, all in this same handful of idiomatic-to-ignore shapes; a *real* unchecked error
+this config doesn't already know about still gets flagged.
+
 ### `build-and-unit-test`
 
 ```yaml

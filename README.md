@@ -20,7 +20,10 @@ parameters, and resolution happens at build time, not runtime.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for how the load → scan → resolve → emit pipeline fits
 together and why it's shaped the way it is, and [CHANGELOG.md](CHANGELOG.md) for what's changed
-and how this project versions releases.
+and how this project versions releases. If you'd rather learn servo by building something with it
+than by reading API docs, [docs/tutorial/](docs/tutorial/README.md) builds a complete, real
+microservice — Postgres, Redis, NATS, JWT auth, OpenTelemetry, CI/CD, the works — layer by layer,
+against a separate runnable module at [`examples/tutorial`](examples/tutorial).
 
 ## Quick start
 
@@ -462,6 +465,7 @@ servo/             markers + ~200-line runtime
 servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout, PanicReporter
 examples/basic/    a complete, runnable example (separate module)
 examples/mocking/  moq/mockery/gomock integrations, one binary each (separate module)
+examples/tutorial/ full layered microservice built in docs/tutorial/ (separate module)
 ```
 
 Core (`internal/*`, `cmd/servo`) depends on nothing beyond `golang.org/x/tools`; `servotest` alone
