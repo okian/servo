@@ -207,11 +207,39 @@ layout: null
   var index = null;
   var active = -1;
 
+  // Liquid hands one page's `content` to another as raw markdown rather than
+  // rendered HTML, so the index arrives full of link syntax, backticks and
+  // table pipes. Strip the common markers so snippets read as prose and a
+  // phrase is not split by markup. Underscores are left alone — they are far
+  // more likely to be part of a Go identifier than emphasis.
+  function cleanMarkdown(s) {
+    return String(s)
+      .replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/```+/g, ' ')
+      .replace(/`/g, '')
+      .replace(/\*{1,3}/g, '')
+      .replace(/^\s{0,3}#{1,6}\s*/gm, '')
+      .replace(/^\s*[-=]{3,}\s*$/gm, ' ')
+      .replace(/\|/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function loadIndex() {
     if (index !== null || !window.SERVO_SEARCH_URL) return Promise.resolve();
     return fetch(window.SERVO_SEARCH_URL)
       .then(function (r) { return r.ok ? r.json() : []; })
-      .then(function (data) { index = data; })
+      .then(function (data) {
+        index = data.map(function (item) {
+          return {
+            title: item.title,
+            section: item.section,
+            url: item.url,
+            body: cleanMarkdown(item.body)
+          };
+        });
+      })
       .catch(function () { index = []; });
   }
 
