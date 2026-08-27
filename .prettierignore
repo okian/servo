@@ -1,0 +1,7 @@
+# Jekyll processes these assets through Liquid, which requires YAML front
+# matter at the top of the file. That makes them unparseable as plain CSS or
+# JavaScript — prettier fails on the leading `---` before it reaches any code.
+# They are hand-formatted and checked by the site build instead.
+docs/assets/css/main.css
+docs/assets/js/site.js
+docs/search.json

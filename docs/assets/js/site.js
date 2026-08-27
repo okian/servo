@@ -243,8 +243,14 @@ layout: null
       .catch(function () { index = []; });
   }
 
+  // The panel declares aria-modal, which promises assistive technology that
+  // focus is confined to it. Remember where focus came from so closing can put
+  // it back, rather than dumping the user at the top of the document.
+  var lastFocused = null;
+
   function openSearch() {
     if (!overlay) return;
+    lastFocused = document.activeElement;
     overlay.hidden = false;
     loadIndex();
     if (input) { input.value = ''; input.focus(); }
@@ -254,7 +260,32 @@ layout: null
   }
 
   function closeSearch() {
-    if (overlay) overlay.hidden = true;
+    if (!overlay) return;
+    // Restore focus BEFORE hiding: focusing an element inside a hidden subtree
+    // is a no-op, and moving focus out of the panel first avoids leaving it on
+    // an element that is about to become inert.
+    if (lastFocused && document.contains(lastFocused)) lastFocused.focus();
+    overlay.hidden = true;
+    lastFocused = null;
+  }
+
+  // Tab cycles within the panel while it is open. The panel holds the input and
+  // whatever result links are currently rendered, so the set is recomputed on
+  // each press rather than cached.
+  if (overlay) {
+    overlay.addEventListener('keydown', function (e) {
+      if (e.key !== 'Tab' || overlay.hidden) return;
+      var focusable = [].slice.call(
+        overlay.querySelectorAll('input, a[href], button:not([disabled])')
+      ).filter(function (el) { return el.offsetParent !== null; });
+      if (!focusable.length) return;
+      var first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault(); first.focus();
+      }
+    });
   }
 
   function escapeHtml(s) {

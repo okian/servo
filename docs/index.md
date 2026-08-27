@@ -1,40 +1,41 @@
 ## One pipeline, seven views
 
-Every command — `generate`, `check`, `graph`, `explain`, `why`, `list`, `doctor` — is a different
-view onto the same stages, orchestrated by `cmd/servo/pipeline.go`.
+`generate`, `check`, `graph`, `explain`, `why`, `list` and `doctor` are not seven
+tools. They are seven windows onto the same five stages, which run in the same
+order every time — though only `generate` and `check` reach the last one.
 
 ```mermaid
 flowchart LR
-    L["load.Load<br/>one go/packages session,<br/>fully type-checked"]
-    F["load.FindSpec<br/>parse servo.Build(…):<br/>roots, Bind, Override"]
-    S["graph.ScanCandidates<br/>every constructor-shaped<br/>function, classified"]
-    R["resolve.Resolve<br/>closure → precedence →<br/>cycles → levels"]
-    E["emit.Emit<br/>one deterministic,<br/>gofmt-clean file"]
+    L["load<br/>one type-checked<br/>go/packages session"]
+    F["find spec<br/>roots, Bind,<br/>Override"]
+    S["scan<br/>every constructor-shaped<br/>function, classified"]
+    R["resolve<br/>closure → precedence →<br/>cycles → levels"]
+    E["emit<br/>one deterministic,<br/>gofmt-clean file"]
 
     L --> F --> S --> R --> E
 ```
 
-`load.Load` runs once per module directory no matter how many injectors it contains. Everything
-after it is per-injector: each `servo.Build(...)` in scope gets its own resolution pass, because a
-monorepo's `cmd/api`, `cmd/worker`, and `cmd/migrator` roots don't share a graph even though they
-share one type-checking session.
+Loading happens once per module, however many injectors it contains. Everything
+after it runs per injector, because a monorepo's `cmd/api`, `cmd/worker` and
+`cmd/migrator` do not share a graph even when they share a type-checking
+session.
 
-Resolution either produces a complete ordered plan or a set of diagnostics — never a partial
-graph. [ARCHITECTURE.md](https://github.com/okian/servo/blob/master/ARCHITECTURE.md) covers how
-each stage is built and why it's shaped that way.
+Resolution has exactly two outcomes: a complete ordered plan, or a set of
+diagnostics. Never a partial graph.
 
-## What the generated app does at runtime
+## What the generated app does when it runs
 
-The emitted `New`, `Run` and `Shutdown` are the whole lifecycle. Start-up runs in dependency
-order and rolls back on failure; shutdown runs in reverse under a time budget, and reports any
-node that refused to stop rather than hanging on it.
+`New`, `Run` and `Shutdown` are the whole lifecycle. Start-up follows dependency
+order and unwinds if any step fails. Shutdown runs the same list backwards under
+a time budget, and reports anything that refused to stop rather than hanging on
+it forever.
 
 ```mermaid
 flowchart TD
     C["Construct<br/>constructors called in dependency order"]
     I["Init<br/>level by level — independent nodes concurrently"]
     OK{"every Init<br/>returned nil?"}
-    R["Roll back<br/>Shutdown(ctx), joined with the failing error"]
+    RB["Roll back<br/>Shutdown(ctx), joined with the failing error"]
     RUN["Running"]
     S["Shutdown<br/>reverse dependency order"]
     B{"returned inside<br/>the stop budget?"}
@@ -42,11 +43,11 @@ flowchart TD
     AB["StatusAbandoned<br/>reported, not waited on"]
 
     C --> I --> OK
-    OK -- no --> R
+    OK -- no --> RB
     OK -- yes --> RUN --> S --> B
     B -- yes --> DONE
     B -- no --> AB
 ```
 
-Nothing here is a framework callback: it is ordinary Go in a file you can read, step through, and
-review in a pull request.
+None of that is a framework callback. It is ordinary Go, in a file you can open,
+step through in a debugger, and review in a pull request like any other code.
