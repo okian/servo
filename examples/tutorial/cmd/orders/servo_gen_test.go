@@ -28,9 +28,18 @@
 //	[L3] *example.com/servoorders/service.AuthService
 //	      deps: *example.com/servoorders/mocks.UserRepositoryForServo, *example.com/servoorders/auth.Issuer
 //	      capabilities: none | binding: sole candidate | service/auth_service.go:18:6
+//	[L1] *example.com/servoorders/observability.Metrics
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | observability/metrics.go:18:6
+//	[L2] *example.com/servoorders/observability.Tracer
+//	      deps: *example.com/servoorders/config.Config
+//	      capabilities: Finalizer | binding: sole candidate | observability/tracing.go:30:6
+//	[L2] *example.com/servoorders/resilience.RateLimiter
+//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/observability.Metrics
+//	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:23:6
 //	[L4] *example.com/servoorders/api.Server
-//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:23:6
+//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter
+//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:26:6
 //	[L2] *example.com/servoorders/notifier.Notifier
 //	      deps: *example.com/servoorders/config.Config
 //	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:23:6
@@ -43,6 +52,8 @@ import (
 	"example.com/servoorders/config"
 	"example.com/servoorders/mocks"
 	"example.com/servoorders/notifier"
+	"example.com/servoorders/observability"
+	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
 	"github.com/okian/servo/v3/servo"
 	"golang.org/x/sync/errgroup"
@@ -61,6 +72,11 @@ type TestApp struct {
 	userRepositoryForServo  *mocks.UserRepositoryForServo
 	issuer                  *auth.Issuer
 	authService             *service.AuthService
+	metrics                 *observability.Metrics
+	tracer                  *observability.Tracer
+	tracerStopOnce          sync.Once
+	tracerStopResult        servo.NodeResult
+	rateLimiter             *resilience.RateLimiter
 	server                  *api.Server
 	serverStopOnce          sync.Once
 	serverStopResult        servo.NodeResult
@@ -98,13 +114,34 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	authService := service.NewAuthService(userRepositoryForServo, issuer)
 	a.authService = authService
 
-	server := api.New(config, orderService, authService, issuer)
+	metrics := observability.NewMetrics()
+	a.metrics = metrics
+
+	tracer, err := observability.NewTracer(config)
+	if err != nil {
+		return nil, err
+	}
+	a.tracer = tracer
+
+	rateLimiter := resilience.NewRateLimiter(config, metrics)
+	a.rateLimiter = rateLimiter
+
+	server := api.New(config, orderService, authService, issuer, metrics, tracer, rateLimiter)
 	a.server = server
 
 	notifier := notifier.New(config)
 	a.notifier = notifier
 
 	return a, nil
+}
+
+func (a *TestApp) stopTracer(ctx context.Context) servo.NodeResult {
+	a.tracerStopOnce.Do(func() {
+		var results []servo.NodeResult
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/observability.Tracer", a.tracer.Stop))
+		a.tracerStopResult = servo.MergeNodeResults("*example.com/servoorders/observability.Tracer", results...)
+	})
+	return a.tracerStopResult
 }
 
 func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
@@ -139,6 +176,7 @@ func (a *TestApp) Shutdown(ctx context.Context) servo.Report {
 
 	var nodes []servo.NodeResult
 	nodes = append(nodes, a.stopServer(ctx))
+	nodes = append(nodes, a.stopTracer(ctx))
 	return servo.Report{Nodes: nodes}
 }
 
@@ -162,7 +200,10 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/mocks.UserRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:34:6"},
 		{Type: "*example.com/servoorders/auth.Issuer", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "auth/auth.go:28:6"},
 		{Type: "*example.com/servoorders/service.AuthService", Level: 3, Deps: []string{"*example.com/servoorders/mocks.UserRepositoryForServo", "*example.com/servoorders/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/auth_service.go:18:6"},
-		{Type: "*example.com/servoorders/api.Server", Level: 4, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:23:6"},
+		{Type: "*example.com/servoorders/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "observability/metrics.go:18:6"},
+		{Type: "*example.com/servoorders/observability.Tracer", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "observability/tracing.go:30:6"},
+		{Type: "*example.com/servoorders/resilience.RateLimiter", Level: 2, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:23:6"},
+		{Type: "*example.com/servoorders/api.Server", Level: 4, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:26:6"},
 		{Type: "*example.com/servoorders/notifier.Notifier", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:23:6"},
 	}}
 }

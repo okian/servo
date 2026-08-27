@@ -15,6 +15,11 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Persistence deliberately off: this Redis is a pure cache (chapter 6)
+    # with nothing that isn't already durably in Postgres, so there's
+    # nothing worth an RDB snapshot surviving a restart for, and skipping
+    # it removes disk I/O this service doesn't need.
+    command: redis-server --save ""
     ports:
       - "6379:6379"
     healthcheck:
@@ -27,3 +32,11 @@ services:
     image: nats:2-alpine
     ports:
       - "4222:4222"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # web UI
+      - "4318:4318"   # OTLP over HTTP -- what OTLPEndpoint points at

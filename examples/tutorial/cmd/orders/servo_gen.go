@@ -12,12 +12,15 @@
 //	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | postgres/postgres.go:31:6
 //	[L2] *example.com/servoorders/redis.Cache
 //	      deps: *example.com/servoorders/config.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | redis/redis.go:30:6
+//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:30:6
+//	[L3] *example.com/servoorders/resilience.CircuitBreakerCache
+//	      deps: *example.com/servoorders/redis.Cache
+//	      capabilities: none | binding: explicit bind | resilience/breaker.go:38:6
 //	[L2] *example.com/servoorders/natsbroker.Publisher
 //	      deps: *example.com/servoorders/config.Config
 //	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | natsbroker/natsbroker.go:26:6
-//	[L3] *example.com/servoorders/service.OrderService
-//	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/redis.Cache, *example.com/servoorders/natsbroker.Publisher
+//	[L4] *example.com/servoorders/service.OrderService
+//	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/resilience.CircuitBreakerCache, *example.com/servoorders/natsbroker.Publisher
 //	      capabilities: none | binding: sole candidate | service/service.go:27:6
 //	[L2] *example.com/servoorders/auth.Issuer
 //	      deps: *example.com/servoorders/config.Config
@@ -25,9 +28,18 @@
 //	[L3] *example.com/servoorders/service.AuthService
 //	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/auth.Issuer
 //	      capabilities: none | binding: sole candidate | service/auth_service.go:18:6
-//	[L4] *example.com/servoorders/api.Server
-//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:23:6
+//	[L1] *example.com/servoorders/observability.Metrics
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | observability/metrics.go:18:6
+//	[L2] *example.com/servoorders/observability.Tracer
+//	      deps: *example.com/servoorders/config.Config
+//	      capabilities: Finalizer | binding: sole candidate | observability/tracing.go:30:6
+//	[L2] *example.com/servoorders/resilience.RateLimiter
+//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/observability.Metrics
+//	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:23:6
+//	[L5] *example.com/servoorders/api.Server
+//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter
+//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:26:6
 //	[L2] *example.com/servoorders/notifier.Notifier
 //	      deps: *example.com/servoorders/config.Config
 //	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:23:6
@@ -41,8 +53,10 @@ import (
 	"example.com/servoorders/config"
 	"example.com/servoorders/natsbroker"
 	"example.com/servoorders/notifier"
+	"example.com/servoorders/observability"
 	"example.com/servoorders/postgres"
 	"example.com/servoorders/redis"
+	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
 	"github.com/okian/servo/v3/servo"
 	"golang.org/x/sync/errgroup"
@@ -61,12 +75,18 @@ type App struct {
 	cache               *redis.Cache
 	cacheStopOnce       sync.Once
 	cacheStopResult     servo.NodeResult
+	circuitBreakerCache *resilience.CircuitBreakerCache
 	publisher           *natsbroker.Publisher
 	publisherStopOnce   sync.Once
 	publisherStopResult servo.NodeResult
 	orderService        *service.OrderService
 	issuer              *auth.Issuer
 	authService         *service.AuthService
+	metrics             *observability.Metrics
+	tracer              *observability.Tracer
+	tracerStopOnce      sync.Once
+	tracerStopResult    servo.NodeResult
+	rateLimiter         *resilience.RateLimiter
 	server              *api.Server
 	serverStopOnce      sync.Once
 	serverStopResult    servo.NodeResult
@@ -92,10 +112,13 @@ func New(ctx context.Context) (*App, error) {
 	cache := redis.New(config)
 	a.cache = cache
 
+	circuitBreakerCache := resilience.NewCircuitBreakerCache(cache)
+	a.circuitBreakerCache = circuitBreakerCache
+
 	publisher := natsbroker.New(config)
 	a.publisher = publisher
 
-	orderService := service.New(store, cache, publisher)
+	orderService := service.New(store, circuitBreakerCache, publisher)
 	a.orderService = orderService
 
 	issuer := auth.New(config)
@@ -104,7 +127,22 @@ func New(ctx context.Context) (*App, error) {
 	authService := service.NewAuthService(store, issuer)
 	a.authService = authService
 
-	server := api.New(config, orderService, authService, issuer)
+	metrics := observability.NewMetrics()
+	a.metrics = metrics
+
+	tracer, err := observability.NewTracer(config)
+	if err != nil {
+		_ = a.stopPublisher(ctx)
+		_ = a.stopCache(ctx)
+		_ = a.stopStore(ctx)
+		return nil, err
+	}
+	a.tracer = tracer
+
+	rateLimiter := resilience.NewRateLimiter(config, metrics)
+	a.rateLimiter = rateLimiter
+
+	server := api.New(config, orderService, authService, issuer, metrics, tracer, rateLimiter)
 	a.server = server
 
 	notifier := notifier.New(config)
@@ -172,6 +210,15 @@ func (a *App) stopPublisher(ctx context.Context) servo.NodeResult {
 	return a.publisherStopResult
 }
 
+func (a *App) stopTracer(ctx context.Context) servo.NodeResult {
+	a.tracerStopOnce.Do(func() {
+		var results []servo.NodeResult
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/observability.Tracer", a.tracer.Stop))
+		a.tracerStopResult = servo.MergeNodeResults("*example.com/servoorders/observability.Tracer", results...)
+	})
+	return a.tracerStopResult
+}
+
 func (a *App) stopServer(ctx context.Context) servo.NodeResult {
 	a.serverStopOnce.Do(func() {
 		var results []servo.NodeResult
@@ -204,6 +251,7 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 
 	var nodes []servo.NodeResult
 	nodes = append(nodes, a.stopServer(ctx))
+	nodes = append(nodes, a.stopTracer(ctx))
 	nodes = append(nodes, a.stopPublisher(ctx))
 	nodes = append(nodes, a.stopCache(ctx))
 	nodes = append(nodes, a.stopStore(ctx))
@@ -239,12 +287,16 @@ func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
 		{Type: "*example.com/servoorders/config.Config", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "config/config.go:39:6"},
 		{Type: "*example.com/servoorders/postgres.Store", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "postgres/postgres.go:31:6"},
-		{Type: "*example.com/servoorders/redis.Cache", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "redis/redis.go:30:6"},
+		{Type: "*example.com/servoorders/redis.Cache", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "sole candidate", Pos: "redis/redis.go:30:6"},
+		{Type: "*example.com/servoorders/resilience.CircuitBreakerCache", Level: 3, Deps: []string{"*example.com/servoorders/redis.Cache"}, Capabilities: nil, Binding: "explicit bind", Pos: "resilience/breaker.go:38:6"},
 		{Type: "*example.com/servoorders/natsbroker.Publisher", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "natsbroker/natsbroker.go:26:6"},
-		{Type: "*example.com/servoorders/service.OrderService", Level: 3, Deps: []string{"*example.com/servoorders/postgres.Store", "*example.com/servoorders/redis.Cache", "*example.com/servoorders/natsbroker.Publisher"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/service.go:27:6"},
+		{Type: "*example.com/servoorders/service.OrderService", Level: 4, Deps: []string{"*example.com/servoorders/postgres.Store", "*example.com/servoorders/resilience.CircuitBreakerCache", "*example.com/servoorders/natsbroker.Publisher"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/service.go:27:6"},
 		{Type: "*example.com/servoorders/auth.Issuer", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "auth/auth.go:28:6"},
 		{Type: "*example.com/servoorders/service.AuthService", Level: 3, Deps: []string{"*example.com/servoorders/postgres.Store", "*example.com/servoorders/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/auth_service.go:18:6"},
-		{Type: "*example.com/servoorders/api.Server", Level: 4, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:23:6"},
+		{Type: "*example.com/servoorders/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "observability/metrics.go:18:6"},
+		{Type: "*example.com/servoorders/observability.Tracer", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "observability/tracing.go:30:6"},
+		{Type: "*example.com/servoorders/resilience.RateLimiter", Level: 2, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:23:6"},
+		{Type: "*example.com/servoorders/api.Server", Level: 5, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:26:6"},
 		{Type: "*example.com/servoorders/notifier.Notifier", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:23:6"},
 	}}
 }

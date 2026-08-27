@@ -12,6 +12,7 @@ import (
 	"example.com/servoorders/postgres"
 	"example.com/servoorders/redis"
 	"example.com/servoorders/repository"
+	"example.com/servoorders/resilience"
 	"github.com/okian/servo/v3/servo"
 )
 
@@ -22,8 +23,13 @@ func wire() {
 
 		servo.Bind[repository.OrderRepository, *postgres.Store](),
 		servo.Bind[repository.UserRepository, *postgres.Store](),
-		servo.Bind[cache.OrderCache, *redis.Cache](),
 		servo.Bind[broker.EventPublisher, *natsbroker.Publisher](),
+
+		// The service layer gets the circuit-breaker-wrapped cache, not
+		// redis.Cache directly — see docs/tutorial/13-resilience.md for
+		// why CircuitBreakerCache depends on *redis.Cache concretely
+		// rather than on cache.OrderCache itself.
+		servo.Bind[cache.OrderCache, *resilience.CircuitBreakerCache](),
 
 		// NewTestApp substitutes all four real infrastructure dependencies
 		// with mocks — see docs/tutorial/11-wiring-with-servo.md.

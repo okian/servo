@@ -10,6 +10,7 @@ import (
 	"syscall"
 
 	"example.com/servoorders/config"
+	"example.com/servoorders/observability"
 	"github.com/okian/servo/v3/servo"
 )
 
@@ -24,13 +25,14 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	observability.ConfigureLogging(cfg) // before anything else has a chance to log
 
 	app, err := New(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	admin := newAdminServer(cfg.AdminAddr, app)
+	admin := newAdminServer(cfg.AdminAddr, app, app.server.MetricsHandler())
 	go func() {
 		if err := admin.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Print(err)
@@ -56,10 +58,11 @@ func main() {
 func newAdminServer(addr string, app interface {
 	Health(context.Context) servo.Report
 	Ready(context.Context) servo.Report
-}) *http.Server {
+}, metricsHandler http.Handler) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", reportHandler(app.Health))
 	mux.HandleFunc("GET /readyz", reportHandler(app.Ready))
+	mux.Handle("GET /metrics", metricsHandler)
 	return &http.Server{Addr: addr, Handler: mux}
 }
 

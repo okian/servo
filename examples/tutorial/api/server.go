@@ -11,17 +11,28 @@ import (
 
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
+	"example.com/servoorders/observability"
+	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
 )
 
 type Server struct {
-	http   *http.Server
-	orders *service.OrderService
-	auth   *service.AuthService
+	http    *http.Server
+	orders  *service.OrderService
+	auth    *service.AuthService
+	metrics *observability.Metrics
 }
 
-func New(cfg *config.Config, orders *service.OrderService, authSvc *service.AuthService, issuer *auth.Issuer) *Server {
-	s := &Server{orders: orders, auth: authSvc}
+func New(
+	cfg *config.Config,
+	orders *service.OrderService,
+	authSvc *service.AuthService,
+	issuer *auth.Issuer,
+	metrics *observability.Metrics,
+	tracer *observability.Tracer,
+	limiter *resilience.RateLimiter,
+) *Server {
+	s := &Server{orders: orders, auth: authSvc, metrics: metrics}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
@@ -29,10 +40,25 @@ func New(cfg *config.Config, orders *service.OrderService, authSvc *service.Auth
 	mux.HandleFunc("GET /orders/{id}", requireAuth(issuer, s.handleGetOrder))
 	mux.HandleFunc("GET /orders", requireAuth(issuer, s.handleListOrders))
 
-	s.http = &http.Server{
-		Addr:    cfg.HTTPAddr,
-		Handler: recoverMiddleware(loggingMiddleware(mux)),
-	}
+	// Outermost first: recover must see a panic from anything below it.
+	// Metrics has to sit directly against logging/mux, not further out —
+	// otelhttp's handler (inside tracer.Middleware) forks the request via
+	// r.WithContext before passing it on, and http.ServeMux sets r.Pattern
+	// on that fork, not on whatever *http.Request an outer middleware is
+	// still holding. Metrics outside tracer would read an empty Pattern on
+	// every request, not just rejected ones — see
+	// docs/tutorial/13-resilience.md. limiter sits outside tracer so a
+	// rejected request costs no span; it counts its own rejections
+	// directly (see resilience.RateLimiter) rather than trying to route
+	// them through requests_total, which a rejected request never reaches
+	// anyway.
+	handler := loggingMiddleware(mux)
+	handler = metrics.Middleware(handler)
+	handler = tracer.Middleware(handler)
+	handler = limiter.Middleware(handler)
+	handler = recoverMiddleware(handler)
+
+	s.http = &http.Server{Addr: cfg.HTTPAddr, Handler: handler}
 	return s
 }
 
@@ -41,6 +67,16 @@ func New(cfg *config.Config, orders *service.OrderService, authSvc *service.Auth
 // (or wanted) to test routing, middleware, and status codes.
 func (s *Server) Handler() http.Handler {
 	return s.http.Handler
+}
+
+// MetricsHandler exposes this server's own metrics registry — not the
+// global default one, so multiple *Server instances in the same test
+// binary (or a normal one and a NewTestApp one) never collide trying to
+// register the same metric name twice. main.go reaches for this directly
+// (app.server.MetricsHandler()) since /metrics lives on the admin server,
+// not this one — see docs/tutorial/12-observability.md.
+func (s *Server) MetricsHandler() http.Handler {
+	return s.metrics.Handler()
 }
 
 // Run must return once ctx is cancelled, on its own — servo's generated

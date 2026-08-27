@@ -15,6 +15,8 @@ import (
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/mocks"
+	"example.com/servoorders/observability"
+	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
 	"github.com/google/uuid"
 	"go.uber.org/mock/gomock"
@@ -42,10 +44,22 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	orderCache.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour}
+	// RateLimitRPS is set explicitly (rather than relying on Config's own
+	// envDefault) because a bare &config.Config{} literal skips
+	// caarlos0/env's tag processing entirely — every field not set here
+	// is the Go zero value, not the configured default. A zero
+	// RateLimitRPS would mean the rate limiter allows exactly one request
+	// per test, ever; see TestRateLimiterRejectsRequestsOverTheLimit for
+	// the test that actually wants that.
+	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000}
 	issuer := auth.New(cfg)
 	orders := service.New(repo, orderCache, pub)
 	authSvc := service.NewAuthService(users, issuer)
+	metrics := observability.NewMetrics()
+	tracer, err := observability.NewTracer(cfg)
+	if err != nil {
+		t.Fatalf("NewTracer: %v", err)
+	}
 
 	hash, err := auth.HashPassword("password123")
 	if err != nil {
@@ -55,7 +69,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	users.EXPECT().GetByUsername(gomock.Any(), "alice").Return(testUser, nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound).AnyTimes()
 
-	srv := api.New(cfg, orders, authSvc, issuer)
+	srv := api.New(cfg, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(cfg, metrics))
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, repo, issuer
@@ -187,11 +201,16 @@ func TestGetOrderReturns403ForAnotherUsersOrder(t *testing.T) {
 // so if Run ever again relies on Stop to make it return, it will time out.
 func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	cfg := &config.Config{HTTPAddr: "127.0.0.1:0", JWTSecret: "test-secret", JWTExpiry: time.Hour}
+	cfg := &config.Config{HTTPAddr: "127.0.0.1:0", JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000}
 	issuer := auth.New(cfg)
 	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl))
 	authSvc := service.NewAuthService(mocks.NewMockUserRepository(ctrl), issuer)
-	srv := api.New(cfg, orders, authSvc, issuer)
+	tracer, err := observability.NewTracer(cfg)
+	if err != nil {
+		t.Fatalf("NewTracer: %v", err)
+	}
+	testMetrics := observability.NewMetrics()
+	srv := api.New(cfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(cfg, testMetrics))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
