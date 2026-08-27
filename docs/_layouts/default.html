@@ -17,6 +17,15 @@
 {%- endfor -%}
 {%- assign page_title = nav_title | default: page.title -%}
 
+{%- comment -%}
+  The home page is titled from the site, not from its content: GitHub Pages
+  enables jekyll-titles-from-headings, which would otherwise set page.title
+  from index.md's first heading and title the landing page after one of its
+  sections.
+{%- endcomment -%}
+{%- if page.url == '/' -%}
+  {%- assign page_title = nil -%}
+{%- endif -%}
 <title>{% if page_title %}{{ page_title }} · {{ site.title }}{% else %}{{ site.title }} · {{ site.tagline }}{% endif %}</title>
 <meta name="description" content="{{ page.description | default: site.description | strip_newlines }}">
 <link rel="canonical" href="{{ page.url | absolute_url }}">
