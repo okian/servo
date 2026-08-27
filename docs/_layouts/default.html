@@ -135,7 +135,13 @@
     host.textContent = source;
     host.dataset.source = source;
     figure.appendChild(host);
-    el.replaceWith(figure);
+    // Rouge puts the language class on the inner <code>, not only on the
+    // wrapper div, so replacing the matched element alone would leave the
+    // highlighted <pre> shell — its own border and background — framing the
+    // diagram. Replace the outermost container instead.
+    const target = el.closest('.code-wrap') || el.closest('.highlighter-rouge') ||
+                   el.closest('pre') || el;
+    target.replaceWith(figure);
     blocks.push(host);
   });
 
@@ -168,11 +174,47 @@
     mermaid.initialize({
       startOnLoad: false,
       securityLevel: 'strict',
-      theme: dark ? 'dark' : 'default',
+      // 'base' is the only built-in theme that honours themeVariables —
+      // 'default' and 'dark' override them, which is why diagrams otherwise
+      // come out in mermaid's stock lavender and grey instead of the site
+      // palette.
+      theme: 'base',
       fontFamily: 'ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif',
       themeVariables: dark
-        ? { primaryColor: '#12303a', primaryTextColor: '#e6edf3', primaryBorderColor: '#2aa9c9', lineColor: '#7d8ea3' }
-        : { primaryColor: '#e6f7fb', primaryTextColor: '#0f2733', primaryBorderColor: '#00a0c0', lineColor: '#5a6b7d' },
+        ? {
+            darkMode: true,
+            background: '#131a22',
+            primaryColor: '#14313c',
+            primaryTextColor: '#e3ebf2',
+            primaryBorderColor: '#2f8299',
+            secondaryColor: '#1b2530',
+            tertiaryColor: '#182029',
+            lineColor: '#8497a8',
+            textColor: '#e3ebf2',
+            mainBkg: '#14313c',
+            nodeBorder: '#2f8299',
+            clusterBkg: '#161d26',
+            clusterBorder: '#2a333d',
+            edgeLabelBackground: '#131a22',
+            fontSize: '14px',
+          }
+        : {
+            darkMode: false,
+            background: '#f6f8fa',
+            primaryColor: '#e4f4fa',
+            primaryTextColor: '#16202a',
+            primaryBorderColor: '#69b9d1',
+            secondaryColor: '#eef1f5',
+            tertiaryColor: '#ffffff',
+            lineColor: '#5a6b7d',
+            textColor: '#16202a',
+            mainBkg: '#e4f4fa',
+            nodeBorder: '#69b9d1',
+            clusterBkg: '#eef2f6',
+            clusterBorder: '#d5dbe2',
+            edgeLabelBackground: '#f6f8fa',
+            fontSize: '14px',
+          },
     });
     for (const node of blocks) {
       node.removeAttribute('data-processed');

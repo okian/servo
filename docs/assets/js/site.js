@@ -174,8 +174,14 @@ layout: null
 
   if (article) {
     article.querySelectorAll('pre').forEach(function (pre) {
-      // Mermaid figures are diagrams, not code to copy.
+      // Mermaid blocks are diagrams, not code to copy. This script runs
+      // before the mermaid module has converted them, so the figure does not
+      // exist yet — match the not-yet-converted markup as well, or the
+      // diagram inherits a stray wrapper and a Copy button.
       if (pre.closest('.mermaid-figure')) return;
+      if (pre.classList.contains('language-mermaid')) return;
+      if (pre.querySelector('.language-mermaid')) return;
+      if (pre.closest('.language-mermaid')) return;
       var wrap = document.createElement('div');
       wrap.className = 'code-wrap';
       pre.parentNode.insertBefore(wrap, pre);
