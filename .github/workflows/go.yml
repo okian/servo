@@ -45,7 +45,18 @@ jobs:
         run: go vet ./...
 
       - name: Test
-        run: go test ./...
+        run: go test -covermode=atomic -coverprofile=cover.out ./...
+
+      # Uploaded from one matrix entry only: three uploads per run would be
+      # three views of the same suite, not more information. Requires a
+      # CODECOV_TOKEN repository secret — until that exists the action warns
+      # and moves on rather than failing the job.
+      - name: Upload coverage to Codecov
+        if: matrix.go-version == '1.27'
+        uses: codecov/codecov-action@v5
+        with:
+          files: cover.out
+          token: ${{ secrets.CODECOV_TOKEN }}
 
       # examples/basic and examples/mocking are separate modules (each
       # replaces github.com/okian/servo/v3 with this checkout) so they're
