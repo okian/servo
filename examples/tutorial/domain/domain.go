@@ -31,10 +31,11 @@ type User struct {
 
 // These are sentinel errors, not HTTP status codes or gRPC codes — domain
 // and repository code should never know which transport is listening.
-// api.errorStatus (see the api layer) is the one place that translates
-// these into a wire format.
+// api.writeDomainError (see the api layer) is the one place that
+// translates these into a wire format.
 var (
-	ErrNotFound   = errors.New("resource not found")
-	ErrForbidden  = errors.New("access forbidden")
-	ErrValidation = errors.New("validation failed")
+	ErrNotFound           = errors.New("resource not found")
+	ErrForbidden          = errors.New("access forbidden")
+	ErrValidation         = errors.New("validation failed")
+	ErrInvalidCredentials = errors.New("invalid credentials")
 )

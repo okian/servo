@@ -15,6 +15,11 @@ import (
 type Config struct {
 	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080"`
 
+	// AdminAddr serves /healthz and /readyz (chapter 10), and /metrics
+	// (chapter 12) — deliberately a separate listener from HTTPAddr; see
+	// docs/tutorial/10-api-layer.md for why.
+	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
+
 	PostgresDSN string `env:"POSTGRES_DSN,required"`
 	RedisAddr   string `env:"REDIS_ADDR,required"`
 	NATSURL     string `env:"NATS_URL,required"`
