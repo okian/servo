@@ -352,7 +352,7 @@ every test that checked it, and only those.
 - **testcontainers-go instead of `docker compose` + env vars.** Tier 4 here assumes the reader
   starts Postgres/Redis/NATS themselves (locally via `make up`, in CI via `services:` — chapter
   15). [testcontainers-go](https://golang.testcontainers.org/) starts and stops containers from
-  inside the test process itself, so `go test ./...` alone is suffient with no external `make up`
+  inside the test process itself, so `go test ./...` alone is sufficient with no external `make up`
   step first. That convenience costs a heavier per-package test binary (each package pulls in the
   Docker client) and slower individual test runs (spinning up a container per test or per package,
   rather than once for the whole suite) — a reasonable trade for a larger team where "did you
