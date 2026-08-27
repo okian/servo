@@ -1,0 +1,106 @@
+# Drives the sidebar, the landing-page chapter grid, and prev/next links.
+# Kept here rather than in each chapter's front matter so the 18 tutorial
+# files stay plain markdown that reads correctly in GitHub's file browser.
+# Order in this file is the reading order; prev/next is derived by flattening
+# every section's chapters in sequence.
+
+sections:
+  - title: Foundations
+    summary: The shape of the service, and the groundwork every later layer assumes.
+    chapters:
+      - num: 1
+        title: Architecture overview
+        url: /tutorial/01-architecture-overview.html
+        blurb: The shape we're building toward, and why each layer exists at all.
+      - num: 2
+        title: Project setup
+        url: /tutorial/02-project-setup.html
+        blurb: Module layout, where files go, and getting oriented before any code.
+      - num: 3
+        title: Configuration
+        url: /tutorial/03-configuration.html
+        blurb: Feeding every package what it needs from the outside world.
+
+  - title: Core layers
+    summary: One layer at a time, each one only talking to the layer below it.
+    chapters:
+      - num: 4
+        title: Domain layer
+        url: /tutorial/04-domain-layer.html
+        blurb: Deciding what an order actually is, before any database or HTTP request.
+      - num: 5
+        title: Repository layer
+        url: /tutorial/05-repository-layer.html
+        blurb: Somewhere to really put an order — Postgres, behind an interface.
+      - num: 6
+        title: Caching layer
+        url: /tutorial/06-caching-layer.html
+        blurb: Keeping every read off Postgres once volume stops being hypothetical.
+      - num: 7
+        title: Messaging layer
+        url: /tutorial/07-messaging-layer.html
+        blurb: The first layer that talks sideways instead of down — events over NATS.
+      - num: 8
+        title: Service layer
+        url: /tutorial/08-service-layer.html
+        blurb: Orchestrating the focused pieces underneath into actual business logic.
+
+  - title: Reaching the outside
+    summary: Making the service callable, and knowing who is calling it.
+    chapters:
+      - num: 9
+        title: Authentication
+        url: /tutorial/09-authentication.html
+        blurb: Knowing who's asking, and turning away requests that won't say.
+      - num: 10
+        title: API layer
+        url: /tutorial/10-api-layer.html
+        blurb: Everything assembled so far, finally reachable over HTTP.
+
+  - title: Wiring it together
+    summary: Where servo itself enters the picture.
+    chapters:
+      - num: 11
+        title: Wiring with servo
+        url: /tutorial/11-wiring-with-servo.html
+        blurb: Nine packages, nine constructors, and nothing connecting them — until now.
+
+  - title: Running it for real
+    summary: What a service needs before anyone should depend on it.
+    chapters:
+      - num: 12
+        title: Observability
+        url: /tutorial/12-observability.html
+        blurb: Turning a running black box into something you can actually watch.
+      - num: 13
+        title: Resilience
+        url: /tutorial/13-resilience.html
+        blurb: Failure handling, fallbacks, and a circuit breaker that means it.
+
+  - title: Shipping
+    summary: From a laptop to a pipeline to a deployed container.
+    chapters:
+      - num: 14
+        title: Testing strategy
+        url: /tutorial/14-testing-strategy.html
+        blurb: How the tests written along the way fit into three distinct levels.
+      - num: 15
+        title: CI/CD
+        url: /tutorial/15-cicd.html
+        blurb: Turning every check you were running by hand into a pipeline.
+      - num: 16
+        title: Running and deployment
+        url: /tutorial/16-running-and-deployment.html
+        blurb: Leaving `go run` behind for a real container and a real deployment.
+
+  - title: Reference
+    summary: What to reach for when something breaks, or when a choice needs revisiting.
+    chapters:
+      - num: 17
+        title: Troubleshooting
+        url: /tutorial/17-troubleshooting.html
+        blurb: Every diagnostic from every chapter, gathered and reorganized by symptom.
+      - num: 18
+        title: Alternatives and further reading
+        url: /tutorial/18-alternatives-and-further-reading.html
+        blurb: The option each chapter didn't pick, and the case where it would win.

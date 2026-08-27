@@ -1,0 +1,130 @@
+---
+layout: default
+---
+{%- comment -%}
+  Reading position is derived from _data/nav.yml rather than front matter, so
+  the chapter files stay plain markdown. `num` is the flat reading order, so
+  prev/next is just num-1 and num+1.
+{%- endcomment -%}
+{%- assign cur = 0 -%}
+{%- assign cur_title = nil -%}
+{%- for section in site.data.nav.sections -%}
+  {%- for ch in section.chapters -%}
+    {%- if ch.url == page.url -%}
+      {%- assign cur = ch.num -%}
+      {%- assign cur_title = ch.title -%}
+      {%- assign cur_section = section.title -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endfor -%}
+{%- assign prev_num = cur | minus: 1 -%}
+{%- assign next_num = cur | plus: 1 -%}
+
+<div class="layout">
+
+  <aside class="sidebar" id="sidebar">
+    <nav class="sidebar__nav" aria-label="Tutorial chapters">
+      <a class="sidebar__intro{% if page.url == '/tutorial/' %} is-current{% endif %}" href="{{ '/tutorial/' | relative_url }}">
+        Tutorial introduction
+      </a>
+      {%- for section in site.data.nav.sections %}
+      <div class="sidebar__section">
+        <h2 class="sidebar__title">{{ section.title }}</h2>
+        <ul>
+          {%- for ch in section.chapters %}
+          <li>
+            <a href="{{ ch.url | relative_url }}"{% if ch.url == page.url %} class="is-current" aria-current="page"{% endif %}>
+              <span class="sidebar__num">{{ ch.num }}</span>{{ ch.title }}
+            </a>
+          </li>
+          {%- endfor %}
+        </ul>
+      </div>
+      {%- endfor %}
+    </nav>
+  </aside>
+
+  <main class="content" id="content">
+    <article class="prose">
+      {%- if cur > 0 %}
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ '/' | relative_url }}">servo</a>
+        <span aria-hidden="true">/</span>
+        <a href="{{ '/tutorial/' | relative_url }}">Tutorial</a>
+        <span aria-hidden="true">/</span>
+        <span>{{ cur_section }}</span>
+      </nav>
+      {%- endif %}
+
+      {{ content }}
+    </article>
+
+    {%- comment -%}
+      The intro page is not in the numbered sequence, so it gets a forward link
+      into chapter 1 instead of a prev/next pair.
+    {%- endcomment -%}
+    {%- if cur == 0 and page.url == '/tutorial/' %}
+      {%- assign first = site.data.nav.sections.first.chapters.first %}
+      <nav class="pager" aria-label="Chapter navigation">
+        <span></span>
+        <a class="pager__link pager__link--next" href="{{ first.url | relative_url }}">
+          <span class="pager__dir">Next</span>
+          <span class="pager__title">{{ first.num }}. {{ first.title }}</span>
+        </a>
+      </nav>
+    {%- elsif cur > 0 %}
+      <nav class="pager" aria-label="Chapter navigation">
+        {%- assign has_prev = false -%}
+        {%- for section in site.data.nav.sections -%}
+          {%- for ch in section.chapters -%}
+            {%- if ch.num == prev_num -%}
+              {%- assign has_prev = true %}
+        <a class="pager__link pager__link--prev" href="{{ ch.url | relative_url }}">
+          <span class="pager__dir">Previous</span>
+          <span class="pager__title">{{ ch.num }}. {{ ch.title }}</span>
+        </a>
+            {%- endif -%}
+          {%- endfor -%}
+        {%- endfor -%}
+        {%- unless has_prev %}
+        <a class="pager__link pager__link--prev" href="{{ '/tutorial/' | relative_url }}">
+          <span class="pager__dir">Previous</span>
+          <span class="pager__title">Tutorial introduction</span>
+        </a>
+        {%- endunless -%}
+
+        {%- assign has_next = false -%}
+        {%- for section in site.data.nav.sections -%}
+          {%- for ch in section.chapters -%}
+            {%- if ch.num == next_num -%}
+              {%- assign has_next = true %}
+        <a class="pager__link pager__link--next" href="{{ ch.url | relative_url }}">
+          <span class="pager__dir">Next</span>
+          <span class="pager__title">{{ ch.num }}. {{ ch.title }}</span>
+        </a>
+            {%- endif -%}
+          {%- endfor -%}
+        {%- endfor -%}
+        {%- unless has_next %}<span></span>{%- endunless -%}
+      </nav>
+    {%- endif %}
+
+    <div class="page-foot">
+      {%- comment -%}
+        Jekyll's source is docs/, so page.path is already relative to it
+        ("tutorial/05-repository-layer.md") and just needs the prefix back.
+      {%- endcomment -%}
+      <a href="{{ site.repo }}/blob/{{ site.repo_branch }}/docs/{{ page.path }}">
+        Edit this page on GitHub
+      </a>
+    </div>
+  </main>
+
+  <aside class="toc" aria-label="On this page">
+    <div class="toc__inner">
+      <h2 class="toc__title">On this page</h2>
+      <ul class="toc__list"></ul>
+    </div>
+  </aside>
+
+</div>
