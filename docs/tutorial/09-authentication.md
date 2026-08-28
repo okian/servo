@@ -74,7 +74,7 @@ func (i *Issuer) Issue(userID uuid.UUID, username string) (string, error) {
 `HS256` means the same secret both signs and verifies — simplest option, and the right one as long
 as exactly one service issues and checks these tokens. The moment a second service needs to verify
 tokens without also being trusted to *issue* them, that symmetry becomes a liability; see
-[chapter 18](18-alternatives-and-further-reading.md#jwt-signing-algorithms) for what changes then.
+[chapter 19](19-alternatives-and-further-reading.md#jwt-signing-algorithms) for what changes then.
 
 `Verify` is the reverse direction, and needs to turn parsing failures — an expired token, a bad
 signature, garbage input — into one clear error rather than distinguishing every case:

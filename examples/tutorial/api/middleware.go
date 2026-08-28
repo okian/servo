@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"example.com/servoorders/auth"
+	"example.com/servoorders/session"
 )
 
 type contextKey int
@@ -33,7 +34,12 @@ func requireAuth(issuer *auth.Issuer, next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
+		// The claims are what the handlers read; the session key is what
+		// servo's generated accessor reads. Both go in here, at the one
+		// point in the request where the user's identity is first known —
+		// see docs/tutorial/12-scoped-instances.md.
 		ctx := context.WithValue(r.Context(), claimsKey, claims)
+		ctx = session.WithUser(ctx, session.UserID(claims.UserID.String()))
 		next(w, r.WithContext(ctx))
 	}
 }
@@ -59,7 +65,7 @@ func recoverMiddleware(next http.Handler) http.Handler {
 }
 
 // loggingMiddleware is deliberately minimal for now — method, path, status,
-// duration. Chapter 12 replaces the ad hoc status-capturing here with a
+// duration. Chapter 13 replaces the ad hoc status-capturing here with a
 // proper response wrapper shared with metrics, and correlates each line
 // with the request's trace ID.
 func loggingMiddleware(next http.Handler) http.Handler {

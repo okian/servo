@@ -21,7 +21,13 @@ func NewNameAllocator() *NameAllocator {
 
 // Allocate returns a unique identifier for t, based on its own type name.
 func (a *NameAllocator) Allocate(t types.Type) string {
-	base := baseName(t)
+	return a.AllocateName(baseName(t))
+}
+
+// AllocateName is Allocate for a name that was derived some other way — a
+// scope's key type plus a suffix, say — with the identical deduping and
+// keyword-avoidance rules.
+func (a *NameAllocator) AllocateName(base string) string {
 	n, seen := a.used[base]
 	if !seen && shouldAvoidBare(base) {
 		// A bare keyword ("range", "type", "select", ...) can never be

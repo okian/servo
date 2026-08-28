@@ -129,7 +129,7 @@ func TestRunInitFailsWhenDirNotWritable(t *testing.T) {
 	if err := os.Chmod(dir, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0o755)
+	defer func() { _ = os.Chmod(dir, 0o755) }() // best-effort restore so t.TempDir cleanup can remove it
 
 	if err := runInit(dir); err == nil {
 		t.Fatal("expected an error when the target directory is not writable")

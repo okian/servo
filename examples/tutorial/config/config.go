@@ -16,7 +16,7 @@ type Config struct {
 	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080"`
 
 	// AdminAddr serves /healthz and /readyz (chapter 10), and /metrics
-	// (chapter 12) — deliberately a separate listener from HTTPAddr; see
+	// (chapter 13) — deliberately a separate listener from HTTPAddr; see
 	// docs/tutorial/10-api-layer.md for why.
 	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
 
@@ -34,6 +34,13 @@ type Config struct {
 	OTLPEndpoint string `env:"OTLP_ENDPOINT" envDefault:""`
 
 	RateLimitRPS float64 `env:"RATE_LIMIT_RPS" envDefault:"50"`
+
+	// SessionRecent caps the per-user recently-viewed list. The linger
+	// window and instance cap for that scope are *not* here: both are
+	// baked into the generated code from servo.Scoped's arguments, which
+	// the spec file declares as constants — see
+	// docs/tutorial/12-scoped-instances.md.
+	SessionRecent int `env:"SESSION_RECENT" envDefault:"10"`
 }
 
 func New() (*Config, error) {

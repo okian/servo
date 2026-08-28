@@ -25,7 +25,7 @@ concrete thing that satisfies it. A few concrete payoffs, not abstract ones:
 
 - The service layer's business logic can be unit-tested against a fake repository, with no
   database, no network call, and no test flakiness from either — see
-  [chapter 14](14-testing-strategy.md).
+  [chapter 15](15-testing-strategy.md).
 - Swapping Postgres for something else touches the `postgres` package and nothing that imports
   `repository`'s interfaces, because nothing else was ever allowed to import `postgres` directly.
 - A bug report that says "orders sometimes have the wrong quantity" has exactly one layer where
@@ -68,7 +68,7 @@ though: real Postgres, real Redis, real NATS, a real JWT, not simplified stand-i
 
 ## Technology choices
 
-| Concern | Choice | Why (briefly — see [chapter 18](18-alternatives-and-further-reading.md) for alternatives) |
+| Concern | Choice | Why (briefly — see [chapter 19](19-alternatives-and-further-reading.md) for alternatives) |
 |---|---|---|
 | Dependency injection | servo | The subject of this tutorial |
 | HTTP | `net/http` (stdlib) | Go 1.22+'s router is enough for five routes; no framework opinion to explain |
@@ -104,7 +104,7 @@ If you're deciding whether to reach for this shape at all:
 - **A service that's mostly a thin proxy** to another API doesn't need a repository layer at all;
   forcing one in adds a file with no logic in it.
 - **A service under real, sustained load** benefits from this shape specifically *because* it makes
-  the resilience and observability chapters ([12](12-observability.md), [13](13-resilience.md))
+  the resilience and observability chapters ([13](13-observability.md), [14](14-resilience.md))
   possible to reason about — they hook in at layer boundaries.
 
 ## Next

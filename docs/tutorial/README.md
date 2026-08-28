@@ -97,13 +97,14 @@ you — nothing here is assembled by hand.
 | 9 | [Authentication](09-authentication.md) | JWT issue/verify, password hashing, middleware |
 | 10 | [API layer](10-api-layer.md) | Routing, DTOs, validation, error mapping |
 | 11 | [Wiring with servo](11-wiring-with-servo.md) | The spec file, capabilities, `servo generate` |
-| 12 | [Observability](12-observability.md) | Structured logs, metrics, tracing, health checks |
-| 13 | [Resilience](13-resilience.md) | Circuit breaker, rate limiting, graceful shutdown |
-| 14 | [Testing strategy](14-testing-strategy.md) | Unit, integration, and API-level tests |
-| 15 | [CI/CD](15-cicd.md) | GitHub Actions: lint, test, build, `servo check` |
-| 16 | [Running and deployment](16-running-and-deployment.md) | Docker Compose, Dockerfile, env reference |
-| 17 | [Troubleshooting](17-troubleshooting.md) | Every diagnostic from every chapter, organized by symptom |
-| 18 | [Alternatives and further reading](18-alternatives-and-further-reading.md) | Other valid choices at every layer |
+| 12 | [Scoped instances](12-scoped-instances.md) | One session per user, instead of one per process |
+| 13 | [Observability](13-observability.md) | Structured logs, metrics, tracing, health checks |
+| 14 | [Resilience](14-resilience.md) | Circuit breaker, rate limiting, graceful shutdown |
+| 15 | [Testing strategy](15-testing-strategy.md) | Unit, integration, and API-level tests |
+| 16 | [CI/CD](16-cicd.md) | GitHub Actions: lint, test, build, `servo check` |
+| 17 | [Running and deployment](17-running-and-deployment.md) | Docker Compose, Dockerfile, env reference |
+| 18 | [Troubleshooting](18-troubleshooting.md) | Every diagnostic from every chapter, organized by symptom |
+| 19 | [Alternatives and further reading](19-alternatives-and-further-reading.md) | Other valid choices at every layer |
 
 Read them in order the first time through — each one assumes the code from the previous chapters
 already exists. After that, they stand alone well enough to use as reference.

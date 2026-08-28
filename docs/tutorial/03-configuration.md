@@ -47,7 +47,7 @@ type Config struct {
 ```
 
 A few fields here point at chapters that don't exist yet (`JWTSecret` in chapter 9,
-`OTLPEndpoint` in chapter 12) — that's intentional. Deciding the full shape of configuration once,
+`OTLPEndpoint` in chapter 13) — that's intentional. Deciding the full shape of configuration once,
 now, means nothing later has to come back and retrofit a field in here; it just starts using one
 that was already waiting.
 
@@ -174,7 +174,7 @@ ok  	example.com/servoorders/config	0.104s
 - **Config looks right locally but wrong in Docker or CI** — almost always a variable that's set in
   your shell but never reached the container or job. `docker compose`'s `environment:` block and
   the CI workflow's `env:` block are the two places this actually has to be set — we'll hit both in
-  [chapter 15](15-cicd.md) and [chapter 16](16-running-and-deployment.md).
+  [chapter 16](16-cicd.md) and [chapter 17](17-running-and-deployment.md).
 
 ## Do's and don'ts
 

@@ -118,8 +118,8 @@ servo: multiple servo.Build(...) calls found in the same package example.com/app
 func Build(...Marker)
 ```
 
-Declares the injector. Every argument must be a `Root`, `Bind` or `Override` call written inline
-with explicit type arguments.
+Declares the injector. Every argument must be a `Root`, `Bind`, `Override` or `Scoped` call
+written inline with explicit type arguments.
 
 That last part is a real constraint, not a style preference. Servo reads the type arguments out of
 the type-checker's instantiation info for the call it found in the syntax tree. A marker value
@@ -139,7 +139,7 @@ servo.Build(markers...)
 
 Anything else in the argument list is rejected with its position:
 `servo.Build argument is not a marker call`, or
-`servo.Build argument must be a Root/Bind/Override call with explicit type arguments`.
+`servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments`.
 
 `Marker` is an empty struct. It carries no data and exists only to give the markers a return type
 that makes `Build`'s argument list type-check.
@@ -227,6 +227,48 @@ An override applies to the **whole graph**, not to one consumer. There is no way
 component the mock and another the real implementation; see
 [Limitations](../limitations.md#an-override-applies-everywhere).
 
+## `Scoped`
+
+```go
+func Scoped[T, I any](...ScopeOption) Marker
+```
+
+Declares that `T` is a keyed, refcounted, lifecycle-managed instance rather than a singleton, and
+that `I` — an interface in your own package — is what consumers depend on to reach it.
+
+```go
+servo.Build(
+	servo.Root[*api.Server](),
+	servo.Scoped[*chat.Room, chat.Rooms](
+		servo.Linger(30*time.Second),
+		servo.Max(10_000),
+	),
+)
+```
+
+`T` must declare a `ScopeKey` method; `I` must be a non-empty interface declaring only `Acquire`,
+`Stats`, or both. Everything about what that means — the extractor's shape, which nodes end up in
+the scope, when an instance is torn down — is on its own page:
+[Scoped instances](scopes.md).
+
+### `Linger` and `Max`
+
+```go
+func Linger(time.Duration) ScopeOption
+func Max(int) ScopeOption
+```
+
+The only two `ScopeOption`s. Both are read as syntax like everything else here, so both arguments
+have to be **constant expressions** — `30*time.Second` and `10_000` are fine, a package variable or
+a function call is not.
+
+Omitted, they take `servo.DefaultLinger` (30 seconds) and `servo.DefaultMax` (10,000). Neither is
+legal outside a `Scoped` argument list, and putting one directly in `Build` says so.
+
+Two `Scoped` declarations whose `ScopeKey` methods return the same key type share one registry, and
+therefore one policy: declaring different `Linger` or `Max` values across them is an error, because
+there is only one of each to set.
+
 ## The `go:generate` directive
 
 ```go
@@ -248,12 +290,25 @@ Everything the spec parser can reject, in one place:
 | `multiple servo.Build(...) calls found in the same package` | Two `Build` calls in one package |
 | ``spec file is missing a `//go:build servoinject` constraint`` | Untagged spec file |
 | `servo.Build argument is not a marker call` | Something other than a call in the argument list |
-| `servo.Build argument must be a Root/Bind/Override call with explicit type arguments` | A marker without inline type arguments |
+| `servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments` | A marker without inline type arguments |
 | `unrecognized servo marker "X" inside Build(...)` | A `servo` function that isn't a marker |
 | `servo.Root expects exactly one type argument` | `Root` with the wrong arity |
 | `servo.Bind/Override expects exactly two type arguments` | `Bind`/`Override` with the wrong arity |
 | `second type argument must be a concrete type, not an interface` | Binding an interface to an interface |
 | `servo.Bind[…] declared twice` | Duplicate bind (or duplicate override) for one interface |
+| `servo.Scoped expects exactly two type arguments` | `Scoped` with the wrong arity |
+| `servo.Scoped's first type argument must be the concrete scoped type` | An interface where the scoped type belongs |
+| `servo.Scoped's second type argument must be an interface` | A concrete type where the accessor interface belongs |
+| `servo.Scoped's accessor interface … declares no methods` | `any` is satisfied by everything, which makes the accessor unusable |
+| `servo.Scoped[T, …] declared twice` | One scoped type, one declaration |
+| `servo.Scoped[…, I] declared twice` | One accessor interface cannot stand for two scoped types |
+| `servo.Scoped's arguments must be servo.Linger(...) or servo.Max(...) calls` | Something else in the option list |
+| `servo.X is not a scope option` | A `servo` marker that isn't `Linger` or `Max` |
+| `servo.Linger/Max is a scope option, not a Build marker` | An option at the top level of `Build` |
+| `servo.Linger/Max declared twice in the same servo.Scoped` | One value each per declaration |
+| `servo.Linger/Max's argument must be a constant expression` | Read as syntax, never executed |
+| `servo.Linger(…) must not be negative` | Use `servo.Linger(0)` for die-with-the-last-holder |
+| `servo.Max(N) must be positive` | A scope that can hold no instances can never hand one out |
 | `servo runtime package … not found among loaded packages` | The spec file doesn't import `servo` |
 
 Diagnostics from the *later* stages — missing providers, ambiguity, cycles — are on the

@@ -29,6 +29,11 @@ runtime package. This is what actually runs in production.
 → [Lifecycle](lifecycle.md) for the contract, [Generated API](generated-api.md) for the exact
 shape, [servo package](servo-package.md) for the types those methods return.
 
+One thing sits across all three surfaces rather than inside any of them: a **scope**, the only part
+of the graph that is not built once and held for the life of the process. It has its own method to
+write, its own marker, its own generated code, and its own diagnostics.
+→ [Scoped instances](scopes.md)
+
 ## Find it by question
 
 | You want to know | Page |
@@ -40,6 +45,9 @@ shape, [servo package](servo-package.md) for the types those methods return.
 | Why servo can't see the constructor I wrote | [Resolution rules](resolution.md#rejection-reasons) |
 | How an interface parameter gets matched to an implementation | [Resolution rules](resolution.md#selection-precedence) |
 | What an error message means and how to fix it | [Diagnostics](diagnostics.md) |
+| How to get one instance per tenant, room, or region | [Scoped instances](scopes.md) |
+| Why a singleton can't depend on a scoped type | [Scoped instances](scopes.md#diagnostics) |
+| When a scoped instance is actually torn down | [Scoped instances](scopes.md#lifetimes) |
 | The seven lifecycle methods and when each is called | [Lifecycle](lifecycle.md#the-seven-capabilities) |
 | What happens when a component refuses to stop | [Lifecycle](lifecycle.md#the-stop-budget) |
 | The signature of every method on the generated `App` | [Generated API](generated-api.md) |

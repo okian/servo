@@ -283,7 +283,7 @@ ok  	example.com/servoorders/service	0.127s
 That `ERROR` line in the middle isn't a failure — it's `slog`'s default logger, doing exactly what
 `CreateOrder` told it to do when the mock publisher returned an error. The test still passes,
 because it's checking the return value, not the absence of a log line. [Chapter
-12](12-observability.md) is where that logger stops being the unconfigured default and starts
+13](13-observability.md) is where that logger stops being the unconfigured default and starts
 looking like something you'd actually want in production.
 
 ## Diagnostics
@@ -314,7 +314,7 @@ looking like something you'd actually want in production.
   cancellation — dropping it anywhere in this chain means a client that gave up waiting doesn't
   actually stop work from happening on their behalf.
 - **Don't** test `OrderService` by spinning up real Postgres/Redis/NATS. That's what
-  [chapter 14](14-testing-strategy.md)'s integration and API tiers are for — a unit test that needs
+  [chapter 15](15-testing-strategy.md)'s integration and API tiers are for — a unit test that needs
   Docker running isn't a unit test anymore, and the whole reason to write interfaces in chapters 5
   through 7 was to make this layer testable without any of that.
 

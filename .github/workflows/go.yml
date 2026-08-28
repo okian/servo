@@ -59,14 +59,27 @@ jobs:
           slug: okian/servo
           files: cover.out
 
-      # examples/basic and examples/mocking are separate modules (each
-      # replaces github.com/okian/servo/v3 with this checkout) so they're
-      # built and tested independently.
+      # examples/basic, examples/scoped and examples/mocking are separate
+      # modules (each replaces github.com/okian/servo/v3 with this
+      # checkout) so they're built and tested independently.
       - name: Build and test examples/basic
         working-directory: examples/basic
         run: |
           go build ./...
           go test -race ./...
+
+      # examples/scoped is the gate on scopes, not a demo of them. A golden
+      # file cannot catch an instance torn down while a caller still holds
+      # it, an acquirer spinning against a dying entry, or a goroutine per
+      # key that outlives its key — so this suite runs the whole scope
+      # state machine under -race, with a goroutine-leak check after every
+      # test. -count=5 is a cheap multiplier on an already-fast suite: a
+      # single green run of a concurrency test proves less than five do.
+      - name: Build and test examples/scoped
+        working-directory: examples/scoped
+        run: |
+          go build ./...
+          go test -race -count=5 ./...
 
       # examples/mocking declares go 1.26, forced by its moq tool dependency
       # (github.com/matryer/moq itself declares go 1.26), so it cannot build
@@ -81,9 +94,9 @@ jobs:
 
       # examples/diagnostics is deliberately unresolvable, so it has no
       # generated file and nothing to run `servo check` against — only that
-      # it's otherwise ordinary, valid Go. The diagnostics it's meant to
-      # produce are pinned by TestExampleDiagnostic* in cmd/servo, covered
-      # by the root Test step above.
+      # it's otherwise ordinary, valid Go. The seven diagnostics it's meant
+      # to produce are pinned by TestExampleDiagnostic* in cmd/servo,
+      # covered by the root Test step above.
       - name: Build examples/diagnostics
         working-directory: examples/diagnostics
         run: go build ./...
@@ -95,6 +108,9 @@ jobs:
       # instead of shipping a stale generated file.
       - name: servo check (examples/basic)
         run: go run ./cmd/servo check --dir examples/basic
+
+      - name: servo check (examples/scoped)
+        run: go run ./cmd/servo check --dir examples/scoped
 
       # Split from the check above for the same reason the build step is
       # skipped on 1.25: loading examples/mocking needs a 1.26+ toolchain.

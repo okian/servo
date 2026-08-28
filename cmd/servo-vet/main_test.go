@@ -80,6 +80,7 @@ func runOn(t *testing.T, src string) []string {
 		t.Fatalf("parse: %v", err)
 	}
 	info := &types.Info{
+		Defs:      map[*ast.Ident]types.Object{},
 		Uses:      map[*ast.Ident]types.Object{},
 		Instances: map[*ast.Ident]types.Instance{},
 	}
