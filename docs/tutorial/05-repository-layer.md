@@ -14,9 +14,9 @@ package repository
 
 import (
 	"context"
+	"uuid"
 
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 type OrderRepository interface {
@@ -48,12 +48,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"uuid"
 
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/migrations"
 	"example.com/servoorders/repository"
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

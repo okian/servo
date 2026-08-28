@@ -6,8 +6,7 @@ package domain
 import (
 	"errors"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 type OrderStatus string

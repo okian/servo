@@ -859,8 +859,7 @@ func (r *resolver) accessorRootDiagnostic(n *Node) Diagnostic {
 // scopeKeyDiagnostic renders a graph.ScopeKeyError at the method's own
 // position, rather than repeating it inside the message.
 func scopeKeyDiagnostic(err error) Diagnostic {
-	var ske *graph.ScopeKeyError
-	if errors.As(err, &ske) {
+	if ske, ok := errors.AsType[*graph.ScopeKeyError](err); ok {
 		return Diagnostic{Pos: ske.Pos, Message: "servo: " + ske.Msg}
 	}
 	return Diagnostic{Message: "servo: " + err.Error()}

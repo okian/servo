@@ -16,9 +16,9 @@ package api
 
 import (
 	"time"
+	"uuid"
 
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 type loginRequest struct {
@@ -175,9 +175,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"uuid"
 
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {

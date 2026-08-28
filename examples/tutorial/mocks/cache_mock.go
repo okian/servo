@@ -12,9 +12,9 @@ package mocks
 import (
 	context "context"
 	reflect "reflect"
+	"uuid"
 
 	domain "example.com/servoorders/domain"
-	uuid "github.com/google/uuid"
 	gomock "go.uber.org/mock/gomock"
 )
 

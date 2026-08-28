@@ -7,11 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/cache"
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 	goredis "github.com/redis/go-redis/v9"
 )
 

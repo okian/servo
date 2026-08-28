@@ -23,6 +23,37 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
+## [3.2.0] - 2026-08-28
+
+### Changed
+- **Go 1.27 is now the floor.** `go.mod` declares `go 1.27.0`, raised from `go 1.25.0`, as do all
+  five example modules. What a consumer still on 1.25 or 1.26 sees depends on their `GOTOOLCHAIN`:
+  under the default `auto`, Go downloads and switches to 1.27 for them and the upgrade is
+  invisible; under `local` or a pinned toolchain, `go build` reports that the module requires
+  `go >= 1.27.0`. Builds already pinned to 3.1.x keep working either way. This is a minor bump,
+  not a major one: it changes no
+  exported API in `servo` or `servotest`, no CLI flag, subcommand or exit code, and nothing in
+  generated code's public method set, which is what this file's Versioning section defines as
+  breaking. It is called out here because it is the one change in this release a consumer can
+  feel.
+- The CI matrix is a single `1.27` entry, down from `1.25, 1.26, 1.27`. Those entries pinned
+  `GOTOOLCHAIN=local` deliberately, so with the floor at 1.27 they could no longer build the
+  module at all — and they were testing toolchains no consumer can now be on. The matrix is kept
+  rather than flattened so the next release is one line to add. Two `if: matrix.go-version !=
+  '1.25'` guards around `examples/mocking` are gone with them.
+- `examples/tutorial` uses the standard library's `uuid` package, new in Go 1.27, instead of
+  `github.com/google/uuid`, which it no longer requires directly. The four symbols it used —
+  `UUID`, `New`, `Parse`, `MustParse` — carry identical signatures across, so this is an import
+  swap and not a behavior change. Every chapter listing that showed the old import was updated to
+  match.
+- `cmd/orders/servo_gen.go` regenerates with one changed line: dropping an import moved
+  `session.New` from `session/session.go:60:6` to `59:6`, and the resolved-graph comment records
+  provider positions. `docs/tutorial/12-scoped-instances.md` quotes that position twice and was
+  updated with it. `examples/basic`, `examples/mocking` and `examples/scoped` regenerate
+  byte-identically.
+- Internally, `errors.AsType` (Go 1.26) replaces the `errors.As` out-parameter in
+  `internal/resolve`. No behavior change.
+
 ## [3.1.0] - 2026-08-28
 
 ### Added

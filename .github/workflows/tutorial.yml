@@ -26,10 +26,10 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27'
       # v6 defaults to golangci-lint v1.64.8, which is a v1 binary built with
       # go1.24: it cannot read this module's v2-schema .golangci.yml, and it
-      # refuses a module targeting go 1.25.0 outright ("the Go language
+      # refuses a module targeting go 1.27.0 outright ("the Go language
       # version used to build golangci-lint is lower than the targeted Go
       # version"). v9 runs on node24 and pairs with the v2 line, so the
       # version is pinned rather than floating on the action's default.
@@ -48,7 +48,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27'
 
       - name: Build
         run: go build ./...
@@ -123,7 +123,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.27'
 
       # GitHub Actions publishes service container ports to the runner's
       # own localhost, so these are the same values docker-compose.yml

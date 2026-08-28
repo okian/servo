@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"uuid"
 
 	"example.com/servoorders/cache"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/mocks"
-	"github.com/google/uuid"
 	"github.com/sony/gobreaker/v2"
 	"go.uber.org/mock/gomock"
 )

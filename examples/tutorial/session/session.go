@@ -11,8 +11,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"example.com/servoorders/config"
 	"github.com/okian/servo/v3/servo"

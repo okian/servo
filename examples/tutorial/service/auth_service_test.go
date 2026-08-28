@@ -5,13 +5,13 @@ import (
 	"errors"
 	"testing"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/mocks"
 	"example.com/servoorders/service"
-	"github.com/google/uuid"
 	"go.uber.org/mock/gomock"
 )
 

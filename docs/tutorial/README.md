@@ -38,7 +38,7 @@ it's first needed, with a short "what and why" before the code.
 
 ## Prerequisites
 
-- Go 1.25 or newer (`go version`)
+- Go 1.27 or newer (`go version`)
 - [Docker](https://docs.docker.com/get-docker/) with the `docker compose` plugin, for running
   Postgres, Redis, and NATS locally
 - `curl` (or any HTTP client) for the "try it yourself" sections

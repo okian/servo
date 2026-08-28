@@ -274,7 +274,7 @@ $ servo graph --dir examples/tutorial
       deps: example.com/servoorders/session.UserID, *example.com/servoorders/config.Config
       capabilities: Initializer, Flusher, Finalizer
       binding: sole candidate
-      pos: session/session.go:60:6
+      pos: session/session.go:59:6
 ```
 
 Read the last three lines of the scope header carefully, because they're the whole model:
@@ -289,7 +289,7 @@ Read the last three lines of the scope header carefully, because they're the who
 ```
 $ servo explain session.Session
 *example.com/servoorders/session.Session
-  provider:     session.New (session/session.go:60:6)
+  provider:     session.New (session/session.go:59:6)
   binding:      sole candidate
   lifetime:     scoped — one per example.com/servoorders/session.UserID, linger 5m0s, max 50000
   level:        1

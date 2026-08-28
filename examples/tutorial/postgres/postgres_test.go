@@ -6,10 +6,10 @@ import (
 	"os"
 	"testing"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 // testStore skips the test unless TEST_POSTGRES_DSN is set — start

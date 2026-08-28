@@ -6,9 +6,9 @@ package repository
 
 import (
 	"context"
+	"uuid"
 
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 type OrderRepository interface {

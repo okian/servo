@@ -3,10 +3,10 @@ package auth_test
 import (
 	"testing"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
-	"github.com/google/uuid"
 )
 
 func TestIssueThenVerifyRoundTrips(t *testing.T) {

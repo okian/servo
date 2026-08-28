@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"uuid"
 
 	"example.com/servoorders/auth"
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 	"go.uber.org/mock/gomock"
 )
 

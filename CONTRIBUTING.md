@@ -8,7 +8,7 @@ Typos, doc fixes, and small bug fixes can go straight to a PR.
 
 ## Dev workflow
 
-Go 1.25+. From the repo root:
+Go 1.27+. From the repo root:
 
 ```
 go build ./...
