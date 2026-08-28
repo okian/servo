@@ -106,16 +106,94 @@ func (e *emitter) shutdownFunc() string {
 	b.WriteString("\tgo func() {\n\t\tselect {\n\t\tcase <-forceExit:\n\t\t\tos.Exit(1)\n\t\tcase <-watcherDone:\n\t\t}\n\t}()\n\n")
 
 	fmt.Fprintf(&b, "\tvar nodes []%s.NodeResult\n", e.servoAlias)
-	for i := len(e.resolved.Order) - 1; i >= 0; i-- {
-		n := e.resolved.Order[i]
-		if !e.needsStopMethod(n) {
-			continue
+	for _, step := range e.shutdownSteps() {
+		switch {
+		case step.scope != nil:
+			fmt.Fprintf(&b, "\tnodes = append(nodes, a.%s(ctx))\n", step.scope.StopMethod)
+		case e.needsStopMethod(step.node):
+			fmt.Fprintf(&b, "\tnodes = append(nodes, a.stop%s(ctx))\n", capitalize(e.varName[step.node.Key]))
 		}
-		fmt.Fprintf(&b, "\tnodes = append(nodes, a.stop%s(ctx))\n", capitalize(e.varName[n.Key]))
 	}
 	fmt.Fprintf(&b, "\treturn %s.Report{Nodes: nodes}\n", e.servoAlias)
 	b.WriteString("}\n\n")
 	return b.String()
+}
+
+// stopStep is one entry in the teardown sequence: either a singleton node
+// or a whole scope.
+type stopStep struct {
+	node  *resolve.Node
+	scope *scopeEmit
+}
+
+// shutdownSteps is the teardown order: a reverse topological sort over the
+// combined graph of singletons and scopes.
+//
+// Scopes have to be sequenced, not appended: a scope must stop after every
+// singleton that can still call Acquire on it — otherwise Shutdown races
+// live traffic — and before every singleton its instances depend on, so a
+// draining instance still has a logger and a database to drain against.
+// Ordering does most of the work by itself: draining the server first ends
+// the streams, which cancels their contexts, which fires the release
+// backstops, which drops the reference counts, so by the time a scope is
+// reached there is usually very little left in it.
+//
+// With no scopes declared this is exactly reverse(Order): Order is already
+// a DFS post-order, so visiting it in sequence re-derives it element for
+// element, and the emitted Shutdown is byte-identical to what it was
+// before scopes existed.
+func (e *emitter) shutdownSteps() []stopStep {
+	visitedNode := map[*resolve.Node]bool{}
+	visitedScope := map[*scopeEmit]bool{}
+	var out []stopStep
+
+	var visitNode func(n *resolve.Node)
+	var visitScope func(se *scopeEmit)
+
+	visitNode = func(n *resolve.Node) {
+		if n == nil || n.Kind != resolve.NodeProvider || visitedNode[n] {
+			return
+		}
+		visitedNode[n] = true
+		for _, d := range n.Deps {
+			if d.Kind == resolve.NodeScopeAccessor {
+				visitScope(e.scopeByScope[d.Scope])
+				continue
+			}
+			visitNode(d)
+		}
+		out = append(out, stopStep{node: n})
+	}
+	visitScope = func(se *scopeEmit) {
+		if se == nil || visitedScope[se] {
+			return
+		}
+		visitedScope[se] = true
+		for _, d := range se.Borrowed {
+			visitNode(d)
+		}
+		for _, m := range se.Members {
+			for _, d := range m.N.Deps {
+				if d.Kind == resolve.NodeScopeAccessor {
+					visitScope(e.scopeByScope[d.Scope])
+				}
+			}
+		}
+		out = append(out, stopStep{scope: se})
+	}
+
+	for _, n := range e.resolved.Order {
+		visitNode(n)
+	}
+	for _, se := range e.scopes {
+		visitScope(se)
+	}
+
+	reversed := make([]stopStep, len(out))
+	for i, step := range out {
+		reversed[len(out)-1-i] = step
+	}
+	return reversed
 }
 
 // healthReadyFunc emits Health or Ready: flat per-node results, with no

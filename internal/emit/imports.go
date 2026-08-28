@@ -19,6 +19,24 @@ func NewImportManager() *ImportManager {
 	return &ImportManager{byPath: map[string]string{}, byName: map[string]string{}}
 }
 
+// Reserve claims an identifier that generated code hard-codes — a
+// parameter name, a local, anything a user package must not be allowed to
+// shadow. A package that wanted that identifier is aliased instead.
+//
+// It exists because emitted code references user types package-qualified
+// (`chat.RoomKey`) inside functions whose own parameters and locals are
+// fixed strings. A user package named `app` would otherwise take the
+// identifier the scope constructor's `app *App` parameter needs, and the
+// generated file would not compile — with `servo generate` reporting
+// success, since it formats the output but does not type-check it.
+func (m *ImportManager) Reserve(names ...string) {
+	for _, name := range names {
+		if _, taken := m.byName[name]; !taken {
+			m.byName[name] = "\x00reserved"
+		}
+	}
+}
+
 // Add registers path (whose default package identifier is pkgName) and
 // returns the identifier to use at call sites.
 func (m *ImportManager) Add(path, pkgName string) string {

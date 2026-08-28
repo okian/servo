@@ -1,4 +1,4 @@
-# 14. Testing strategy
+# 15. Testing strategy
 
 Every chapter so far has written tests alongside the code they cover — a repository test in
 [chapter 5](05-repository-layer.md), a service test in [chapter 8](08-service-layer.md), a
@@ -17,8 +17,8 @@ styles below, not one more handler concern.
 
 ```mermaid
 flowchart TB
-    T1["Tier 1: Unit tests<br/>gomock + httptest.NewRecorder<br/>one component, no socket, no servo<br/>24 tests / 8 files"]
-    T2["Tier 2: API-contract tests<br/>httptest.NewServer + gomock<br/>full handler chain, real socket, no servo<br/>7 tests / 1 file"]
+    T1["Tier 1: Unit tests<br/>gomock + httptest.NewRecorder<br/>one component, no socket, no servo<br/>30 tests / 9 files"]
+    T2["Tier 2: API-contract tests<br/>httptest.NewServer + gomock<br/>full handler chain, real socket, no servo<br/>10 tests / 1 file"]
     T3["Tier 3: Full-graph tests<br/>servo.Override + NewTestApp + gomock<br/>the real wiring, fake infrastructure<br/>1 test / 1 file"]
     T4["Tier 4: Integration tests<br/>real Postgres / Redis / NATS<br/>env-var gated, skips without infra<br/>11 tests / 4 files"]
 
@@ -37,7 +37,7 @@ The four tiers, concretely:
 
 | Tier | Technique | Real infra? | Real HTTP socket? | Real servo graph? | Files |
 |---|---|---|---|---|---|
-| 1. Unit | gomock, `httptest.NewRecorder` | No | No | No | `auth`, `config`, `service` (×2), `resilience` (×2), `observability` (×2) |
+| 1. Unit | gomock, `httptest.NewRecorder` | No | No | No | `auth`, `config`, `service` (×2), `resilience` (×2), `observability` (×2), `session` |
 | 2. API-contract | gomock, `httptest.NewServer` | No | Yes | No | `api/api_test.go` |
 | 3. Full-graph | gomock via `servotest.PanicReporter`, `servo.Override`, `NewTestApp` | No | Yes | Yes | `cmd/orders/app_test.go` |
 | 4. Integration | none — real driver, real server | Yes | Yes (where relevant) | No | `postgres`, `redis`, `natsbroker`, `notifier` |
@@ -58,7 +58,7 @@ session happened to try.
 The difference from tier 1's `httptest.NewRecorder` tests matters: `handler.ServeHTTP(httptest.NewRecorder(), req)` calls a handler as a plain Go function — useful for testing one middleware in
 isolation (`resilience/ratelimit_test.go` does exactly this), but it never exercises routing,
 never binds a real port, and never proves the middleware chain in `api.New` is actually assembled
-in the order chapter 13 insists it must be. `httptest.NewServer` does all three: it starts a real
+in the order chapter 14 insists it must be. `httptest.NewServer` does all three: it starts a real
 listener, and every test in this file talks to it the same way a real client would.
 
 ```go
@@ -119,7 +119,7 @@ correctly. Two details worth noticing:
   `&config.Config{}` literal skips `caarlos0/env`'s tag processing entirely — every field not set
   here is Go's zero value, not the configured default. A zero `RateLimitRPS` clamps the limiter's
   burst to 1, which silently broke `TestCreateOrderSucceedsWithValidToken` the first time the rate
-  limiter was wired into `api.New` in chapter 13, well after this fixture was written. See
+  limiter was wired into `api.New` in chapter 14, well after this fixture was written. See
   Diagnostics below.
 - `orderCache.EXPECT().Get(...).AnyTimes()` and the two other `AnyTimes()` expectations are set up
   once, here, rather than repeated in every test function, because `OrderService` always tries the
@@ -249,13 +249,14 @@ ok  	example.com/servoorders/redis	0.508s
 ?   	example.com/servoorders/repository	[no test files]
 ok  	example.com/servoorders/resilience	0.384s
 ok  	example.com/servoorders/service	0.719s
+ok  	example.com/servoorders/session	0.297s
 ```
 
 Notice `postgres`, `redis`, and `natsbroker` all say `ok`, not `[no test files]` — they have test
 files, but every function in them checked its `TEST_*` environment variable, found it unset, and
 called `t.Skip`. A skipped test still reports `ok`; nothing here proves the repository layer
 actually talks to Postgres yet. That requires `make up` (bringing up the real
-`docker-compose.yml` stack from [chapter 16](16-running-and-deployment.md)) followed by:
+`docker-compose.yml` stack from [chapter 17](17-running-and-deployment.md)) followed by:
 
 ```
 $ make test-integration
@@ -308,7 +309,7 @@ every test that checked it, and only those.
   `t.Cleanup`) to actually simulate a missing variable.
 - **`postgres`/`redis`/`natsbroker` tests report `ok` in CI, but nobody's sure they're doing
   anything** — check that the job actually sets `TEST_POSTGRES_DSN`/`TEST_REDIS_ADDR`/
-  `TEST_NATS_URL` (see [chapter 15](15-cicd.md)). A missing `services:` block or a typo'd env var
+  `TEST_NATS_URL` (see [chapter 16](16-cicd.md)). A missing `services:` block or a typo'd env var
   name produces a suite that passes by skipping everything, silently.
 - **`gomock.NewController(t)` panics with "missing call"** — an `EXPECT()` was set up but the
   mocked method was never actually called before the test function returned and `ctrl.Finish()` ran
@@ -341,7 +342,7 @@ every test that checked it, and only those.
   `t.Fatal` failures instead of panics.
 - **Don't** let `httptest.NewRecorder` tests and `httptest.NewServer` tests blur together. The
   former calls a handler as a function; the latter proves routing and middleware ordering over a
-  real socket. A middleware bug in how `api.New` assembles the chain (chapter 13's `r.Pattern`
+  real socket. A middleware bug in how `api.New` assembles the chain (chapter 14's `r.Pattern`
   bug, for instance) is only visible to the latter.
 - **Don't** assume `go test`'s caching will silently hide an integration test from a second run —
   and don't disable caching reflexively either (`-count=1` everywhere). It's slower for no benefit
@@ -373,6 +374,6 @@ every test that checked it, and only those.
 
 ## Next
 
-[Chapter 15: CI/CD](15-cicd.md) — turning `make test` and `make test-integration` into a GitHub
+[Chapter 16: CI/CD](16-cicd.md) — turning `make test` and `make test-integration` into a GitHub
 Actions workflow that runs both automatically, plus the build and `servo check` steps that don't
 have a `make` target yet.

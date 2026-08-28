@@ -14,7 +14,8 @@ view onto the same stages, orchestrated by `cmd/servo/pipeline.go`:
 load.Load             → *load.Loaded             one go/packages session: main module + everything
                                                    it transitively imports, fully type-checked
 load.FindSpec(s)       → *load.Spec, ...          parse servo.Build(...)'s AST: roots, Bind/
-                                                   Override declarations, the injector package
+                                                   Override/Scoped declarations, the injector
+                                                   package
 graph.ScanCandidates   → []*graph.Provider,       every constructor-shaped function in scope,
                           []graph.Rejected         classified; non-candidates kept with a reason
 resolve.Resolve        → *resolve.Resolved        roots → transitive closure → selection
@@ -70,6 +71,55 @@ somewhere the consumer doesn't import is exactly the common case. Third-party an
 candidates are never in scope, which is what keeps deep dependency trees from producing false
 ambiguity at scale.
 
+## Scopes
+
+A scope is the one part of the graph that isn't a singleton, and it threads through every stage
+rather than bolting onto the end of one.
+
+`internal/graph/scopekey.go` finds the `ScopeKey` extractor. It is the only thing servo detects
+**by name** rather than with `types.Implements`: a `ScopeKey`'s dependency list varies per type, so
+there is no single interface shape to match. The same file holds the blank-receiver check, which
+`internal/resolve` and `cmd/servo-vet` both run — generated code calls the extractor on a typed
+nil, and no signature can express "never dereferences the receiver".
+
+`internal/resolve` resolves scopes **before** roots, deliberately. The check that gives the feature
+its reason to exist — a singleton capturing a scoped instance — is a question about a node that the
+scope pass has already classified, so it has to run first. Membership is then a fixpoint over the
+resolved edges: a node belongs to a scope if it is a declared root of it, or if any of its
+dependencies is that scope's key or is itself a member. Everything else the scope reaches is a
+singleton it borrows, constructed once by the `App` and shared by every instance.
+
+Two synthetic node kinds carry this through emission. `NodeScopeKey` stands for the extracted key
+value, and `NodeScopeAccessor` for the generated accessor — neither is built by a provider, so
+neither appears in any `Order`; both appear only in other nodes' `Deps`. Keeping them out of
+`Resolved.Order` is what makes every pre-existing loop over that slice correct without change, and
+is why an app with no `Scoped` declaration emits a byte-identical file.
+
+Widening, cross-scope, extractor-cycle and undeclared-scope are all checked **after** traversal
+rather than during it (`checkScopeEdges`), so each edge is examined exactly once no matter which
+pass discovered it — including the ones a second scope's sub-graph reaches into a first scope's.
+The needed-by chain those diagnostics print is reconstructed by BFS from the roots, which is why
+they read identically to the ones resolution produces inline.
+
+`internal/emit/scope.go` is the only place servo generates concurrent, stateful, timer-driven code.
+Per scope: a registry. Per live key: an entry owning its reference count and linger timer as
+loop-local variables in its own goroutine. That shape was chosen over a single per-scope `select`
+because a slow teardown or a blocking construction in one key would otherwise freeze every acquire
+in the scope, and because per-entry state reads better as a per-entry state machine — which also
+removes any need for a generation counter, since a dying entry is never revived.
+
+`Shutdown` sequences scopes into the existing reverse-dependency teardown by topological sort over
+a combined graph of singletons and scopes (`shutdownSteps`), rather than appending them: a scope
+has to stop after every singleton that could still call `Acquire`, and before every singleton its
+instances depend on. With no scopes declared that sort re-derives `reverse(Order)` element for
+element, which is what keeps the no-scope output byte-identical.
+
+Golden files cannot catch a torn-down-while-live race, so the gate on this feature is
+[`examples/scoped`](examples/scoped)'s suite: concurrent acquire of a cold key, eviction racing
+acquire at the linger boundary, cancellation as the only release path, `Shutdown` racing in-flight
+acquires, constructor failure under concurrency, and a thousand distinct keys — all under `-race`,
+each ending in a goroutine-leak check.
+
 ## Canonical type identity
 
 Two written-differently type expressions can name the same type: a defined alias
@@ -88,7 +138,9 @@ file, and the marker calls in it, compile out entirely. The panic is the fallbac
 this can go wrong: the tag is missing, the marker call compiles into the real binary, and it runs.
 `cmd/servo-vet` is the static safety net for that same failure mode: a go/analysis pass flagging
 any marker call in a file that doesn't carry the tag, catchable in the editor before `go generate`
-or a build ever runs.
+or a build ever runs. It carries one other rule for the same reason — a `ScopeKey` method whose
+receiver its body can reach, which the type system cannot rule out and which generated code turns
+into a nil dereference.
 
 ## Test overrides
 
@@ -114,5 +166,6 @@ package's API. Godoc `Example` functions in `servo` and `servotest` show real, e
 where the API allows it — some exported functions there panic by design or require a `*testing.T`
 that an `ExampleXxx` function has no way to supply, so not every function has one; see the
 comments in `servo/example_test.go` and `servotest/example_test.go` for which and why.
-`internal/emit`'s golden-file test (`internal/emit/testdata/golden/fullapp.go.golden`, refreshed
-with `UPDATE_GOLDEN=1`) is the authoritative reference for exactly what emitted code looks like.
+`internal/emit`'s golden-file tests (`internal/emit/testdata/golden/fullapp.go.golden` and
+`scopedapp.go.golden`, both refreshed with `UPDATE_GOLDEN=1`) are the authoritative reference for
+exactly what emitted code looks like.

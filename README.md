@@ -23,8 +23,8 @@ readable by a human at 3am.
 [how servo compares](https://okian.github.io/servo/comparison.html) if you are weighing it against
 wire, fx, or dig, and [limitations](https://okian.github.io/servo/limitations.html) before you
 adopt it. The [reference](https://okian.github.io/servo/reference/) documents every CLI command and
-flag, the spec-file markers, the resolution rules, every diagnostic, the lifecycle contract, the
-generated API, and every exported identifier in `servo` and `servotest`.
+flag, the spec-file markers, the resolution rules, every diagnostic, scoped instances, the
+lifecycle contract, the generated API, and every exported identifier in `servo` and `servotest`.
 
 **v3 is a from-scratch rewrite of `servo` and shares no API with what came before it (informally,
 v1).** v1 was a runtime lifecycle sequencer built on a global registry, a hand-maintained
@@ -164,6 +164,102 @@ any cleanup func the constructor returned) — each phase budgeted, reported as 
 abandoned, never claiming a clean stop it didn't earn. A second interrupt/term signal during
 shutdown forces an immediate exit.
 
+## Scoped instances
+
+Everything above is a singleton: constructed once in `New`, held for the life of the process. One
+thing isn't. A **scope** is a keyed sub-graph — one chat room per room name, one workspace per
+tenant, one client pool per region — where everyone presenting the same key shares an instance, and
+the instance is drained, stopped and evicted once the last holder lets go.
+
+Declare how to extract the key, on the type itself:
+
+```go
+// chat/chat.go
+type RoomKey string
+
+// The receiver must be unnamed: servo calls this on a typed nil, because it
+// needs the key before it can choose an instance.
+func (*Room) ScopeKey(ctx context.Context) (RoomKey, error) {
+    k, ok := ctx.Value(roomCtxKey{}).(RoomKey)
+    if !ok {
+        return "", servo.ErrNoScopeKey
+    }
+    return k, nil
+}
+
+// The accessor interface, declared in your package — servo can't emit a
+// type into it, so this is what consumers depend on.
+type Rooms interface {
+    Acquire(ctx context.Context) (*Room, func(), error)
+}
+```
+
+Declare the scope in the spec, alongside the roots:
+
+```go
+servo.Build(
+    servo.Root[*api.Server](),
+    servo.Scoped[*chat.Room, chat.Rooms](
+        servo.Linger(30*time.Second),
+        servo.Max(10_000),
+    ),
+)
+```
+
+Consume it as an ordinary dependency, and acquire per call:
+
+```go
+func NewServer(rooms chat.Rooms, log *logger.Logger) *Server
+
+func (s *Server) Post(ctx context.Context, msg string) error {
+    room, release, err := s.rooms.Acquire(ctx)
+    if err != nil {
+        return err
+    }
+    defer release()
+
+    room.Post(msg)
+    return nil
+}
+```
+
+The map, the reference count, the linger timer and the per-instance `Init`/`Run`/`Drain`/`Flush`/
+`Stop` are all generated. Anything the room transitively depends on that also depends on the key
+joins the same scope; anything that doesn't — a logger, a config — stays one shared instance.
+
+**The check that makes this worth generating rather than hand-writing** is the one a registry
+beside servo can't give you:
+
+```
+$ servo generate --dir examples/scoped
+example.com/servoscoped/cmd/chat: servo: 1 diagnostic(s):
+
+api/api.go:19:6: servo: *example.com/servoscoped/chat.Room is scoped, but *example.com/servoscoped/api.Server is a singleton that depends on it
+  needed by *example.com/servoscoped/api.Server  api/api.go:19:6
+  root                                           cmd/chat/spec.go:15:3
+
+  A singleton is constructed once and held for the life of the process, so it
+  would capture whichever *example.com/servoscoped/chat.Room happened to be built first and hand that same
+  one to every caller afterwards, whatever key they present. Nothing about the
+  running program would say so.
+
+  Two ways out:
+    - depend on the accessor instead: change api.New's parameter from *example.com/servoscoped/chat.Room to example.com/servoscoped/chat.Rooms,
+      and call Acquire(ctx) per request
+    - make *example.com/servoscoped/api.Server scoped too, by giving it a dependency on example.com/servoscoped/chat.RoomKey
+```
+
+(reproduced by changing `api.New`'s `rooms` parameter from `chat.Rooms` to `*chat.Room` in
+[`examples/scoped`](./examples/scoped) and dropping the two `Acquire` calls it feeds; absolute
+paths shortened)
+
+A complete, runnable version — including a transitively-scoped node, a shared singleton, and the
+race suite that gates the feature in CI — is in [`examples/scoped`](./examples/scoped). The full
+contract is documented at
+[Scoped instances](https://okian.github.io/servo/reference/scopes.html): the extractor's rules,
+what belongs to a scope, the linger window, the `Max` cap, the teardown ordering, and the four
+diagnostics.
+
 ## Multiple instances of the same type
 
 This section is about a narrower problem than [interface vs. concrete-type
@@ -228,6 +324,7 @@ $ servo explain relay.Relay
 *example.com/servobasic/relay.Relay
   provider:     relay.New (relay/relay.go:24:6)
   binding:      sole candidate
+  lifetime:     singleton — one per process, built by New
   level:        2
   depends on:   *example.com/servobasic/queue.OrdersAccount, *example.com/servobasic/queue.AuditAccount
   depended on:  none
@@ -269,8 +366,9 @@ servo: no provider for example.com/servobasic/store.Store
 — `mockstore.Store` shows up too because it's a real second-and-third implementation living in the
 same module, used by the [Mocking](#mocking) section below)
 
-[`examples/diagnostics`](./examples/diagnostics) has three small, permanently broken fixtures —
-one per failure mode above plus a dependency cycle — each runnable on its own
+[`examples/diagnostics`](./examples/diagnostics) has seven small, permanently broken fixtures —
+one per failure mode above, a dependency cycle, and one for each of the four scope diagnostics —
+each runnable on its own
 (`go run ./cmd/servo generate --dir examples/diagnostics/<name>`) to see exactly that diagnostic in
 isolation.
 
@@ -303,8 +401,9 @@ unreachable from it.
 
 `explain`, `why`, and `list` accept `--json` for machine consumption, and `graph` takes
 `--format=json` alongside its text, DOT, and Mermaid renderers. `cmd/servo-vet` is a standalone
-`go/analysis` analyzer flagging marker calls in files missing the `servoinject` build tag, so a
-misconfigured spec file is caught in the editor, not at runtime.
+`go/analysis` analyzer for the two mistakes the compiler can't catch: a marker call in a file
+missing the `servoinject` build tag, and a `ScopeKey` method whose body can reach its own receiver
+(servo calls it on a typed nil). Both are caught in the editor, not at runtime.
 
 **CI and pre-commit**: [`.github/workflows/go.yml`](./.github/workflows/go.yml) is a reference
 workflow — build, vet, test, then `servo check` against every injector, so a constructor signature
@@ -477,9 +576,10 @@ internal/graph/    Key, Provider, candidate index, capability detection
 internal/resolve/  roots → closure → order, levels, diagnostics
 internal/emit/     source emission, import manager, name allocator
 internal/render/   text, JSON, DOT, Mermaid graph renderers
-servo/             markers + ~200-line runtime
+servo/             markers + ~430-line runtime
 servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout, PanicReporter
 examples/basic/    a complete, runnable example (separate module)
+examples/scoped/   keyed, refcounted instances + the race suite (separate module)
 examples/mocking/  moq/mockery/gomock integrations, one binary each (separate module)
 examples/tutorial/ full layered microservice built in docs/tutorial/ (separate module)
 ```
@@ -487,7 +587,7 @@ examples/tutorial/ full layered microservice built in docs/tutorial/ (separate m
 Core (`internal/*`, `cmd/servo`) depends on nothing beyond `golang.org/x/tools`; `servotest` alone
 depends on `go.uber.org/goleak`. Neither the runtime package nor any generated output imports
 `reflect`, and the generated package compiles with the `servo` module deleted save for the
-~200-line runtime it calls into — both enforced as conformance checks, not just claimed.
+~430-line runtime it calls into — both enforced as conformance checks, not just claimed.
 
 ## Contributing
 

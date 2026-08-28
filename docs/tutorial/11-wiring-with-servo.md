@@ -445,5 +445,5 @@ exactly the way `main.go` wires it for real, running in well under a second, wit
 
 ## Next
 
-[Chapter 12: Observability](12-observability.md) — structured logs, metrics, and tracing, now that
-there's a fully wired app to instrument.
+[Chapter 12: Scoped instances](12-scoped-instances.md) — the one thing in this graph that shouldn't
+be built once and held forever.

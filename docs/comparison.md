@@ -40,17 +40,24 @@ Everything below follows from those two.
 
 ## At a glance
 
-| | How it works | Errors surface | Startup/shutdown | Reflection at runtime | Code you can read | Two of the same type | "All implementations of X" |
-|---|---|---|---|---|---|---|---|
-| **servo** | Reads constructors, generates Go | Build time | Built in | No | Yes — `servo_gen.go` | No | No |
-| **google/wire** | Reads constructors, generates Go | Build time | You write it | No | Yes — `wire_gen.go` | Via distinct types | No |
-| **uber-go/fx** | Container | App startup | Built in | Yes | No | Yes — name tags | Yes — value groups |
-| **uber-go/dig** | Container | First `Invoke` | You write it | Yes | No | Yes — names | Yes — groups |
-| **By hand** | You write it | Compile time | You write it | No | It *is* your code | Yes — variables | Yes — a slice |
+| | How it works | Errors surface | Startup/shutdown | Reflection at runtime | Code you can read | Two of the same type | "All implementations of X" | Keyed instances |
+|---|---|---|---|---|---|---|---|---|
+| **servo** | Reads constructors, generates Go | Build time | Built in | No | Yes — `servo_gen.go` | No | No | Yes — scopes, with lifecycle |
+| **google/wire** | Reads constructors, generates Go | Build time | You write it | No | Yes — `wire_gen.go` | Via distinct types | No | No |
+| **uber-go/fx** | Container | App startup | Built in | Yes | No | Yes — name tags | Yes — value groups | Roll your own |
+| **uber-go/dig** | Container | First `Invoke` | You write it | Yes | No | Yes — names | Yes — groups | Roll your own |
+| **By hand** | You write it | Compile time | You write it | No | It *is* your code | Yes — variables | Yes — a slice | Roll your own |
 
 Two of servo's cells say "No." Those are real, and they're the honest price of resolving everything
 before the program runs. Don't skim past them — if either one is something you need, that decision
 is already made, and it isn't servo.
+
+The last column runs the other way. Every container here can hand you a value keyed at runtime, if
+you write the registry yourself; none of them checks that a singleton didn't capture one of those
+values and pin it for the life of the process. servo's [scopes](reference/scopes.md) generate the
+registry — reference counting, linger window, per-instance lifecycle — and make that capture a
+build error. It is the one place where resolving at build time buys something the runtime
+containers structurally cannot offer.
 
 ## google/wire
 
@@ -133,6 +140,10 @@ that's a rounding error and not a real argument.
 **Pick fx when** you need value groups or named instances, you want a lifecycle with a long
 production track record behind it, or your graph is genuinely dynamic — assembled from modules that
 vary at runtime.
+
+The one place the comparison runs the other way is per-key instances. fx has no scope concept: a
+per-tenant or per-room instance is a registry you write and maintain, with its own reference
+counting and its own teardown, and nothing checks that a singleton didn't capture one.
 
 ## uber-go/dig
 

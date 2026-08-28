@@ -34,7 +34,7 @@ Writing the interface first, before `postgres` exists at all, is the same princi
 [chapter 4](04-domain-layer.md#add-the-errors-every-other-layer-will-check-for) applied one layer
 up: whoever *consumes* an interface should own it. `postgres` is about to import `repository`;
 `repository` will never import `postgres`. Keep that direction in mind as you write the
-implementation below — it's what will let [chapter 14](14-testing-strategy.md) swap in a mock
+implementation below — it's what will let [chapter 15](15-testing-strategy.md) swap in a mock
 without either side knowing it happened.
 
 ## Build the Postgres implementation
@@ -201,7 +201,7 @@ everything visible in one file, nothing to look up in someone else's documentati
 what it does. (A tool like [`golang-migrate`](https://github.com/golang-migrate/migrate) or
 [`goose`](https://github.com/pressly/goose) is genuinely the better choice once a team has more
 than a handful of migrations, or needs to roll one back in production — see
-[chapter 18](18-alternatives-and-further-reading.md#migrations) for when to make that switch.)
+[chapter 19](19-alternatives-and-further-reading.md#migrations) for when to make that switch.)
 
 Create `migrations/migrations.go`:
 

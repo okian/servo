@@ -212,6 +212,49 @@ graph BT
   classDef level3 fill:#60a5fa;
 ```
 
+### Scopes in the graph output
+
+Every format separates the app's singletons from each [scope](scopes.md)'s members, because a
+scoped node's level counts from its own scope's floor rather than the app's.
+
+`text` prints a block per scope, with its policy and what it borrows:
+
+```
+══ example.com/servoscoped/chat.RoomKey ══
+  linger: 30s   max: 10000
+  accessors: example.com/servoscoped/chat.Rooms
+  borrows:   *example.com/servoscoped/logger.Logger
+── Scope level 1 ──
+  *example.com/servoscoped/chat.RoomLog
+      ...
+```
+
+`json` adds a `scope` field to each scoped node and a top-level `scopes` array. Both are
+`omitempty`, so an app with nothing scoped emits exactly the JSON it always did:
+
+```json
+{
+  "nodes": [
+    { "type": "*chat.Room", "level": 2, "scope": "chat.RoomKey", "…": "…" }
+  ],
+  "scopes": [
+    {
+      "key": "chat.RoomKey",
+      "linger": "30s",
+      "max": 10000,
+      "accessors": ["chat.Rooms"],
+      "members": ["*chat.RoomLog", "*chat.Room"],
+      "borrows": ["*logger.Logger"]
+    }
+  ]
+}
+```
+
+`dot` puts each scope in a dashed `cluster_scope<n>` subgraph, and `mermaid` in a labelled
+`subgraph`, both with the key type drawn as its own node. A consumer's edge to an accessor
+interface is routed to that key: an accessor is generated code, not a resolved node, so the edge
+would otherwise dangle.
+
 An unrecognised format is an error: `servo graph: unknown --format "svg" (want text|json|dot|mermaid)`.
 
 ## `explain`
@@ -221,13 +264,27 @@ servo explain [--dir <path>] [--json] <type>
 ```
 
 Answers, for one node: which provider was selected and why, where that provider is declared, what
-it depends on, what depends on it, its level, and its detected capabilities.
+it depends on, what depends on it, its lifetime, its level, and its detected capabilities. Scoped
+nodes can be asked about too, and the `lifetime:` line is where the difference shows:
+
+```
+$ servo explain chat.Room
+*example.com/servoscoped/chat.Room
+  provider:     chat.NewRoom (chat/chat.go:74:6)
+  binding:      sole candidate
+  lifetime:     scoped — one per example.com/servoscoped/chat.RoomKey, linger 30s, max 10000
+  level:        2
+  depends on:   example.com/servoscoped/chat.RoomKey, *example.com/servoscoped/chat.RoomLog
+  depended on:  (acquired via example.com/servoscoped/chat.Rooms)
+  capabilities: Initializer, Runner, Drainer, Finalizer
+```
 
 ```
 $ servo explain api.Server
 *example.com/servobasic/api.Server
   provider:     api.New (api/api.go:15:6)
   binding:      sole candidate
+  lifetime:     singleton — one per process, built by New
   level:        3
   depends on:   *example.com/servobasic/postgres.DB
   depended on:  none
@@ -254,7 +311,8 @@ knowing:
   `servo: "Server" matches multiple nodes, be more specific: ...`.
 
 `--json` prints the same information as an object with `type`, `provider`, `pos`, `binding`,
-`level`, `depends_on`, `depended_on` and `capabilities`.
+`lifetime`, `level`, `depends_on`, `depended_on` and `capabilities`, plus `scope` when the node is
+scoped (omitted when it isn't).
 
 ## `why`
 
@@ -477,16 +535,32 @@ go run github.com/okian/servo/v3/cmd/servo-vet ./...
 ```
 
 A standalone [`go/analysis`](https://pkg.go.dev/golang.org/x/tools/go/analysis) analyzer (named
-`servovet`) that flags calls to `servo.Build`, `Root`, `Bind` or `Override` in any file that
-doesn't carry a build constraint requiring the `servoinject` tag.
+`servovet`) for the two servo mistakes the compiler cannot catch.
 
-The markers panic when actually executed, so a marker call in an untagged file compiles straight
-into your real binary and panics at runtime. This catches it in the editor instead:
+**A marker call without the build tag.** Calls to `servo.Build`, `Root`, `Bind`, `Override`,
+`Scoped`, `Linger` or `Max` in any file that doesn't carry a build constraint requiring
+`servoinject`. The markers panic when actually executed, so such a call compiles straight into your
+real binary and panics at runtime. This catches it in the editor instead:
 
 ```
 spec.go:9:2: servo: servo.Build called in a file without a `//go:build servoinject` constraint —
 it will compile into the real binary and panic at runtime; run `servo init` or add the tag
 ```
+
+**A `ScopeKey` method with a reachable receiver.** servo calls that method on a typed nil, because
+the key has to be known before an instance can be chosen, and no signature can say "never
+dereferences the receiver":
+
+```
+chat/chat.go:91:6: servo: ScopeKey must not name its receiver — servo calls it on a typed nil,
+so a receiver the body can reach is a nil dereference in production; write
+`func (*T) ScopeKey(...)`
+```
+
+The check is narrowed to methods that really are key extractors — `context.Context` first, `(K,
+error)` out, `K` a defined non-interface type — so an unrelated method that happens to share the
+name is left alone. `servo generate` makes both checks too; the analyzer runs them everywhere,
+including in packages no injector has reached yet.
 
 Because it's a `singlechecker` binary, it plugs into anything that speaks `go vet`'s analyzer
 protocol, including `golangci-lint`'s custom-analyzer support and most editor integrations.

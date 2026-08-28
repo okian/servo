@@ -33,6 +33,11 @@ Implement none of them and your component is simply constructed and held — no 
 emitted for it at all. Implement three and exactly those three are called. There is no base type to
 embed, no no-op method to write, and nothing to register.
 
+This page describes the lifecycle of a **singleton** — one instance, built in `New`, stopped in
+`Shutdown`. A [scoped](scopes.md) component runs the same seven methods on the same machinery, but
+per instance and on its own schedule; see
+[Per-instance lifecycle](scopes.md#per-instance-lifecycle) for the two places the two differ.
+
 `servo explain <type>` prints the capabilities detected for any node, and the generated file's
 header comment lists them for the whole graph, so what servo saw is never a mystery.
 
@@ -190,6 +195,9 @@ Every phase call during shutdown and rollback runs under this budget, through
 [`servo.RunStop`](servo-package.md#runstop): the call is made in its own goroutine, and if it hasn't
 returned when the budget expires the node is reported **abandoned** rather than waited on.
 
+The same budget bounds every per-instance call inside a scope's teardown, so one component that
+refuses to stop cannot hold a whole scope's eviction open.
+
 | Outcome | Status | Meaning |
 | --- | --- | --- |
 | Returned `nil` in time | `StatusOK` | Stopped cleanly |
@@ -208,6 +216,13 @@ It is a package variable rather than configuration because parsing configuration
 for a code generator. Set it before `New` if 5 seconds is wrong for your service; in tests, use
 [`servotest.Timeout`](servotest-package.md#timeout), which shrinks it and restores it via
 `t.Cleanup`.
+
+### Scopes in the shutdown sequence
+
+An app with [scopes](scopes.md) gets one extra step per scope, sequenced into the same
+reverse-dependency order: after every singleton that could still call `Acquire` on it, and before
+every singleton its instances depend on. Each scope reports **one `NodeResult`**, merged from every
+entry it tore down — one line per live chat room would not be a report.
 
 ## Health and Ready
 

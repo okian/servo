@@ -25,6 +25,7 @@ type Spec struct {
 	Roots       []RootDecl
 	Binds       []BindDecl
 	Overrides   []BindDecl
+	Scopes      []ScopeDecl
 }
 
 type RootDecl struct {
@@ -197,9 +198,20 @@ func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (
 				}
 				spec.Overrides = append(spec.Overrides, decl)
 			}
+		case "Scoped":
+			decl, err := parseScopedCall(pkg, argCall, typeArgs, pos)
+			if err != nil {
+				return nil, err
+			}
+			spec.Scopes = append(spec.Scopes, decl)
+		case "Linger", "Max":
+			return nil, fmt.Errorf("%s: servo.%s is a scope option, not a Build marker — it belongs inside a servo.Scoped[T, I](...) argument list", pos, name)
 		default:
 			return nil, fmt.Errorf("%s: unrecognized servo marker %q inside Build(...)", pos, name)
 		}
+	}
+	if err := checkScopeDecls(spec.Scopes); err != nil {
+		return nil, err
 	}
 	return spec, nil
 }
@@ -240,6 +252,13 @@ func markerCall(pkg *packages.Package, call *ast.CallExpr) (string, []types.Type
 
 	var selIdent *ast.Ident
 	switch fun := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		// A marker with no type parameters at all — servo.Linger/Max,
+		// which are only legal inside a Scoped(...) argument list.
+		// Resolved here rather than rejected outright so the caller can
+		// say *that*, instead of the misleading "must be a Root/Bind/
+		// Override/Scoped call with explicit type arguments".
+		selIdent = fun.Sel
 	case *ast.IndexExpr:
 		sel, ok := fun.X.(*ast.SelectorExpr)
 		if !ok {
@@ -253,7 +272,7 @@ func markerCall(pkg *packages.Package, call *ast.CallExpr) (string, []types.Type
 		}
 		selIdent = sel.Sel
 	default:
-		return "", nil, pos, fmt.Errorf("%s: servo.Build argument must be a Root/Bind/Override call with explicit type arguments", pos)
+		return "", nil, pos, fmt.Errorf("%s: servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments", pos)
 	}
 
 	fn, ok := pkg.TypesInfo.Uses[selIdent].(*types.Func)
@@ -261,9 +280,12 @@ func markerCall(pkg *packages.Package, call *ast.CallExpr) (string, []types.Type
 		return "", nil, pos, fmt.Errorf("%s: not a servo marker call", pos)
 	}
 
-	inst, ok := pkg.TypesInfo.Instances[selIdent]
-	if !ok {
-		return "", nil, pos, fmt.Errorf("%s: servo.%s must be instantiated with explicit type arguments", pos, fn.Name())
+	inst, hasInst := pkg.TypesInfo.Instances[selIdent]
+	if !hasInst {
+		if sig, ok := fn.Type().(*types.Signature); ok && sig.TypeParams().Len() > 0 {
+			return "", nil, pos, fmt.Errorf("%s: servo.%s must be instantiated with explicit type arguments", pos, fn.Name())
+		}
+		return fn.Name(), nil, pos, nil
 	}
 
 	typeArgs := make([]types.Type, inst.TypeArgs.Len())

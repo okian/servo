@@ -24,15 +24,22 @@ bottom. It's six lines and it'll tell you whether the rest is worth reading.
 
 ## Consequences of resolving at build time
 
-### Everything is built once and lives for the whole process
+### Almost everything is built once and lives for the whole process
 
-The graph is constructed a single time, in the generated `New`. There's no per-request scope, no
-transient lifetime, no factory that hands you a fresh instance on each call.
+The graph is constructed a single time, in the generated `New`, and held for the life of the
+process.
 
-If a component needs a new object per request, it has to create that object itself. servo gives it
-the thing that does the creating; it doesn't create one per call.
+The one exception is a [scope](reference/scopes.md): a type declaring a `ScopeKey` method gets one
+instance per key, shared by everyone presenting that key, drained and stopped when the last holder
+lets go. That covers the "one per room / per tenant / per region" shape, with the reference
+counting, the linger window and the per-instance lifecycle generated for you.
 
-*What to do instead:* write a factory type by hand and inject that, like any other dependency.
+What it does **not** cover is a fresh instance per call with no sharing at all. `servo.Linger(0)`
+with a key that is unique per request comes close, at the cost of a goroutine per request to own a
+counter that immediately hits zero.
+
+*What to do instead, for the genuinely transient case:* write a factory type by hand and inject
+that, like any other dependency.
 
 ### Nothing that only exists at runtime can be injected
 
@@ -84,12 +91,79 @@ The graph has to be acyclic. There's no lazy or deferred construction that could
 runtime. If two components genuinely need each other, one of them has to stop taking the other as a
 constructor parameter — which is usually a design signal worth listening to, but it is a hard stop.
 
+### Scopes are in-process only
+
+Two pods means two instances per key, unless your routing is sticky. servo has no distributed
+lock, no shared registry and no cross-process coordination, and adding one would make it a
+different kind of tool.
+
+If two replicas both holding a "room" is wrong for your service, the answer is sticky routing or an
+external store — not something servo can do for you.
+
+### Nested scopes are rejected
+
+A room-scoped node cannot depend on a tenant-scoped one. One instance per key *pair* means two
+reference counts and two linger windows with no single owner, and no obvious answer for what
+happens when the outer one evicts while the inner one is still held.
+
+This is a rejection with its own diagnostic, not an oversight.
+
+*What to do instead:* depend on the inner scope's **accessor interface** and `Acquire` it inside
+the method that needs it. That edge crosses no scope boundary, because an accessor is not an
+instance.
+
+### A scope accessor cannot be overridden
+
+`servo.Override[I, C]` replaces one *provider* with another. A scope's accessor is emitted, not
+selected from candidates, so there is nothing for an override to replace — and rather than accept
+one silently and go on exercising the real scope, `servo generate` refuses it.
+
+*What to do instead:* the accessor interface is two methods. Give the consumer that interface as an
+ordinary parameter and construct a stand-in for it directly in the test — which is what
+[`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial)'s `api_test`
+does, in about thirty lines, keyed off the same `ScopeKey` method the real accessor calls.
+
+### A panicking constructor fails the acquire, it does not panic the caller
+
+If a scoped type's constructor or `Init` panics, servo recovers it, rolls back whatever was built,
+and returns it from `Acquire` as an error. It does not reach your handler as a panic.
+
+That is a deliberate trade. A panic during a *concurrent* `Init` comes from a goroutine no caller
+can recover, so letting it through would take the process down for what is otherwise one failed
+request — while the same panic on a single-node level would merely fail that acquire. Converting
+uniformly is the only way both behave the same.
+
+*What to do instead:* if a constructor can fail, return an error from it. The panic path exists so
+a bug does not become an outage, not as a control-flow mechanism.
+
+### A scoped node has no Health or Ready
+
+The generated `Health` and `Ready` cover singletons only. A report with one entry per live chat
+room is not a report.
+
+*What to do instead:* use the accessor's `Stats()` for scope-level numbers, and put per-instance
+health behind whatever your own component already exposes.
+
+### A scoped Run failure surfaces at eviction, not when it happens
+
+Each instance's `Run` goes into its own goroutine. If it returns an error other than its context
+being cancelled, that error is attached to the instance's stop result — which you see when the
+instance is evicted, possibly a long time later. Nothing evicts an instance because its `Run`
+failed.
+
+*What to do instead:* if a component needs to react to its own `Run` failing, it has to do that
+itself. `Stats().Failures` counts evictions whose teardown did not come out clean, which is the
+only signal servo offers for a mid-life teardown — no `Report` is being assembled at the time, and
+which phase failed is not recovered.
+
 ## Deliberate omissions
 
 ### There are no tags or names, so you can't have two of the same type
 
 Identity in the graph is purely by type. Two constructors returning the same concrete type aren't
-two instances — they're an ambiguity, and generation fails.
+two instances — they're an ambiguity, and generation fails. (A [scope](reference/scopes.md) is
+keyed at *runtime* by a value, which is a different thing: it gives you N instances of one type,
+but only one of them per key, and only reachable through an accessor.)
 
 A primary and a replica database. Two SQS clients on two AWS accounts. Two tenant connections. None
 of these can be expressed as two values of one type.
@@ -179,7 +253,7 @@ resolving to each other because they happen to share a type.
 - You need two instances of the same type and can't make them distinct types.
 - You need to collect every implementation of an interface into a slice.
 - Your graph is assembled dynamically, or varies by environment or feature flag.
-- You need per-request or transient lifetimes.
+- You need a genuinely fresh instance per call, with no sharing by key.
 - You need to pull components out of a container at runtime.
 - Your service has five components and a `main.go` you're happy with. Write it by hand.
 

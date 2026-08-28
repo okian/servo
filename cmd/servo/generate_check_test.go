@@ -381,7 +381,7 @@ func TestGenerateOneFailsWhenOutputDirIsReadOnly(t *testing.T) {
 	if err := os.Chmod(specDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(specDir, 0o755)
+	defer func() { _ = os.Chmod(specDir, 0o755) }() // best-effort restore so t.TempDir cleanup can remove it
 
 	if err := generateOne(p); err == nil {
 		t.Fatal("expected writeFileAtomic to fail against a read-only directory")

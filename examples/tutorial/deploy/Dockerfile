@@ -1,5 +1,5 @@
 # Built with the repo root as context, not this module's own directory —
-# see docs/tutorial/16-running-and-deployment.md for why: this module's
+# see docs/tutorial/17-running-and-deployment.md for why: this module's
 # go.mod replaces github.com/okian/servo/v3 with a local path (../.., the
 # servo repo itself), which only resolves if that path is actually present
 # in the build context. A real project with a real, published dependency
