@@ -1,6 +1,7 @@
 [![Go](https://github.com/okian/servo/actions/workflows/go.yml/badge.svg)](https://github.com/okian/servo/actions/workflows/go.yml)
 [![Tutorial](https://github.com/okian/servo/actions/workflows/tutorial.yml/badge.svg)](https://github.com/okian/servo/actions/workflows/tutorial.yml)
 [![CodeQL](https://github.com/okian/servo/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/okian/servo/actions/workflows/codeql-analysis.yml)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14271/badge)](https://www.bestpractices.dev/projects/14271)
 [![codecov](https://codecov.io/gh/okian/servo/branch/master/graph/badge.svg)](https://codecov.io/gh/okian/servo)
 [![Go version](https://img.shields.io/github/go-mod/go-version/okian/servo)](go.mod)
 [![License: MIT](https://img.shields.io/github/license/okian/servo)](LICENSE.md)
