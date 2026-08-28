@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -75,5 +76,12 @@ func TestRunListAllIncludesOutOfScopeCandidates(t *testing.T) {
 	countLines := func(s string) int { return len(strings.Split(strings.TrimRight(s, "\n"), "\n")) }
 	if countLines(all) <= countLines(inScope) {
 		t.Errorf("--all (%d lines) should include strictly more candidates than the default main-module scope (%d lines)", countLines(all), countLines(inScope))
+	}
+}
+
+func TestRunListFailsWhenModuleFailsToLoad(t *testing.T) {
+	err := runList(filepath.Join(t.TempDir(), "does-not-exist"), false, false, false)
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent directory")
 	}
 }

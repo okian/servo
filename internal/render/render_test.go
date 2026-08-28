@@ -109,6 +109,33 @@ func TestDOTContainsNodesAndEdges(t *testing.T) {
 	}
 }
 
+// TestDOTIncludesCapabilitiesInLabel covers the label += branch for nodes
+// that declare capabilities (e.g. Startable, Stoppable) — DOT() only
+// appends the capabilities line when the list is non-empty.
+func TestDOTIncludesCapabilitiesInLabel(t *testing.T) {
+	g := servo.Graph{Nodes: []servo.GraphNode{
+		{Type: "*example.com/app.Server", Level: 1, Capabilities: []string{"Startable", "Stoppable"}},
+	}}
+	out := DOT(g)
+	if !strings.Contains(out, "Startable, Stoppable") {
+		t.Errorf("DOT output missing capabilities in label:\n%s", out)
+	}
+}
+
+// TestMermaidSkipsDanglingDependencyEdge covers the !ok guard in Mermaid's
+// edge loop: a Dep naming a type absent from Nodes (never produced by the
+// real resolve pipeline, but not an invariant Mermaid itself enforces)
+// must be skipped rather than rendered with an empty node id.
+func TestMermaidSkipsDanglingDependencyEdge(t *testing.T) {
+	g := servo.Graph{Nodes: []servo.GraphNode{
+		{Type: "*example.com/app.Server", Level: 1, Deps: []string{"*example.com/app.Missing"}},
+	}}
+	out := Mermaid(g)
+	if strings.Contains(out, "-->") {
+		t.Errorf("mermaid output should skip the edge to a missing node, got:\n%s", out)
+	}
+}
+
 func TestMermaidContainsEdgeAndClass(t *testing.T) {
 	out := Mermaid(ToGraph(buildTestResolved(t)))
 	if !strings.HasPrefix(out, "graph BT") {

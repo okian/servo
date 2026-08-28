@@ -482,3 +482,357 @@ func NewRange() *Range { return &Range{} }
 		t.Errorf("expected the keyword-colliding variable to be named range2, got:\n%s", out)
 	}
 }
+
+// TestEmitReturnsErrorWhenGeneratedSourceFailsToFormat covers Emit's own
+// format.Source failure path directly: nothing in a normal spec/resolved
+// graph can produce syntactically invalid Go (every identifier involved
+// already passed type-checking), so this reaches the branch the way it
+// would actually fire in practice — a servo bug feeding a raw, unvalidated
+// package name into the template — rather than through the real pipeline.
+func TestEmitReturnsErrorWhenGeneratedSourceFailsToFormat(t *testing.T) {
+	spec := &load.Spec{InjectorPkg: &packages.Package{Name: "type", PkgPath: "example.com/bad"}} // "type" is a keyword, illegal as a package name
+	_, err := Emit(&resolve.Resolved{}, spec, false)
+	if err == nil || !strings.Contains(err.Error(), "failed to format") {
+		t.Fatalf("got err=%v, want a 'failed to format' error", err)
+	}
+}
+
+// TestEmitRelativizesPositionsAgainstModuleDir covers posString's rewrite
+// branch: every other test's fixture leaves InjectorPkg.Module nil, so the
+// generated header always fell through to the raw, un-relativized
+// position. A real module sets Module.Dir, and the header comment must
+// name each provider's file relative to it rather than embedding one
+// checkout's absolute path in output meant to be committed to VCS.
+func TestEmitRelativizesPositionsAgainstModuleDir(t *testing.T) {
+	const src = `
+package app
+type Leaf struct{}
+func NewLeaf() *Leaf { return &Leaf{} }
+`
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "/repo/app.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/modrel", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/modrel", Types: pkg, Fset: fset, Module: &packages.Module{Dir: "/repo"}}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/modrel")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	leafPtr := types.NewPointer(pkg.Scope().Lookup("Leaf").Type())
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(leafPtr, ""), Type: leafPtr, Pos: token.Position{Filename: "spec.go", Line: 5}}},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/modrel": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src2 := string(out)
+	if strings.Contains(src2, "/repo/app.go") {
+		t.Errorf("expected the module-relative path, not the absolute one, got:\n%s", src2)
+	}
+	if !strings.Contains(src2, "app.go:") {
+		t.Errorf("expected the relativized filename app.go to still appear, got:\n%s", src2)
+	}
+}
+
+// TestEmitQualifiesCrossPackageAndGenericTypes covers qualifiedTypeString's
+// remaining branches, none reachable through fullAppSrc (a single
+// self-contained package with no generic types): a *types.Named from a
+// different package (requiring import qualification), a generic type's
+// instantiated arguments (basic, empty-interface, and non-empty anonymous
+// interface), and — since a qualified reference inside an anonymous
+// interface's method signature routes through go/types' own
+// types.TypeString — the qualifierFunc closure itself.
+func TestEmitQualifiesCrossPackageAndGenericTypes(t *testing.T) {
+	const depSrc = `
+package dep
+type Box[T any] struct{ V T }
+type Marker struct{}
+`
+	const appSrc = `
+package app
+import "example.com/dep"
+func NewBoxFunc() *dep.Box[func() dep.Marker] { return &dep.Box[func() dep.Marker]{} }
+func NewBoxAny() *dep.Box[any] { return &dep.Box[any]{} }
+func NewBoxIface() *dep.Box[interface{ M() dep.Marker }] { return &dep.Box[interface{ M() dep.Marker }]{} }
+`
+	servoPkg := loadServoPackage(t)
+	importer := newPkgImporter(servoPkg)
+
+	depFset := token.NewFileSet()
+	depFile, err := parser.ParseFile(depFset, "dep.go", depSrc, 0)
+	if err != nil {
+		t.Fatalf("parse dep: %v", err)
+	}
+	depPkg, err := (&types.Config{Importer: importer}).Check("example.com/dep", depFset, []*ast.File{depFile}, nil)
+	if err != nil {
+		t.Fatalf("typecheck dep: %v", err)
+	}
+	importer.byPath["example.com/dep"] = depPkg
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", appSrc, 0)
+	if err != nil {
+		t.Fatalf("parse app: %v", err)
+	}
+	pkg, err := (&types.Config{Importer: importer}).Check("example.com/genericapp", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck app: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/genericapp", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/genericapp")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	root := func(name string) load.RootDecl {
+		t := types.NewPointer(pkg.Scope().Lookup(name).Type().(*types.Signature).Results().At(0).Type().(*types.Pointer).Elem())
+		_ = t
+		fn := pkg.Scope().Lookup(name).(*types.Func)
+		resultType := fn.Type().(*types.Signature).Results().At(0).Type()
+		return load.RootDecl{Key: graph.NewKey(resultType, ""), Type: resultType, Pos: token.Position{Filename: "spec.go", Line: 5}}
+	}
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots:       []load.RootDecl{root("NewBoxFunc"), root("NewBoxAny"), root("NewBoxIface")},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/genericapp": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src2 := string(out)
+	for _, want := range []string{
+		`*dep.Box[func() dep.Marker]`,
+		`*dep.Box[any]`,
+		`*dep.Box[interface{ M() dep.Marker }]`,
+		`"example.com/dep"`,
+	} {
+		if !strings.Contains(src2, want) {
+			t.Errorf("generated source missing %q\n---\n%s", want, src2)
+		}
+	}
+}
+
+// TestEmitCleanupOnlyAndErrorOnlyConstructionShapes covers the two
+// writeConstruction shapes fullAppSrc never exercises alone (its only
+// error-returning provider, NewDB, also has cleanup) — cleanup without
+// error, and error without cleanup — plus writeConstructionRollback's
+// continue: ErrorOnly's rollback walks back over CleanupOnly (stoppable,
+// gets a rollback line) and then Leaf (not stoppable, must be skipped
+// rather than emitting a call to a stop method Leaf doesn't have).
+func TestEmitCleanupOnlyAndErrorOnlyConstructionShapes(t *testing.T) {
+	const src = `
+package app
+type Leaf struct{}
+func NewLeaf() *Leaf { return &Leaf{} }
+
+type CleanupOnly struct{}
+func NewCleanupOnly(l *Leaf) (*CleanupOnly, func()) { return &CleanupOnly{}, func() {} }
+
+type ErrorOnly struct{}
+func NewErrorOnly(c *CleanupOnly) (*ErrorOnly, error) { return &ErrorOnly{}, nil }
+`
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/shapes", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/shapes", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/shapes")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	errorOnlyPtr := types.NewPointer(pkg.Scope().Lookup("ErrorOnly").Type())
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(errorOnlyPtr, ""), Type: errorOnlyPtr, Pos: token.Position{Filename: "spec.go", Line: 5}}},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/shapes": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src2 := string(out)
+	if !strings.Contains(src2, "cleanupOnly, cleanupOnlyCleanup := NewCleanupOnly(leaf)") {
+		t.Errorf("missing the cleanup-without-error construction shape:\n%s", src2)
+	}
+	if !strings.Contains(src2, "errorOnly, err := NewErrorOnly(cleanupOnly)") {
+		t.Errorf("missing the error-without-cleanup construction shape:\n%s", src2)
+	}
+	if !strings.Contains(src2, "_ = a.stopCleanupOnly(ctx)") {
+		t.Errorf("expected ErrorOnly's rollback to stop the earlier, stoppable CleanupOnly:\n%s", src2)
+	}
+	if strings.Contains(src2, "stopLeaf") {
+		t.Errorf("Leaf has no cleanup and must never get a stop method or a rollback call:\n%s", src2)
+	}
+}
+
+// TestEmitFlusherCapabilityAndSingleRunner covers writeStopMethod's Flusher
+// branch (fullAppSrc only exercises Drainer, Finalizer, and cleanup) and
+// runFunc's exactly-one-Runner shortcut (fullAppSrc has two Runners, so it
+// only ever exercises the errgroup path).
+func TestEmitFlusherCapabilityAndSingleRunner(t *testing.T) {
+	const src = `
+package app
+import "context"
+
+type Flusher struct{}
+func (f *Flusher) Flush(ctx context.Context) error { return nil }
+func NewFlusher() *Flusher { return &Flusher{} }
+
+type Solo struct{}
+func (s *Solo) Run(ctx context.Context) error { return nil }
+func NewSolo() *Solo { return &Solo{} }
+`
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: newPkgImporter(servoPkg)}
+	pkg, err := conf.Check("example.com/soloflush", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/soloflush", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/soloflush")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	flusherPtr := types.NewPointer(pkg.Scope().Lookup("Flusher").Type())
+	soloPtr := types.NewPointer(pkg.Scope().Lookup("Solo").Type())
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots: []load.RootDecl{
+			{Key: graph.NewKey(flusherPtr, ""), Type: flusherPtr, Pos: token.Position{Filename: "spec.go", Line: 5}},
+			{Key: graph.NewKey(soloPtr, ""), Type: soloPtr, Pos: token.Position{Filename: "spec.go", Line: 6}},
+		},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/soloflush": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src2 := string(out)
+	if !strings.Contains(src2, "servo.RunStop(ctx, servo.DefaultStopBudget, \"*example.com/soloflush.Flusher\", a.flusher.Flush)") {
+		t.Errorf("missing the Flusher stop call:\n%s", src2)
+	}
+	if !strings.Contains(src2, "return a.solo.Run(ctx)") {
+		t.Errorf("expected the single-runner shortcut (a bare call, no errgroup):\n%s", src2)
+	}
+	if strings.Contains(src2, "errgroup") {
+		t.Errorf("a single Runner must not pull in errgroup at all:\n%s", src2)
+	}
+}
+
+// TestEmitQualifiesConstructorCallFromForeignPackage covers
+// qualifiedFuncString's ident != "" branch: every other fixture's root
+// provider is declared in the injector's own package (self-import is
+// illegal, so that call site is always bare), but a dependency reached
+// through a foreign package's exported constructor must be called
+// qualified — dep.NewWidget(), not a bare NewWidget() that wouldn't even
+// resolve.
+func TestEmitQualifiesConstructorCallFromForeignPackage(t *testing.T) {
+	const depSrc = `
+package dep
+type Widget struct{}
+func NewWidget() *Widget { return &Widget{} }
+`
+	const appSrc = `
+package app
+import "example.com/dep"
+type Holder struct{}
+func NewHolder(w *dep.Widget) *Holder { return &Holder{} }
+`
+	servoPkg := loadServoPackage(t)
+	importer := newPkgImporter(servoPkg)
+
+	depFset := token.NewFileSet()
+	depFile, err := parser.ParseFile(depFset, "dep.go", depSrc, 0)
+	if err != nil {
+		t.Fatalf("parse dep: %v", err)
+	}
+	depPkg, err := (&types.Config{Importer: importer}).Check("example.com/dep", depFset, []*ast.File{depFile}, nil)
+	if err != nil {
+		t.Fatalf("typecheck dep: %v", err)
+	}
+	importer.byPath["example.com/dep"] = depPkg
+	depPkgsPkg := &packages.Package{Name: "dep", PkgPath: "example.com/dep", Types: depPkg, Fset: depFset}
+	depCandidates, _ := graph.ScanCandidates([]*packages.Package{depPkgsPkg}, "example.com/foreignholder")
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", appSrc, 0)
+	if err != nil {
+		t.Fatalf("parse app: %v", err)
+	}
+	pkg, err := (&types.Config{Importer: importer}).Check("example.com/foreignholder", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck app: %v", err)
+	}
+	pkgsPkg := &packages.Package{Name: "app", PkgPath: "example.com/foreignholder", Types: pkg, Fset: fset}
+	appCandidates, _ := graph.ScanCandidates([]*packages.Package{pkgsPkg}, "example.com/foreignholder")
+	candidates := append(appCandidates, depCandidates...)
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	holderPtr := types.NewPointer(pkg.Scope().Lookup("Holder").Type())
+	spec := &load.Spec{
+		InjectorPkg: pkgsPkg,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(holderPtr, ""), Type: holderPtr, Pos: token.Position{Filename: "spec.go", Line: 5}}},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{Spec: spec, Candidates: candidates, Caps: caps, Scope: map[string]bool{"example.com/foreignholder": true, "example.com/dep": true}})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src2 := string(out)
+	if !strings.Contains(src2, "widget := dep.NewWidget()") {
+		t.Errorf("expected a package-qualified constructor call dep.NewWidget(), got:\n%s", src2)
+	}
+}

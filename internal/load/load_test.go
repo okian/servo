@@ -111,6 +111,33 @@ func Wire() {
 	}
 }
 
+// TestLoadReturnsErrorForInvalidDir covers the packages.Load hard-error
+// path: a Dir the go command can't even chdir into fails before any
+// package-level errors would apply, and Load must wrap and surface that
+// rather than panic or return a nil, nil zero value.
+func TestLoadReturnsErrorForInvalidDir(t *testing.T) {
+	_, err := Load(Config{Dir: "/nonexistent/path/that/should/never/exist"})
+	if err == nil || !strings.Contains(err.Error(), "load:") {
+		t.Fatalf("got err=%v, want a wrapped load error", err)
+	}
+}
+
+// TestLoadReturnsErrorWhenServoPackageNotImported covers a module that
+// never imports the servo runtime package at all — not even a spec file
+// with a missing build tag, just no reference anywhere. Load must fail
+// with a clear diagnostic rather than proceeding with a nil ServoPkg that
+// every caller assumes is non-nil.
+func TestLoadReturnsErrorWhenServoPackageNotImported(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module example.com/noservo\n\ngo 1.23\n")
+	mustWriteFile(t, dir, "main.go", "package main\n\nfunc main() {}\n")
+
+	_, err := Load(Config{Dir: dir})
+	if err == nil || !strings.Contains(err.Error(), "servo runtime package") {
+		t.Fatalf("got err=%v, want a 'servo runtime package ... not found' error", err)
+	}
+}
+
 func TestPackagePathOf(t *testing.T) {
 	dir := writeFixtureModule(t, "")
 	loaded, err := Load(Config{Dir: dir})

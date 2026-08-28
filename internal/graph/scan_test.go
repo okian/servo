@@ -49,6 +49,7 @@ func NewPool() (*Pool, error) { return nil, nil }
 func NewCache() (*Cache, func()) { return nil, nil }
 func NewLogger() (*Logger, func(), error) { return nil, nil, nil }
 func AsStore() Store { return nil }
+func AsAnonymousIface() interface{ Get(key string) string } { return nil }
 func NewWithParam(p *Pool) *DB { return nil }
 
 func NewID() string { return "" }
@@ -196,6 +197,37 @@ func TestScanCandidatesIgnoresTypeAliasAtPackageScope(t *testing.T) {
 	for _, r := range rejected {
 		if r.Name == "store.IntAlias" {
 			t.Errorf("a type alias must not be scanned as if it had methods")
+		}
+	}
+}
+
+// TestScanCandidatesAcceptsAnonymousNonEmptyInterfaceResult covers
+// validResultType's raw *types.Interface branch: a named interface like
+// Store unwraps to *types.Named instead (Store itself, not its
+// underlying), so only a provider returning an interface type literal
+// directly — never named — reaches the interface case at all.
+func TestScanCandidatesAcceptsAnonymousNonEmptyInterfaceResult(t *testing.T) {
+	pkg := mustCheck(t, "example.com/store", "store.go", storeSrc)
+	accepted, _ := ScanCandidates([]*packages.Package{pkg}, "example.com/store")
+	findAccepted(t, accepted, "store.AsAnonymousIface") // fails the test if rejected instead
+}
+
+// TestScanCandidatesSkipsPackageWithNilTypes covers ScanCandidates' own
+// nil-Types guard: go/packages can hand back a package whose type-checking
+// never ran (e.g. it was never reached because an earlier stage failed),
+// and that must be skipped outright rather than panicking on a nil
+// pkg.Types.Scope().
+func TestScanCandidatesSkipsPackageWithNilTypes(t *testing.T) {
+	broken := &packages.Package{PkgPath: "example.com/broken", Types: nil}
+	pkg := mustCheck(t, "example.com/store", "store.go", storeSrc)
+
+	accepted, rejected := ScanCandidates([]*packages.Package{broken, pkg}, "example.com/store")
+	if len(accepted) == 0 {
+		t.Fatal("expected providers from the well-typed package despite a nil-Types package alongside it")
+	}
+	for _, r := range rejected {
+		if r.Pkg == "example.com/broken" {
+			t.Errorf("a nil-Types package must be skipped entirely, not scanned into rejected: %v", r)
 		}
 	}
 }

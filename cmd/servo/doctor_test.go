@@ -224,3 +224,15 @@ func TestTrackedByGitOnNonRepo(t *testing.T) {
 		t.Error("trackedByGit on a directory with no .git should be false")
 	}
 }
+
+// TestTrackedByGitFallsBackWhenPathsCannotBeMadeRelative covers the
+// filepath.Rel error branch: a relative dir paired with an absolute path
+// (dir="." is the CLI's own default, and go/packages always reports
+// absolute file positions) can't be resolved to a relative path by lexical
+// analysis alone, so trackedByGit must fall back to using path as-is
+// rather than propagating the error or panicking.
+func TestTrackedByGitFallsBackWhenPathsCannotBeMadeRelative(t *testing.T) {
+	if trackedByGit(".", "/absolute/path/servo_gen.go") {
+		t.Error("trackedByGit with an unrelatable dir/path pair should be false, not panic or true")
+	}
+}

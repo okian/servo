@@ -6,6 +6,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
+	"golang.org/x/tools/go/packages"
 )
 
 func TestGenerateThenCheckRoundTrips(t *testing.T) {
@@ -304,5 +308,130 @@ func TestCheckReportsResolutionErrors(t *testing.T) {
 	err := runCheck(dir)
 	if err == nil || !strings.Contains(err.Error(), "no provider for") {
 		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
+	}
+}
+
+func TestRunCheckFailsWhenModuleFailsToLoad(t *testing.T) {
+	err := runCheck(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent directory")
+	}
+}
+
+// TestCheckOneFailsWhenGeneratedFileIsADirectory covers checkOne's
+// os.ReadFile error branch that ISN'T os.IsNotExist — every other check
+// test either has no generated file at all (IsNotExist) or a real one, so
+// this reaches the "exists but unreadable as a file" case by putting a
+// directory where servo_gen.go should be.
+func TestCheckOneFailsWhenGeneratedFileIsADirectory(t *testing.T) {
+	dir := writeAppModule(t, "example.com/checkgenisdir", true, "")
+	p, err := buildPipeline(dir)
+	if err != nil {
+		t.Fatalf("buildPipeline: %v", err)
+	}
+	outPath := filepath.Join(filepath.Dir(p.spec.Pos.Filename), generatedFileName)
+	if err := os.Mkdir(outPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err = checkOne(p)
+	if err == nil || strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("got err=%v, want a real read error (not 'does not exist') since the path is a directory", err)
+	}
+}
+
+// TestCheckOneFailsWhenEmitFails and TestGenerateOneFailsWhenEmitFails
+// cover checkOne/generateOne's own emit.Emit error branches directly: a
+// hand-built *pipeline with an illegal package name ("type", a Go keyword)
+// and an empty graph (so p.resolve(nil) trivially succeeds with zero
+// nodes) reaches the same "package type" formatting failure
+// internal/emit's own tests trigger the identical way — nothing in a real,
+// type-checked module can produce an illegal package name, so this is the
+// only way to reach it.
+func TestCheckOneFailsWhenEmitFails(t *testing.T) {
+	spec := &load.Spec{InjectorPkg: &packages.Package{Name: "type", PkgPath: "example.com/badpkgname"}}
+	p := &pipeline{spec: spec, caps: graph.EmptyCapabilities(), scope: map[string]bool{}}
+
+	err := checkOne(p)
+	if err == nil || !strings.Contains(err.Error(), "failed to format") {
+		t.Fatalf("got err=%v, want a 'failed to format' error", err)
+	}
+}
+
+func TestGenerateOneFailsWhenEmitFails(t *testing.T) {
+	spec := &load.Spec{InjectorPkg: &packages.Package{Name: "type", PkgPath: "example.com/badpkgname2"}}
+	p := &pipeline{spec: spec, caps: graph.EmptyCapabilities(), scope: map[string]bool{}}
+
+	err := generateOne(p)
+	if err == nil || !strings.Contains(err.Error(), "failed to format") {
+		t.Fatalf("got err=%v, want a 'failed to format' error", err)
+	}
+}
+
+// TestGenerateOneFailsWhenOutputDirIsReadOnly covers writeFileAtomic's
+// error propagating out of generateOne: os.CreateTemp cannot create the
+// temp file at all when the target directory itself isn't writable.
+func TestGenerateOneFailsWhenOutputDirIsReadOnly(t *testing.T) {
+	dir := writeAppModule(t, "example.com/genreadonlydir", true, "")
+	p, err := buildPipeline(dir)
+	if err != nil {
+		t.Fatalf("buildPipeline: %v", err)
+	}
+	specDir := filepath.Dir(p.spec.Pos.Filename)
+	if err := os.Chmod(specDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(specDir, 0o755)
+
+	if err := generateOne(p); err == nil {
+		t.Fatal("expected writeFileAtomic to fail against a read-only directory")
+	}
+}
+
+// TestGenerateOneFailsWhenOverrideResolutionFails covers generateOne's
+// second, override-scoped resolve call failing independently of the
+// first: the primary Bind (to Mem) resolves fine, but the servotest
+// Override names a concrete type with no provider anywhere, so only the
+// second resolve — never the first — fails.
+func TestGenerateOneFailsWhenOverrideResolutionFails(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/badoverride\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\n")
+	mustWriteFile(t, dir, "memory/memory.go", "package memory\n\ntype Mem struct{}\n\nfunc (m *Mem) Get(key string) string { return \"\" }\n\nfunc New() *Mem { return &Mem{} }\n")
+	mustWriteFile(t, dir, "missing/missing.go", "package missing\n\ntype Ghost struct{}\n")
+	mustWriteFile(t, dir, "api/api.go", `package api
+
+import "example.com/badoverride/store"
+
+type Server struct{ s store.Store }
+
+func New(s store.Store) *Server { return &Server{s: s} }
+`)
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/badoverride/api"
+	"example.com/badoverride/memory"
+	"example.com/badoverride/missing"
+	"example.com/badoverride/store"
+	"github.com/okian/servo/v3/servo"
+)
+
+func wire() {
+	servo.Build(
+		servo.Root[*api.Server](),
+		servo.Bind[store.Store, *memory.Mem](),
+		servo.Override[store.Store, *missing.Ghost](),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+
+	err := runGenerate(dir)
+	if err == nil || !strings.Contains(err.Error(), "no provider for *example.com/badoverride/missing.Ghost") {
+		t.Fatalf("got err=%v, want a 'no provider' error naming the override's dangling target", err)
 	}
 }

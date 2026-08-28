@@ -47,6 +47,9 @@ type Missing struct{}
 type Server2 struct{}
 func NewServer2(m *Missing) *Server2 { return &Server2{} }
 
+type Server3 struct{}
+func NewServer3(m *Missing) *Server3 { return &Server3{} }
+
 type A struct{}
 type B struct{}
 func NewA(b *B) *A { return &A{} }
@@ -466,5 +469,119 @@ func TestResolveOverridesWinOverBinds(t *testing.T) {
 	}
 	if resolved.ByKey[ptrKey(pkg, "Postgres")] != nil {
 		t.Error("Postgres should not be constructed once overridden away")
+	}
+}
+
+// TestDiagnosticErrorMatchesString covers the Error() method directly:
+// Diagnostic implements error purely so it can be handed to callers that
+// want a plain `error`, and Error() must render identically to String()
+// rather than drifting into its own format over time.
+func TestDiagnosticErrorMatchesString(t *testing.T) {
+	d := Diagnostic{Pos: token.Position{Filename: "spec.go", Line: 9}, Message: "servo: no provider for example.com/app.Missing"}
+	if d.Error() != d.String() {
+		t.Errorf("Error() = %q, String() = %q, want identical", d.Error(), d.String())
+	}
+}
+
+// TestResolveSecondConsumerOfSameMissingKeyReportsOneDiagnostic covers
+// resolveKey's failedKey short-circuit: Server2 and Server3 both depend
+// directly on the same unresolvable *Missing. Without the memoization at
+// the top of resolveKey, the second consumer would re-run selectProvider
+// and append a second, identical "no provider for *Missing" diagnostic.
+func TestResolveSecondConsumerOfSameMissingKeyReportsOneDiagnostic(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewServer2"), findProvider(t, all, "NewServer3")}
+	roots := []load.RootDecl{
+		{Key: ptrKey(pkg, "Server2"), Type: ptrType(pkg, "Server2"), Pos: token.Position{Filename: "spec.go", Line: 9}},
+		{Key: ptrKey(pkg, "Server3"), Type: ptrType(pkg, "Server3"), Pos: token.Position{Filename: "spec.go", Line: 10}},
+	}
+
+	_, diags := Resolve(baseInput(pkg, candidates, roots, nil))
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1 (both consumers share the same failed *Missing key): %v", len(diags), diags)
+	}
+	if !strings.Contains(diags[0].String(), "no provider for *example.com/app.Missing") {
+		t.Errorf("message = %q, want it to name *app.Missing", diags[0].String())
+	}
+}
+
+// TestResolveSameConcreteReachedViaInterfaceRootAndDirectRootIsShared
+// covers resolveKey's colorBlack reuse branch: DBIface (bound to Postgres)
+// and *Postgres itself are declared as two separate roots, so Postgres is
+// reached via two different keys. The second arrival must reuse the
+// already-fully-resolved node instead of constructing Postgres (and its
+// Logger dependency) a second time.
+func TestResolveSameConcreteReachedViaInterfaceRootAndDirectRootIsShared(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewPostgres"), findProvider(t, all, "NewLogger")}
+	roots := []load.RootDecl{
+		{Key: namedKey(pkg, "DBIface"), Type: namedType(pkg, "DBIface"), Pos: token.Position{Filename: "spec.go", Line: 9}},
+		{Key: ptrKey(pkg, "Postgres"), Type: ptrType(pkg, "Postgres"), Pos: token.Position{Filename: "spec.go", Line: 10}},
+	}
+	binds := []load.BindDecl{{Iface: namedKey(pkg, "DBIface"), Concrete: ptrKey(pkg, "Postgres")}}
+
+	resolved, diags := Resolve(baseInput(pkg, candidates, roots, binds))
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	if len(resolved.Order) != 2 {
+		t.Fatalf("got %d nodes in resolved.Order, want 2 (Logger, Postgres constructed once each): %v", len(resolved.Order), resolved.Order)
+	}
+	if resolved.Roots[0].Key != ptrKey(pkg, "Postgres") || resolved.Roots[1].Key != ptrKey(pkg, "Postgres") {
+		t.Errorf("both roots should resolve to the same Postgres node key, got %s and %s", resolved.Roots[0].Key, resolved.Roots[1].Key)
+	}
+	if resolved.Roots[0] != resolved.Roots[1] {
+		t.Error("the interface root and the direct root should share the identical *Node instance, not two equal-by-key copies")
+	}
+}
+
+// TestResolveExplicitBindToProviderlessConcreteType covers selectProvider's
+// explicitUsed branch with zero exact candidates: a Bind naming a concrete
+// type nobody actually provides. This must report the bind target itself
+// as the unresolved key with plain "no provider" phrasing (isInterface
+// false, no candidate list) — not fall through to structural search, which
+// is only for keys reached without an explicit Bind.
+func TestResolveExplicitBindToProviderlessConcreteType(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewServer"), findProvider(t, all, "NewLogger")}
+	roots := []load.RootDecl{{Key: ptrKey(pkg, "Server"), Type: ptrType(pkg, "Server"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+	// Missing has no provider in the fixture at all — a Bind naming it is
+	// exactly as dangling as if the user forgot to write New for it.
+	binds := []load.BindDecl{{Iface: namedKey(pkg, "DBIface"), Concrete: ptrKey(pkg, "Missing")}}
+
+	_, diags := Resolve(baseInput(pkg, candidates, roots, binds))
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1", len(diags))
+	}
+	msg := diags[0].String()
+	if !strings.Contains(msg, "no provider for *example.com/app.Missing") {
+		t.Errorf("message = %q, want it to name the dangling Bind target *app.Missing", msg)
+	}
+	if strings.Contains(msg, "implement") {
+		t.Errorf("message = %q, a dangling Bind to a concrete type should not suggest implementers", msg)
+	}
+}
+
+// TestResolveInterfaceWithNoImplementationsAtAll covers structural search's
+// zero-match case: DBIface is required with no Bind and no candidate
+// implements it at all (as opposed to TestResolveAmbiguousInterface's two
+// implementers, or the auto-bind tests' exactly one). The diagnostic must
+// still name DBIface with no candidate list, since there is nothing to
+// suggest.
+func TestResolveInterfaceWithNoImplementationsAtAll(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewServer"), findProvider(t, all, "NewLogger")}
+	roots := []load.RootDecl{{Key: ptrKey(pkg, "Server"), Type: ptrType(pkg, "Server"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	_, diags := Resolve(baseInput(pkg, candidates, roots, nil))
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want 1", len(diags))
+	}
+	msg := diags[0].String()
+	if !strings.Contains(msg, "no provider for example.com/app.DBIface") {
+		t.Errorf("message = %q, want it to name DBIface as unresolved", msg)
+	}
+	if strings.Contains(msg, "implement") {
+		t.Errorf("message = %q, want no candidate list when nothing implements DBIface", msg)
 	}
 }

@@ -62,6 +62,16 @@ func TestFileRequiresBuildTagCompoundExpressions(t *testing.T) {
 			src:  "// +build servoinject\n\npackage spec\n",
 			want: true,
 		},
+		{
+			name: "ordinary doc comment, not a build constraint at all",
+			src:  "// Package spec wires the app.\npackage spec\n",
+			want: false,
+		},
+		{
+			name: "malformed //go:build expression is skipped, not fatal",
+			src:  "//go:build &&\n\npackage spec\n",
+			want: false,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

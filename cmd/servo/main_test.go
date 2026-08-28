@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -132,6 +133,20 @@ func TestRunFlagParseError(t *testing.T) {
 	}
 }
 
+// TestRunFlagParseErrorsForEverySubcommand covers every subcommand's own
+// flag.FlagSet.Parse error branch individually: each case in run's switch
+// constructs its own FlagSet, so TestRunFlagParseError above (generate
+// only) leaves the other eight as separate, untested basic blocks.
+func TestRunFlagParseErrorsForEverySubcommand(t *testing.T) {
+	for _, cmd := range []string{"generate", "check", "graph", "explain", "why", "list", "init", "doctor", "migrate"} {
+		t.Run(cmd, func(t *testing.T) {
+			if err := run([]string{cmd, "--not-a-real-flag"}); err == nil {
+				t.Fatalf("run(%q, --not-a-real-flag) = nil error, want a flag-parse error", cmd)
+			}
+		})
+	}
+}
+
 func TestBuildPipelineReportsNonInjectorBuildErrors(t *testing.T) {
 	dir := writeAppModule(t, "example.com/brokensibling", true, "")
 	// A sibling package with a real compile error, unrelated to the
@@ -152,5 +167,54 @@ func TestBuildPipelinesReportsNonInjectorBuildErrors(t *testing.T) {
 	err := runGenerate(dir)
 	if err == nil || !strings.Contains(err.Error(), "module has build errors") {
 		t.Fatalf("got err=%v, want a 'module has build errors' error", err)
+	}
+}
+
+// TestBuildPipelineForwardsLoadModuleError and
+// TestBuildPipelinesForwardsLoadModuleError cover buildPipeline/
+// buildPipelines' own error-forwarding branch for loadModule failing —
+// distinct from every other test that reaches loadModule failure only
+// indirectly through a caller like runCheck/runList.
+func TestBuildPipelineForwardsLoadModuleError(t *testing.T) {
+	_, err := buildPipeline(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent directory")
+	}
+}
+
+func TestBuildPipelinesForwardsLoadModuleError(t *testing.T) {
+	_, err := buildPipelines(filepath.Join(t.TempDir(), "does-not-exist"))
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent directory")
+	}
+}
+
+// TestBuildPipelineForwardsFindSpecError and
+// TestBuildPipelinesForwardsFindSpecsError cover the FindSpec(s)
+// error-forwarding branch: a real, loadable module that never calls
+// servo.Build(...) at all.
+func TestBuildPipelineForwardsFindSpecError(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/nospecpipeline\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "main.go", "package main\n\nimport _ \"github.com/okian/servo/v3/servo\"\n\nfunc main() {}\n")
+	runGoModTidy(t, dir)
+
+	_, err := buildPipeline(dir)
+	if err == nil || !strings.Contains(err.Error(), "no servo.Build") {
+		t.Fatalf("got err=%v, want a 'no servo.Build' error", err)
+	}
+}
+
+func TestBuildPipelinesForwardsFindSpecsError(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/nospecpipelines\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "main.go", "package main\n\nimport _ \"github.com/okian/servo/v3/servo\"\n\nfunc main() {}\n")
+	runGoModTidy(t, dir)
+
+	_, err := buildPipelines(dir)
+	if err == nil || !strings.Contains(err.Error(), "no servo.Build") {
+		t.Fatalf("got err=%v, want a 'no servo.Build' error", err)
 	}
 }

@@ -253,6 +253,43 @@ func Wire() {
 	}
 }
 
+// TestFindSpecRejectsMarkerCallWithWrongArity covers markerCall's
+// Instances lookup failing: go/types refuses to record instantiation info
+// for a generic call whose explicit type-argument count doesn't match the
+// function's type-parameter count (servo.Bind[I, C] takes exactly two), so
+// the call resolves to the function but not to a specific instantiation —
+// the same "must be instantiated with explicit type arguments" diagnostic
+// as omitting type arguments entirely.
+func TestFindSpecRejectsMarkerCallWithWrongArity(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/wrongarity\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\n")
+	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
+
+package spec
+
+import (
+	"example.com/wrongarity/store"
+	"github.com/okian/servo/v3/servo"
+)
+
+func Wire() {
+	servo.Build(servo.Bind[store.Store]())
+}
+`)
+	runGoModTidy(t, dir)
+
+	loaded, err := Load(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	_, err = FindSpec(loaded)
+	if err == nil || !strings.Contains(err.Error(), "must be instantiated with explicit type arguments") {
+		t.Fatalf("got err=%v, want an 'explicit type arguments' error", err)
+	}
+}
+
 func TestFindSpecRejectsUnqualifiedGenericMarkerShape(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
