@@ -3,7 +3,9 @@
 # called, so it can only ever show as 0% covered. It's already out of scope
 # per SECURITY.md ("examples/ ... demonstration code, not deployed
 # services"), so it's excluded here rather than dragging the ratio down for
-# a file no test is meant to exercise.
+# a file no test is meant to exercise. Unlike every other examples/ entry it
+# has no go.mod of its own, so it really does land in the uploaded profile:
+# leaving it in costs 0.1 points (98.5% -> 98.4%) no test can ever win back.
 #
 # cmd/servo/main.go's main() and cmd/servo-vet/main.go's main() are the
 # same kind of untestable-by-design code (thin wrappers with no logic of
@@ -11,5 +13,30 @@
 # already lives in run()/markerFuncCalled(), which are tested) but aren't
 # listed here: codecov's ignore list only excludes whole files, and both
 # files also contain the logic that should keep counting.
+#
+# *_gen.go matches nothing in the uploaded profile today, and is here to
+# stay that way rather than to fix a current problem: every generated file
+# in this repo lives in an examples/* module with its own go.mod, and go.yml
+# uploads the root module's profile only. If one ever lands in the root
+# module it should not count — servo emits that code, and consumers
+# regenerate it rather than test it.
 ignore:
   - "examples/migrate/**"
+  - "**/*_gen.go"
+
+# Both gates stay advisory until a CODECOV_TOKEN secret exists (see the
+# upload step in go.yml). project uses auto rather than a fixed number so
+# the ratio can drift with the code, while still failing a single PR that
+# drops it more than 2 points. patch is the stricter of the two deliberately:
+# it asks only that new and changed lines be tested, which is the thing a
+# reviewer can actually act on, and at 98.4% overall it is a floor this repo
+# already clears comfortably.
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 2%
+    patch:
+      default:
+        target: 90%
