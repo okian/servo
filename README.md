@@ -488,3 +488,10 @@ Core (`internal/*`, `cmd/servo`) depends on nothing beyond `golang.org/x/tools`;
 depends on `go.uber.org/goleak`. Neither the runtime package nor any generated output imports
 `reflect`, and the generated package compiles with the `servo` module deleted save for the
 ~200-line runtime it calls into — both enforced as conformance checks, not just claimed.
+
+## Contributing
+
+Bug reports and feature requests go through [GitHub Issues](https://github.com/okian/servo/issues);
+that's also the public archive of past reports and their resolutions. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the dev workflow and what a PR is expected to include, and
+[SECURITY.md](SECURITY.md) to report a vulnerability privately.
