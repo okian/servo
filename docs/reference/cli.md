@@ -435,7 +435,9 @@ func wire() {
 		servo.Root[*Server](), // was order=3
 	)
 }
-``` Turning globals into constructor parameters is the part that needs human
+```
+
+Turning globals into constructor parameters is the part that needs human
 judgement, and it is the part servo deliberately doesn't guess at. With no registrations found it
 says so and exits 0.
 [`examples/migrate`](https://github.com/okian/servo/tree/master/examples/migrate) is a worked
