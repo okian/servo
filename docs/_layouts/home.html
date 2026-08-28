@@ -3,9 +3,11 @@ layout: default
 ---
 {%- comment -%}
   The landing page as an editorial cover: an oversized serif hero, then bands
-  separated by hairline rules, then the tutorial as a real table of contents.
-  There are no cards here by design — parts are numbered in roman (stored in
-  _data/nav.yml, since Liquid cannot convert) and chapters are a list.
+  separated by hairline rules, then the tutorial and the reference as real
+  tables of contents. There are no cards here by design — parts are numbered in
+  roman (stored in _data/nav.yml, since Liquid cannot convert) and chapters are
+  a list. The reference band is driven by _data/reference.yml the same way, and
+  its rows are unnumbered, so they use .chapter--plain.
 
   index.md's own markdown is injected at {{ content }}, inside its own band, so
   prose written there lands in the same rhythm as everything around it.
@@ -138,6 +140,42 @@ func New(ctx context.Context) (*App, error) {
                 <span>
                   <span class="chapter__title">{{ ch.title }}</span>
                   <span class="chapter__blurb">{{ ch.blurb }}</span>
+                </span>
+              </a>
+            </li>
+            {%- endfor %}
+          </ol>
+        </div>
+        {%- endfor %}
+      </div>
+    </div>
+  </section>
+
+  <section class="band" id="reference">
+    <div class="band__inner">
+      <p class="section-eyebrow">The reference</p>
+      <h2 class="section-title">Every command, every marker, every rule</h2>
+      <p class="section-lede">
+        The tutorial teaches servo by building something with it. The reference
+        answers one question at a time — what this flag does, what this method
+        guarantees, why that function wasn't picked up as a provider. Written
+        against the source, and complete rather than illustrative.
+      </p>
+
+      <div class="toc-parts">
+        {%- for section in site.data.reference.sections %}
+        <div class="part">
+          <div class="part__head">
+            <h3 class="part__title">{{ section.title }}</h3>
+            <span class="part__summary">{{ section.summary }}</span>
+          </div>
+          <ol>
+            {%- for p in section.pages %}
+            <li>
+              <a class="chapter chapter--plain" href="{{ p.url | relative_url }}">
+                <span>
+                  <span class="chapter__title">{{ p.title }}</span>
+                  <span class="chapter__blurb">{{ p.blurb }}</span>
                 </span>
               </a>
             </li>

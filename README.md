@@ -21,7 +21,9 @@ readable by a human at 3am.
 [preface](https://okian.github.io/servo/preface.html) if dependency injection is new to you,
 [how servo compares](https://okian.github.io/servo/comparison.html) if you are weighing it against
 wire, fx, or dig, and [limitations](https://okian.github.io/servo/limitations.html) before you
-adopt it.
+adopt it. The [reference](https://okian.github.io/servo/reference/) documents every CLI command and
+flag, the spec-file markers, the resolution rules, every diagnostic, the lifecycle contract, the
+generated API, and every exported identifier in `servo` and `servotest`.
 
 **v3 is a from-scratch rewrite of `servo` and shares no API with what came before it (informally,
 v1).** v1 was a runtime lifecycle sequencer built on a global registry, a hand-maintained

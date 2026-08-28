@@ -10,7 +10,8 @@ layout: null
 {%- assign tutorial_pages = site.pages | where_exp: "p", "p.url contains '/tutorial/'" -%}
 {%- assign prose_urls = "/preface.html,/comparison.html,/limitations.html" | split: "," -%}
 {%- assign prose_pages = site.pages | where_exp: "p", "prose_urls contains p.url" -%}
-{%- assign pages = tutorial_pages | concat: prose_pages -%}
+{%- assign reference_pages = site.pages | where_exp: "p", "p.url contains '/reference/'" -%}
+{%- assign pages = tutorial_pages | concat: prose_pages | concat: reference_pages -%}
 {%- assign emitted = 0 -%}
 {%- for p in pages -%}
   {%- assign nav_title = nil -%}
@@ -43,6 +44,22 @@ layout: null
     {%- assign nav_title = "Limitations" -%}
     {%- assign nav_section = "Start here" -%}
   {%- endif -%}
+  {%- comment -%}
+    Reference titles come from _data/reference.yml, the same file that drives
+    the reference sidebar, so a renamed page is renamed in search too.
+  {%- endcomment -%}
+  {%- if p.url == site.data.reference.intro.url -%}
+    {%- assign nav_title = "Reference overview" -%}
+    {%- assign nav_section = "Reference" -%}
+  {%- endif -%}
+  {%- for section in site.data.reference.sections -%}
+    {%- for rp in section.pages -%}
+      {%- if rp.url == p.url -%}
+        {%- assign nav_title = rp.title -%}
+        {%- assign nav_section = "Reference" -%}
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endfor -%}
   {%- comment -%}
     Comma is driven by how many entries actually got written, not by
     forloop.first: a skipped first page would otherwise emit a leading comma

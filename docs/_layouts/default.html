@@ -5,17 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
 {%- comment -%}
-  Page title comes from the nav data when this page is a tutorial chapter, so
-  the 18 chapter files need no front matter. Falls back to an explicit
-  page.title, then to the site title.
+  Page title comes from the nav data when this page is a tutorial chapter, and
+  from the reference data when it is a reference page, so neither the 18
+  chapter files nor the reference pages need front matter. Falls back to an
+  explicit page.title, then to the site title.
+
+  The reference data also carries each page's meta description, for the same
+  reason: with no front matter there is nowhere else to put it.
 {%- endcomment -%}
 {%- assign nav_title = nil -%}
+{%- assign nav_description = nil -%}
 {%- for section in site.data.nav.sections -%}
   {%- for ch in section.chapters -%}
     {%- if ch.url == page.url -%}{%- assign nav_title = ch.title -%}{%- endif -%}
   {%- endfor -%}
 {%- endfor -%}
+{%- if site.data.reference.intro.url == page.url -%}
+  {%- assign nav_title = site.data.reference.intro.title -%}
+  {%- assign nav_description = site.data.reference.intro.description -%}
+{%- endif -%}
+{%- for section in site.data.reference.sections -%}
+  {%- for p in section.pages -%}
+    {%- if p.url == page.url -%}
+      {%- assign nav_title = p.title -%}
+      {%- assign nav_description = p.description -%}
+    {%- endif -%}
+  {%- endfor -%}
+{%- endfor -%}
 {%- assign page_title = nav_title | default: page.title -%}
+{%- assign page_description = page.description | default: nav_description | default: site.description -%}
 
 {%- comment -%}
   The home page is titled from the site, not from its content: GitHub Pages
@@ -27,12 +45,12 @@
   {%- assign page_title = nil -%}
 {%- endif -%}
 <title>{% if page_title %}{{ page_title }} · {{ site.title }}{% else %}{{ site.title }} · {{ site.tagline }}{% endif %}</title>
-<meta name="description" content="{{ page.description | default: site.description | strip_newlines }}">
+<meta name="description" content="{{ page_description | strip_newlines }}">
 <link rel="canonical" href="{{ page.url | absolute_url }}">
 
 <meta property="og:type" content="website">
 <meta property="og:title" content="{% if page_title %}{{ page_title }} · {{ site.title }}{% else %}{{ site.title }}{% endif %}">
-<meta property="og:description" content="{{ page.description | default: site.description | strip_newlines }}">
+<meta property="og:description" content="{{ page_description | strip_newlines }}">
 <meta property="og:url" content="{{ page.url | absolute_url }}">
 <meta name="twitter:card" content="summary">
 
@@ -66,16 +84,18 @@
     <nav class="site-nav" aria-label="Documentation">
       <a href="{{ '/preface.html' | relative_url }}"{% if page.url == '/preface.html' %} class="is-current" aria-current="page"{% endif %}>Preface</a>
       <a href="{{ '/tutorial/' | relative_url }}"{% if page.url contains '/tutorial/' %} class="is-current" aria-current="page"{% endif %}>Tutorial</a>
+      <a href="{{ '/reference/' | relative_url }}"{% if page.url contains '/reference/' %} class="is-current" aria-current="page"{% endif %}>Reference</a>
       <a href="{{ '/comparison.html' | relative_url }}"{% if page.url == '/comparison.html' %} class="is-current" aria-current="page"{% endif %}>Compare</a>
       <a href="{{ '/limitations.html' | relative_url }}"{% if page.url == '/limitations.html' %} class="is-current" aria-current="page"{% endif %}>Limitations</a>
     </nav>
 
     {%- comment -%}
-      Only the tutorial shell renders a #sidebar, so the toggle is emitted only
-      there. Elsewhere it would be a control that opens nothing, and its
-      aria-controls would point at an id that does not exist on the page.
+      Only the tutorial and reference shells render a #sidebar, so the toggle is
+      emitted only there. Elsewhere it would be a control that opens nothing,
+      and its aria-controls would point at an id that does not exist on the
+      page.
     {%- endcomment -%}
-    {%- if page.url contains '/tutorial/' %}
+    {%- if page.url contains '/tutorial/' or page.url contains '/reference/' %}
     <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="sidebar" aria-label="Open navigation">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M3 12h18M3 18h18" fill="none" stroke-width="2" stroke-linecap="round"/></svg>
     </button>

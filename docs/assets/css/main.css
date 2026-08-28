@@ -296,6 +296,9 @@ img, svg { max-width: 100%; height: auto; }
   color: var(--text-muted); font-size: .85rem;
 }
 .sidebar__aux li a:hover { color: var(--text); text-decoration: none; }
+/* The reference sidebar lists unnumbered pages as .sidebar__aux links, so the
+   current-page marker has to work here too, not only in the numbered grid. */
+.sidebar__aux li a.is-current { color: var(--text); font-weight: 600; }
 
 .content { min-width: 0; padding: 2.5rem 0 5rem; }
 
@@ -643,6 +646,9 @@ pre code { background: none; border: none; padding: 0; font-size: inherit; }
   font-family: var(--font-mono); font-size: .78rem;
   color: var(--text-faint); font-variant-numeric: tabular-nums;
 }
+/* Reference pages are looked up, not numbered, so their rows on the landing
+   page collapse the numeral column the tutorial's chapter rows reserve. */
+.chapter--plain { grid-template-columns: minmax(0, 1fr); }
 .chapter__title {
   display: block; font-family: var(--font-display);
   font-size: 1.04rem; font-weight: 600; line-height: 1.35;

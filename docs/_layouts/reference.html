@@ -1,0 +1,141 @@
+---
+layout: default
+---
+{%- comment -%}
+  The reference shell: same three-column reading frame as a tutorial chapter,
+  but driven by _data/reference.yml instead of _data/nav.yml, so the reference
+  pages stay plain markdown with no front matter.
+
+  Reference pages are not numbered — they are looked up rather than read
+  front to back — so the sidebar lists them as plain links (.sidebar__aux)
+  rather than in the numbered grid the tutorial uses. A pager is still emitted,
+  because there IS a sensible order through them, and it's the same order the
+  sidebar shows.
+{%- endcomment -%}
+{%- assign ref = site.data.reference -%}
+
+{%- comment -%}
+  One flat list of every page, in reading order, so prev/next is index
+  arithmetic rather than a nested search.
+{%- endcomment -%}
+{%- assign flat = "" | split: "" -%}
+{%- for section in ref.sections -%}
+  {%- assign flat = flat | concat: section.pages -%}
+{%- endfor -%}
+
+{%- assign idx = -1 -%}
+{%- assign cur_section = nil -%}
+{%- for section in ref.sections -%}
+  {%- for p in section.pages -%}
+    {%- if p.url == page.url -%}{%- assign cur_section = section.title -%}{%- endif -%}
+  {%- endfor -%}
+{%- endfor -%}
+{%- for p in flat -%}
+  {%- if p.url == page.url -%}{%- assign idx = forloop.index0 -%}{%- endif -%}
+{%- endfor -%}
+{%- assign prev_idx = idx | minus: 1 -%}
+{%- assign next_idx = idx | plus: 1 -%}
+
+<div class="layout">
+
+  <aside class="sidebar" id="sidebar">
+    <nav class="sidebar__nav" aria-label="Reference pages">
+      <a class="sidebar__intro{% if page.url == ref.intro.url %} is-current{% endif %}" href="{{ ref.intro.url | relative_url }}">
+        {{ ref.intro.title }}
+      </a>
+      {%- for section in ref.sections %}
+      <div class="sidebar__section">
+        <h2 class="sidebar__title">{{ section.title }}</h2>
+        <ul class="sidebar__aux">
+          {%- for p in section.pages %}
+          <li>
+            <a href="{{ p.url | relative_url }}"{% if p.url == page.url %} class="is-current" aria-current="page"{% endif %}>{{ p.title }}</a>
+          </li>
+          {%- endfor %}
+        </ul>
+      </div>
+      {%- endfor %}
+      <p class="sidebar__section-label">Elsewhere</p>
+      <ul class="sidebar__aux">
+        <li><a href="{{ '/tutorial/' | relative_url }}">Tutorial</a></li>
+        <li><a href="{{ '/preface.html' | relative_url }}">Preface</a></li>
+        <li><a href="{{ '/limitations.html' | relative_url }}">Limitations</a></li>
+        <li><a href="https://pkg.go.dev/{{ site.go_module }}">pkg.go.dev</a></li>
+      </ul>
+    </nav>
+  </aside>
+
+  <main class="content" id="content" tabindex="-1">
+    <article class="prose">
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <a href="{{ '/' | relative_url }}">servo</a>
+        <span aria-hidden="true">/</span>
+        {%- if cur_section %}
+        <a href="{{ ref.intro.url | relative_url }}">Reference</a>
+        <span aria-hidden="true">/</span>
+        <span>{{ cur_section }}</span>
+        {%- else %}
+        <span>Reference</span>
+        {%- endif %}
+      </nav>
+
+      {{ content }}
+    </article>
+
+    {%- comment -%}
+      The overview is not one of the numbered stops, so it gets a forward link
+      into the first page instead of a prev/next pair.
+    {%- endcomment -%}
+    {%- if idx < 0 and page.url == ref.intro.url %}
+      {%- assign first = flat.first %}
+      <nav class="pager" aria-label="Reference navigation">
+        <span></span>
+        <a class="pager__link pager__link--next" href="{{ first.url | relative_url }}">
+          <span class="pager__dir">Next</span>
+          <span class="pager__title">{{ first.title }}</span>
+        </a>
+      </nav>
+    {%- elsif idx >= 0 %}
+      <nav class="pager" aria-label="Reference navigation">
+        {%- if idx == 0 %}
+        <a class="pager__link pager__link--prev" href="{{ ref.intro.url | relative_url }}">
+          <span class="pager__dir">Previous</span>
+          <span class="pager__title">{{ ref.intro.title }} overview</span>
+        </a>
+        {%- else %}
+          {%- assign prev = flat[prev_idx] %}
+        <a class="pager__link pager__link--prev" href="{{ prev.url | relative_url }}">
+          <span class="pager__dir">Previous</span>
+          <span class="pager__title">{{ prev.title }}</span>
+        </a>
+        {%- endif %}
+
+        {%- if next_idx < flat.size %}
+          {%- assign next = flat[next_idx] %}
+        <a class="pager__link pager__link--next" href="{{ next.url | relative_url }}">
+          <span class="pager__dir">Next</span>
+          <span class="pager__title">{{ next.title }}</span>
+        </a>
+        {%- else %}<span></span>{%- endif %}
+      </nav>
+    {%- endif %}
+
+    <div class="page-foot">
+      {%- comment -%}
+        Jekyll's source is docs/, so page.path is already relative to it
+        ("reference/cli.md") and just needs the prefix back.
+      {%- endcomment -%}
+      <a href="{{ site.repo }}/blob/{{ site.repo_branch }}/docs/{{ page.path }}">
+        Edit this page on GitHub
+      </a>
+    </div>
+  </main>
+
+  <aside class="toc" aria-label="On this page">
+    <div class="toc__inner">
+      <h2 class="toc__title">On this page</h2>
+      <ul class="toc__list"></ul>
+    </div>
+  </aside>
+
+</div>
