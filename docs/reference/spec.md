@@ -97,7 +97,7 @@ and is not treated as one.
 **Several injectors are normal.** A monorepo whose `cmd/api`, `cmd/worker` and `cmd/migrator` each
 wire their own graph has three injectors, and `generate`, `check` and `doctor` process all three in
 one pass. Which commands do that and which ask you to pick one is in
-[CLI commands](cli.md#dir-and-injector-scope).
+[CLI commands](cli.md#--dir-and-injector-scope).
 
 **Two `Build` calls in the same package is an error**, even across two files. That package can only
 own one generated file, so a second call is genuinely ambiguous rather than a second injector:
