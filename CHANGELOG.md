@@ -23,6 +23,17 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
+## [3.0.1] - 2026-08-28
+
+### Changed
+- No changes to `servo`/`servotest`'s exported API, the CLI, or generated code — this release is
+  CI and repository maintenance only.
+- Bumped `actions/checkout` and `github/codeql-action` to their current major versions across every
+  workflow (both were past or nearing deprecation).
+- Added `CODE_OF_CONDUCT.md`, issue templates, and a pull request template.
+- Expanded test coverage from 94.1% to 98.7% of statements; added `codecov.yml` to exclude
+  `examples/migrate`'s deliberately-uncalled fixture code from the ratio.
+
 ## [3.0.0] - 2026-08-27
 
 ### Changed
