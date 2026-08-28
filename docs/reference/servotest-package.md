@@ -19,6 +19,7 @@ This is the only servo package with a third-party dependency —
 | Identifier | Kind | |
 | --- | --- | --- |
 | [`NoLeaks`](#noleaks) | func | Fail if any goroutine outlives the test |
+| [`Linger`](#linger) | func | Shrinks every scope's linger window for one test |
 | [`Timeout`](#timeout) | func | Shrink `servo.DefaultStopBudget` for one test |
 | [`Recorder`](#recorder) | type | An app's init and shutdown reports, together |
 | [`NewRecorder`](#newrecorder) | func | Builds a `Recorder` |
@@ -70,6 +71,35 @@ servotest.Timeout(t, 50*time.Millisecond)
 real default. The budget is a package variable, so `t.Parallel()` plus `Timeout` is a data race and a
 flake. That's the cost of the budget being a variable rather than configuration, and it's a fair
 trade for tests that would otherwise take seconds each.
+
+## `Linger`
+
+```go
+func Linger(t *testing.T, d time.Duration)
+```
+
+Overrides every generated [scope](scopes.md)'s declared linger window for the calling test,
+restoring the previous setting via `t.Cleanup`.
+
+It exists for the same reason `Timeout` does: the interesting behaviour lives at a boundary a real
+thirty-second window cannot be driven to in a test.
+
+```go
+func TestEvictionRacingAcquire(t *testing.T) {
+	servotest.Linger(t, 0) // die with the last holder
+	app, _ := New(ctx)
+	// …hammer one key from several goroutines; every acquire must end in
+	// an instance or a clean error, never a hang.
+}
+```
+
+`Linger(t, 0)` makes an instance evict the moment its last holder releases, which is how the
+eviction-racing-acquire path gets exercised deliberately instead of by luck.
+
+Generated code reads the override once per scope, inside `New`, so **call this before constructing
+the app**. Since the underlying setting is a package variable, tests using `Linger` must not run in
+parallel with each other or with tests that depend on a scope's real declared window — the same
+constraint `Timeout` carries, for the same reason.
 
 ## `Recorder`
 

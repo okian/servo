@@ -2,12 +2,12 @@
 // the small runtime shared by all generated injectors.
 package servo
 
-// Marker is the opaque return type of Root, Bind, and Override. It carries
-// no data; `servo generate` reads calls to these functions as syntax inside
-// a Build(...) argument list and never executes them.
+// Marker is the opaque return type of Root, Bind, Override, and Scoped. It
+// carries no data; `servo generate` reads calls to these functions as
+// syntax inside a Build(...) argument list and never executes them.
 type Marker struct{}
 
-// Build declares an injector's roots and explicit bindings. Calls to it are
+// Build declares an injector's roots, explicit bindings, and scopes. Calls to it are
 // read as syntax by `servo generate`, in a file carrying the servoinject
 // build tag that is excluded from the compiled binary. If Build ever runs,
 // the tag was missing or generation was skipped — panic rather than

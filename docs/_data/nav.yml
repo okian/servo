@@ -1,5 +1,5 @@
 # Drives the sidebar, the landing-page chapter grid, and prev/next links.
-# Kept here rather than in each chapter's front matter so the 18 tutorial
+# Kept here rather than in each chapter's front matter so the 19 tutorial
 # files stay plain markdown that reads correctly in GitHub's file browser.
 # Order in this file is the reading order; prev/next is derived by flattening
 # every section's chapters in sequence. `numeral` is the part's roman number,
@@ -69,46 +69,50 @@ sections:
         title: Wiring with servo
         url: /tutorial/11-wiring-with-servo.html
         blurb: Nine packages, nine constructors, and nothing connecting them — until now.
+      - num: 12
+        title: Scoped instances
+        url: /tutorial/12-scoped-instances.html
+        blurb: The one thing in the graph that isn't built once and held forever.
 
   - title: Running it for real
     numeral: V
     summary: What a service needs before anyone should depend on it.
     chapters:
-      - num: 12
-        title: Observability
-        url: /tutorial/12-observability.html
-        blurb: Turning a running black box into something you can actually watch.
       - num: 13
+        title: Observability
+        url: /tutorial/13-observability.html
+        blurb: Turning a running black box into something you can actually watch.
+      - num: 14
         title: Resilience
-        url: /tutorial/13-resilience.html
+        url: /tutorial/14-resilience.html
         blurb: Failure handling, fallbacks, and a circuit breaker that means it.
 
   - title: Shipping
     numeral: VI
     summary: From a laptop to a pipeline to a deployed container.
     chapters:
-      - num: 14
-        title: Testing strategy
-        url: /tutorial/14-testing-strategy.html
-        blurb: How the tests written along the way fit into three distinct levels.
       - num: 15
-        title: CI/CD
-        url: /tutorial/15-cicd.html
-        blurb: Turning every check you were running by hand into a pipeline.
+        title: Testing strategy
+        url: /tutorial/15-testing-strategy.html
+        blurb: How the tests written along the way fit into three distinct levels.
       - num: 16
+        title: CI/CD
+        url: /tutorial/16-cicd.html
+        blurb: Turning every check you were running by hand into a pipeline.
+      - num: 17
         title: Running and deployment
-        url: /tutorial/16-running-and-deployment.html
+        url: /tutorial/17-running-and-deployment.html
         blurb: Leaving `go run` behind for a real container and a real deployment.
 
   - title: Reference
     numeral: VII
     summary: What to reach for when something breaks, or when a choice needs revisiting.
     chapters:
-      - num: 17
-        title: Troubleshooting
-        url: /tutorial/17-troubleshooting.html
-        blurb: Every diagnostic from every chapter, gathered and reorganized by symptom.
       - num: 18
+        title: Troubleshooting
+        url: /tutorial/18-troubleshooting.html
+        blurb: Every diagnostic from every chapter, gathered and reorganized by symptom.
+      - num: 19
         title: Alternatives and further reading
-        url: /tutorial/18-alternatives-and-further-reading.html
+        url: /tutorial/19-alternatives-and-further-reading.html
         blurb: The option each chapter didn't pick, and the case where it would win.

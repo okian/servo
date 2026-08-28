@@ -42,10 +42,11 @@ servoorders/
   auth/                    JWT issuing and verification                     chapter 9
   api/                     HTTP server, router, handlers                     chapter 10
   cmd/orders/              spec.go + main.go — the injector                  chapter 11
-  observability/           logging, metrics, tracing setup                   chapter 12
-  resilience/              circuit breaker, rate limiting                    chapter 13
+  session/                 per-user state, one instance per logged-in user   chapter 12
+  observability/           logging, metrics, tracing setup                   chapter 13
+  resilience/              circuit breaker, rate limiting                    chapter 14
   mocks/                   generated mocks for tests                        chapter 8 onward
-  deploy/                  docker-compose.yml, Dockerfile                    chapter 16
+  deploy/                  docker-compose.yml, Dockerfile                    chapter 17
   openapi.yaml             API contract                                     chapter 10
 ```
 
@@ -61,7 +62,7 @@ you. A library meant for other people to import is a different situation; servo'
 |---|---|---|
 | `servo` | Generating and checking the wiring (chapter 11) | `go install github.com/okian/servo/v3/cmd/servo@latest` |
 | Docker + `docker compose` | Running Postgres, Redis, NATS locally | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| `golangci-lint` | The CI lint step (chapter 15) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
+| `golangci-lint` | The CI lint step (chapter 16) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 
 You can actually skip installing `servo` globally — every command in this tutorial works equally
 well as `go run github.com/okian/servo/v3/cmd/servo <command>`, and that's what the Makefile below

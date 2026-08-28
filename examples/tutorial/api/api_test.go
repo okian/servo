@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,9 +19,51 @@ import (
 	"example.com/servoorders/observability"
 	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
+	"example.com/servoorders/session"
 	"github.com/google/uuid"
+	"github.com/okian/servo/v3/servo"
 	"go.uber.org/mock/gomock"
 )
+
+// fakeSessions is a hand-written stand-in for the accessor `servo generate`
+// emits into package main. It is the payoff of api.Server depending on
+// session.Sessions rather than on *session.Session: this package can be
+// tested with no servo, no generated code, and no reference counting — and
+// still gets one session per user rather than one shared by everybody,
+// because it keys itself off the same ScopeKey method the real accessor
+// calls.
+type fakeSessions struct {
+	cfg *config.Config
+	mu  sync.Mutex
+	by  map[session.UserID]*session.Session
+}
+
+func newFakeSessions(cfg *config.Config) *fakeSessions {
+	return &fakeSessions{cfg: cfg, by: map[session.UserID]*session.Session{}}
+}
+
+func (f *fakeSessions) Acquire(ctx context.Context) (*session.Session, func(), error) {
+	var zero *session.Session
+	key, err := zero.ScopeKey(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	s, ok := f.by[key]
+	if !ok {
+		s = session.New(key, f.cfg)
+		f.by[key] = s
+	}
+	return s, func() {}, nil
+}
+
+func (f *fakeSessions) Stats() servo.ScopeStats {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return servo.ScopeStats{Live: len(f.by)}
+}
 
 // newTestServer wires a real api.Server on top of real service.OrderService
 // and service.AuthService — but those, in turn, run on gomock mocks instead
@@ -51,7 +94,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	// RateLimitRPS would mean the rate limiter allows exactly one request
 	// per test, ever; see TestRateLimiterRejectsRequestsOverTheLimit for
 	// the test that actually wants that.
-	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000}
+	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000, SessionRecent: 10}
 	issuer := auth.New(cfg)
 	orders := service.New(repo, orderCache, pub)
 	authSvc := service.NewAuthService(users, issuer)
@@ -69,7 +112,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	users.EXPECT().GetByUsername(gomock.Any(), "alice").Return(testUser, nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound).AnyTimes()
 
-	srv := api.New(cfg, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(cfg, metrics))
+	srv := api.New(cfg, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(cfg, metrics), newFakeSessions(cfg))
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, repo, issuer
@@ -210,7 +253,7 @@ func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 		t.Fatalf("NewTracer: %v", err)
 	}
 	testMetrics := observability.NewMetrics()
-	srv := api.New(cfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(cfg, testMetrics))
+	srv := api.New(cfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(cfg, testMetrics), newFakeSessions(cfg))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -225,4 +268,97 @@ func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s of context cancellation")
 	}
+}
+
+// TestRecentRemembersWhatThisUserViewed is the end-to-end shape of a
+// scope: two requests from the same person, and the second one sees state
+// the first one left behind — without a database, and without that state
+// being visible to anybody else.
+func TestRecentRemembersWhatThisUserViewed(t *testing.T) {
+	ts, repo, issuer := newTestServer(t)
+
+	token := loginAs(t, ts, "alice")
+	claims, err := issuer.Verify(token)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+
+	order := &domain.Order{ID: uuid.New(), UserID: claims.UserID, Item: "widget", Quantity: 1, Status: domain.OrderStatusPending}
+	repo.EXPECT().Get(gomock.Any(), order.ID).Return(order, nil).AnyTimes()
+
+	if code := authedGet(t, ts, token, "/orders/"+order.ID.String()); code != http.StatusOK {
+		t.Fatalf("GET order status = %d, want 200", code)
+	}
+
+	var mine struct {
+		Recent []uuid.UUID `json:"recent"`
+	}
+	if code := authedGetJSON(t, ts, token, "/me/recent", &mine); code != http.StatusOK {
+		t.Fatalf("GET /me/recent status = %d, want 200", code)
+	}
+	if len(mine.Recent) != 1 || mine.Recent[0] != order.ID {
+		t.Fatalf("recent = %v, want just the order that was viewed", mine.Recent)
+	}
+}
+
+// TestRecentRejectsAnUnauthenticatedCaller is the other half of the
+// contract. Without requireAuth there is no key in the context, so
+// ScopeKey returns servo.ErrNoScopeKey rather than the zero UserID — which
+// is exactly what stops every anonymous caller from sharing one session.
+func TestRecentRejectsAnUnauthenticatedCaller(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	resp, err := http.Get(ts.URL + "/me/recent")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// TestRecentIsEmptyForANewSession covers the cold-key path through the
+// accessor: a user who has viewed nothing gets an empty list rather than
+// an error or somebody else's.
+func TestRecentIsEmptyForANewSession(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+	token := loginAs(t, ts, "alice")
+
+	var out struct {
+		Recent []uuid.UUID `json:"recent"`
+	}
+	if code := authedGetJSON(t, ts, token, "/me/recent", &out); code != http.StatusOK {
+		t.Fatalf("GET /me/recent status = %d, want 200", code)
+	}
+	if len(out.Recent) != 0 {
+		t.Fatalf("recent = %v, want empty", out.Recent)
+	}
+}
+
+func authedGet(t *testing.T, ts *httptest.Server, token, path string) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func authedGetJSON(t *testing.T, ts *httptest.Server, token, path string, into any) int {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodGet, ts.URL+path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		json.NewDecoder(resp.Body).Decode(into)
+	}
+	return resp.StatusCode
 }

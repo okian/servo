@@ -13,6 +13,7 @@ func (e *emitter) newFunc() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "func %s(ctx context.Context) (*%s, error) {\n", e.constructorName(), e.appType())
 	fmt.Fprintf(&b, "\ta := &%s{}\n\n", e.appType())
+	b.WriteString(e.scopeSetup())
 
 	for i, n := range e.resolved.Order {
 		e.writeConstruction(&b, i, n)
@@ -29,7 +30,7 @@ func (e *emitter) writeConstruction(b *strings.Builder, index int, n *resolve.No
 	name := e.varName[n.Key]
 	args := make([]string, len(n.Deps))
 	for i, dep := range n.Deps {
-		args[i] = e.varName[dep.Key]
+		args[i] = e.appArg(dep)
 	}
 	call := fmt.Sprintf("%s(%s)", e.qualifiedFuncString(n.Provider), strings.Join(args, ", "))
 
@@ -122,4 +123,15 @@ func (e *emitter) writeConcurrentInit(b *strings.Builder, nodes []*resolve.Node)
 	b.WriteString("\t\t\treport := a.Shutdown(ctx)\n")
 	b.WriteString("\t\t\treturn nil, errors.Join(err, report)\n")
 	b.WriteString("\t\t}\n\t}\n")
+}
+
+// appArg renders one constructor argument inside New. Everything the App
+// builds itself is still in scope as a local; a scope accessor is not
+// built by a provider at all, so it comes off the App, where scopeSetup
+// put it before any of this ran.
+func (e *emitter) appArg(dep *resolve.Node) string {
+	if dep.Kind == resolve.NodeScopeAccessor {
+		return "a." + e.rootByAccessor[dep.ScopeRoot].AccessorField
+	}
+	return e.varName[dep.Key]
 }

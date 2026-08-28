@@ -48,6 +48,18 @@ sections:
           Every diagnostic and error servo can emit, grouped by the stage that
           produces it, with the cause and the fix for each.
 
+  - title: Beyond one instance
+    summary: The one thing in the graph that is not built once and held forever.
+    pages:
+      - title: Scoped instances
+        url: /reference/scopes.html
+        blurb: Keyed, refcounted instances — one per room, per tenant, per region.
+        description: >-
+          Reference for servo scopes: the ScopeKey extractor, the Scoped
+          marker and its accessor interface, scope membership, the linger
+          window and Max cap, per-instance lifecycle, and the four scope
+          diagnostics.
+
   - title: The generated application
     summary: The code servo writes, and what it does when it runs.
     pages:
@@ -71,7 +83,7 @@ sections:
     pages:
       - title: servo package
         url: /reference/servo-package.html
-        blurb: The markers, the capability interfaces, and the ~200-line runtime.
+        blurb: The markers, the capability interfaces, and the ~430-line runtime.
         description: >-
           Complete API reference for the servo package — markers, capability
           interfaces, Report, NodeResult, NodeStatus, Graph, StartupReport,

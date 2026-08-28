@@ -27,6 +27,17 @@ type emitter struct {
 	names      *NameAllocator
 	varName    map[graph.Key]string
 	servoAlias string
+
+	// types allocates package-level declaration names (a scope's
+	// registry, entry and accessor types), kept separate from names,
+	// which allocates App fields: the two live in different namespaces
+	// and would otherwise dedupe against each other for no reason.
+	types          *NameAllocator
+	acquireNames   *NameAllocator
+	scopes         []*scopeEmit
+	scopeByScope   map[*resolve.Scope]*scopeEmit
+	rootByAccessor map[*resolve.ScopeRoot]*rootEmit
+	memberField    map[*resolve.Node]string
 }
 
 // Emit renders the full generated file for resolved. When testMode is true,
@@ -41,17 +52,48 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 		imports:  NewImportManager(),
 		names:    NewNameAllocator(),
 		varName:  map[graph.Key]string{},
+
+		types:          NewNameAllocator(),
+		acquireNames:   NewNameAllocator(),
+		scopeByScope:   map[*resolve.Scope]*scopeEmit{},
+		rootByAccessor: map[*resolve.ScopeRoot]*rootEmit{},
+		memberField:    map[*resolve.Node]string{},
 	}
 	e.servoAlias = e.imports.Add(graph.ServoPackagePath, "servo")
 	e.imports.Add("context", "context")
+	// Registered here rather than where they are first used, so they win
+	// the identifier against a user package of the same name: Shutdown
+	// hard-codes os.Exit and syscall.SIGTERM, and a package that had taken
+	// "os" would leave that referring to the wrong thing.
+	e.imports.Add("os", "os")
+	e.imports.Add("os/signal", "signal")
+	e.imports.Add("syscall", "syscall")
+	// Claimed before anything else can take them: both are emitted
+	// unconditionally, and a scope type derived from a key type called
+	// "App" would otherwise redeclare one of them.
+	e.types.AllocateName("App")
+	e.types.AllocateName("TestApp")
+
+	// Claimed before any node can take them. New's own locals are bare
+	// identifiers in the same scope as every node's, so a type named A,
+	// Ctx or Err would otherwise emit `a := m.NewA()` beside `a := &App{}`
+	// — a redeclaration the generator writes and the compiler rejects,
+	// with `servo generate` reporting success because it formats the
+	// output rather than type-checking it. (Pre-existing: this is the
+	// singleton half of the same collision the entry allocator guards.)
+	e.names.AllocateName("a")
+	e.names.AllocateName("ctx")
+	e.names.AllocateName("err")
 
 	for _, n := range resolved.Order {
 		e.varName[n.Key] = e.names.Allocate(n.Provider.ResultType)
 	}
+	e.planScopes()
 
+	scopeDecls := e.scopeDecls()
 	appStruct := e.appStruct()
 	newFunc := e.newFunc()
-	stopMethods := e.stopMethods()
+	stopMethods := e.stopMethods() + e.scopeStopMethods()
 	runFunc := e.runFunc()
 	shutdownFunc := e.shutdownFunc()
 	healthFunc := e.healthReadyFunc("Health", "Healther", "Health")
@@ -65,6 +107,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	body.WriteString(e.imports.RenderImports())
 	body.WriteString("\n")
 	body.WriteString(appStruct)
+	body.WriteString(scopeDecls)
 	body.WriteString(newFunc)
 	body.WriteString(stopMethods)
 	body.WriteString(runFunc)
@@ -103,7 +146,35 @@ func (e *emitter) header() string {
 		fmt.Fprintf(&b, "//   [L%d] %s\n//         deps: %s\n//         capabilities: %s | binding: %s | %s\n",
 			n.Level, n.Key.String(), deps, caps, n.Binding, e.posString(n.Provider.Pos))
 	}
+	b.WriteString(e.scopeHeader())
 	b.WriteString("//\n")
+	return b.String()
+}
+
+// scopeHeader documents each declared scope beneath the node list: its
+// policy, what an instance of it holds, and what it borrows from the app.
+func (e *emitter) scopeHeader() string {
+	var b strings.Builder
+	for _, se := range e.scopes {
+		fmt.Fprintf(&b, "//\n// %s\n//   linger: %s | max: %d\n", se.S.Name, se.S.Linger, se.S.Max)
+		for _, re := range se.Roots {
+			fmt.Fprintf(&b, "//   accessor: %s -> %s\n", re.R.Iface.String(), re.R.Node.Key.String())
+		}
+		for _, m := range se.Members {
+			caps := "none"
+			if len(m.N.Capabilities) > 0 {
+				caps = strings.Join(m.N.Capabilities, ", ")
+			}
+			fmt.Fprintf(&b, "//   [S%d] %s\n//         capabilities: %s\n", m.N.ScopeLevel, m.N.Key.String(), caps)
+		}
+		if len(se.Borrowed) > 0 {
+			names := make([]string, len(se.Borrowed))
+			for i, n := range se.Borrowed {
+				names[i] = n.Key.String()
+			}
+			fmt.Fprintf(&b, "//   borrows: %s\n", strings.Join(names, ", "))
+		}
+	}
 	return b.String()
 }
 
@@ -154,6 +225,7 @@ func (e *emitter) appStruct() string {
 			fmt.Fprintf(&b, "\t%sStopResult %s.NodeResult\n", name, e.servoAlias)
 		}
 	}
+	b.WriteString(e.scopeAppFields())
 	fmt.Fprintf(&b, "\tstartupReport %s.StartupReport\n", e.servoAlias)
 	b.WriteString("}\n\n")
 	return b.String()

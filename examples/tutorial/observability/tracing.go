@@ -26,7 +26,7 @@ type Tracer struct {
 // with a nil provider. Spans are still created when OTLPEndpoint is
 // unset, just never exported — tracing is opt-in, not a required
 // dependency this service can't start without. See
-// docs/tutorial/12-observability.md.
+// docs/tutorial/13-observability.md.
 func NewTracer(cfg *config.Config) (*Tracer, error) {
 	ctx := context.Background()
 	res, err := resource.New(ctx, resource.WithAttributes(

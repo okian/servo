@@ -6,7 +6,7 @@
 //
 //	[L1] *example.com/servoorders/config.Config
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | config/config.go:39:6
+//	      capabilities: none | binding: sole candidate | config/config.go:46:6
 //	[L1] *example.com/servoorders/mocks.OrderRepositoryForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:24:6
@@ -38,15 +38,24 @@
 //	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/observability.Metrics
 //	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:23:6
 //	[L4] *example.com/servoorders/api.Server
-//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:26:6
+//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions
+//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:32:6
 //	[L2] *example.com/servoorders/notifier.Notifier
 //	      deps: *example.com/servoorders/config.Config
 //	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:23:6
+//
+// scope example.com/servoorders/session.UserID
+//
+//	linger: 5m0s | max: 50000
+//	accessor: example.com/servoorders/session.Sessions -> *example.com/servoorders/session.Session
+//	[S1] *example.com/servoorders/session.Session
+//	      capabilities: Initializer, Flusher, Finalizer
+//	borrows: *example.com/servoorders/config.Config
 package main
 
 import (
 	"context"
+	"errors"
 	"example.com/servoorders/api"
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
@@ -55,12 +64,16 @@ import (
 	"example.com/servoorders/observability"
 	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
+	"example.com/servoorders/session"
+	"fmt"
 	"github.com/okian/servo/v3/servo"
 	"golang.org/x/sync/errgroup"
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
+	"time"
 )
 
 type TestApp struct {
@@ -81,11 +94,465 @@ type TestApp struct {
 	serverStopOnce          sync.Once
 	serverStopResult        servo.NodeResult
 	notifier                *notifier.Notifier
+	userIDScope             *testUserIDScope
+	sessions                testSessionsAccessor
+	userIDScopeStopOnce     sync.Once
+	userIDScopeStopResult   servo.NodeResult
 	startupReport           servo.StartupReport
 }
 
+// testUserIDScope is the registry for scope example.com/servoorders/session.UserID. One entry per live key, each
+// owning its own reference count and linger timer in its own goroutine.
+type testUserIDScope struct {
+	app    *TestApp
+	mu     sync.RWMutex
+	items  map[session.UserID]*testUserIDEntry
+	closed bool
+	// quit is closed once, by Shutdown, and read by every entry loop.
+	quit chan struct{}
+
+	// base is New's context with cancellation stripped. An instance
+	// outlives the request that created it, so hanging its Run loop off
+	// an acquirer's context would kill it the moment that one caller
+	// disconnects, while the instance is still live and referenced.
+	// Values propagate; cancellation does not.
+	base   context.Context
+	linger time.Duration
+	max    int
+
+	refs      atomic.Int64
+	acquires  atomic.Uint64
+	evictions atomic.Uint64
+	// failures counts evictions whose teardown did not come out clean.
+	// An instance evicted mid-life has no Report to appear in — Shutdown
+	// is not running — so without this a Drain that failed or a Stop that
+	// overran its budget would leave no trace anywhere.
+	failures atomic.Uint64
+	// tearing holds entries that have left items but are still draining
+	// and stopping. Removal has to happen first, so a racing acquirer's
+	// retry misses — but an entry in this window is still very much an
+	// instance: Shutdown has to wait for it, Max has to count it, and
+	// Stats must not report the scope quiet while it is running.
+	tearing map[*testUserIDEntry]struct{}
+}
+
+func newTestUserIDScope(ctx context.Context, app *TestApp) *testUserIDScope {
+	return &testUserIDScope{
+		app:     app,
+		items:   map[session.UserID]*testUserIDEntry{},
+		tearing: map[*testUserIDEntry]struct{}{},
+		quit:    make(chan struct{}),
+		base:    context.WithoutCancel(ctx),
+		linger:  servo.LingerWindow(5 * time.Minute),
+		max:     50000,
+	}
+}
+
+func (s *testUserIDScope) Stats() servo.ScopeStats {
+	s.mu.RLock()
+	live := s.liveLocked()
+	s.mu.RUnlock()
+	return servo.ScopeStats{Live: live, Refs: int(s.refs.Load()), Acquires: s.acquires.Load(), Evictions: s.evictions.Load(), Failures: s.failures.Load()}
+}
+
+// liveLocked is how many instances exist: mapped, plus those that have
+// left the map but are still tearing down. Callers hold s.mu.
+func (s *testUserIDScope) liveLocked() int { return len(s.items) + len(s.tearing) }
+
+// lookupOrCreate takes the read lock on the hit path and the write lock,
+// with a second look, on the miss path: sync.RWMutex has no atomic
+// upgrade, so two cold acquires of the same key would otherwise both
+// create, orphaning one entry and the goroutine it was about to start.
+func (s *testUserIDScope) lookupOrCreate(key session.UserID) (*testUserIDEntry, bool, error) {
+	s.mu.RLock()
+	e, ok := s.items[key]
+	closed := s.closed
+	s.mu.RUnlock()
+	if closed {
+		return nil, false, servo.ErrScopeClosed
+	}
+	if ok {
+		return e, false, nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.items[key]; ok {
+		return e, false, nil
+	}
+	if s.closed {
+		return nil, false, servo.ErrScopeClosed
+	}
+	// Counts tearing entries too: they still hold their instance and its
+	// memory, so admitting past them would make Max a bound on map size
+	// rather than on live instances.
+	if s.liveLocked() >= s.max {
+		return nil, false, servo.ErrScopeFull
+	}
+	ctx, cancel := context.WithCancel(s.base)
+	e = &testUserIDEntry{
+		scope: s, key: key, ctx: ctx, cancel: cancel,
+		joins: make(chan struct{}), leaves: make(chan struct{}),
+		ready: make(chan struct{}), dead: make(chan struct{}), torn: make(chan struct{}),
+	}
+	s.items[key] = e
+	return e, true, nil
+}
+
+// remove deletes key only while it still maps to this exact entry. A
+// dying entry is never revived — a new incarnation is a new entry with a
+// new goroutine — and that replacement may already have claimed the key.
+func (s *testUserIDScope) remove(key session.UserID, e *testUserIDEntry) {
+	s.mu.Lock()
+	if s.items[key] == e {
+		delete(s.items, key)
+	}
+	s.mu.Unlock()
+}
+
+// beginTeardown moves an entry out of the map and into tearing in one
+// step. Both have to happen under the same lock: an entry visible in
+// neither set is one Shutdown would not wait for and Max would not count.
+func (s *testUserIDScope) beginTeardown(e *testUserIDEntry) {
+	s.mu.Lock()
+	s.tearing[e] = struct{}{}
+	if s.items[e.key] == e {
+		delete(s.items, e.key)
+	}
+	s.mu.Unlock()
+}
+
+func (s *testUserIDScope) endTeardown(e *testUserIDEntry, result servo.NodeResult) {
+	s.mu.Lock()
+	delete(s.tearing, e)
+	s.mu.Unlock()
+	s.evictions.Add(1)
+	if result.Status != servo.StatusOK {
+		s.failures.Add(1)
+	}
+}
+
+// abandon unwinds an entry whose construction failed, so it leaves
+// nothing behind in the map and any waiter gets the error rather than
+// blocking on an instance that will never exist.
+func (s *testUserIDScope) abandon(e *testUserIDEntry, err error) error {
+	s.remove(e.key, e)
+	e.cancel()
+	e.buildErr = err
+	// stopResult stays OK: nothing was constructed, so nothing was torn
+	// down. The error goes to the acquirer that caused it — folding it
+	// into Shutdown's report as well would make one bad key at the wrong
+	// instant render the whole shutdown dirty.
+	e.stopResult = servo.NodeResult{Name: e.name(), Status: servo.StatusOK}
+	close(e.dead)
+	close(e.torn)
+	return err
+}
+
+// testUserIDEntry is one live key's instances plus the channels its loop
+// selects on. Everything mutable about the reference count lives inside
+// that loop as a local variable, so there is nothing here to lock.
+type testUserIDEntry struct {
+	scope  *testUserIDScope
+	key    session.UserID
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	joins  chan struct{}
+	leaves chan struct{}
+	// ready closes when construction succeeded; dead closes when the key
+	// has been removed from the map, which happens strictly first so a
+	// racing acquirer's retry misses and creates fresh instead of finding
+	// the same corpse forever. torn closes when teardown has finished.
+	ready chan struct{}
+	dead  chan struct{}
+	torn  chan struct{}
+
+	// built is how many members build() has finished assigning. The
+	// error path unrolls a known prefix; the panic path cannot know
+	// how far it got, so it reads this.
+	built      int
+	buildErr   error
+	stopResult servo.NodeResult
+	runWG      sync.WaitGroup
+	runMu      sync.Mutex
+	runErrs    []error
+	session    *session.Session
+}
+
+func (e *testUserIDEntry) name() string {
+	return fmt.Sprintf("%s[%v]", "scope example.com/servoorders/session.UserID", e.key)
+}
+
+// loop owns this entry's reference count. A join is acknowledged by the
+// receive itself, so an acquirer knows its reference is counted before it
+// returns, and the loop never blocks on a caller that has walked away.
+//
+// It starts at one, not zero: whoever built this entry holds the first
+// reference by construction and never sends a join for it. Starting at
+// zero would leave an entry whose creator gave up before joining alive
+// with no reference and no timer armed — live forever, held by nobody.
+func (e *testUserIDEntry) loop() {
+	refs := 1
+	var timer *time.Timer
+	var linger <-chan time.Time
+	stopTimer := func() {
+		if timer != nil {
+			timer.Stop()
+			timer = nil
+		}
+		linger = nil
+	}
+	for {
+		// Checked before the blocking select, so that once Shutdown has
+		// closed quit this loop stops accepting joins instead of racing
+		// them. A join and a quit both ready in one select is a coin
+		// flip, and losing it hands an acquirer an instance this
+		// iteration is about to tear down.
+		select {
+		case <-e.scope.quit:
+			stopTimer()
+			e.evict()
+			return
+		default:
+		}
+
+		select {
+		case <-e.joins:
+			refs++
+			stopTimer()
+		case <-e.leaves:
+			refs--
+			if refs == 0 {
+				// The window before eviction. Without it a short handler
+				// takes the count 0->1->0 per request and the instance is
+				// rebuilt every time, losing whatever in-memory state made
+				// it worth sharing.
+				stopTimer()
+				timer = time.NewTimer(e.scope.linger)
+				linger = timer.C
+			}
+		case <-linger:
+			timer, linger = nil, nil
+			e.evict()
+			return
+		case <-e.scope.quit:
+			stopTimer()
+			e.evict()
+			return
+		}
+	}
+}
+
+// evict removes the key from the map BEFORE announcing the entry's death.
+// Reversed, an acquirer that lost the join race would retry, look the key
+// up, find this same dying entry, and never terminate.
+func (e *testUserIDEntry) evict() {
+	e.scope.beginTeardown(e)
+	close(e.dead)
+	e.stopResult = e.teardown()
+	e.scope.endTeardown(e, e.stopResult)
+	close(e.torn)
+}
+
+// build constructs this entry's instances and runs their Init phase, in
+// the same level order and with the same rollback shape as the App's own
+// constructor. It runs in the acquiring goroutine, not under the scope's
+// lock, so one slow constructor cannot freeze every other key.
+func (e *testUserIDEntry) build() error {
+	a := e.scope.app
+
+	session := session.New(e.key, a.config)
+	e.session = session
+	e.built = 1
+
+	if err := e.session.Init(e.ctx); err != nil {
+		e.stopSession(context.Background())
+		return err
+	}
+	return nil
+}
+
+func (e *testUserIDEntry) stopSession(ctx context.Context) []servo.NodeResult {
+	var results []servo.NodeResult
+	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/session.Session", e.session.Flush))
+	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/session.Session", e.session.Stop))
+	return results
+}
+
+// rollback stops whatever build() managed to construct, newest first.
+// The error paths inside build() unroll a known prefix inline; this is
+// for the panic path, which cannot know how far it got.
+func (e *testUserIDEntry) rollback() {
+	ctx := context.Background()
+	if e.built > 0 {
+		e.stopSession(ctx)
+	}
+}
+
+// teardown runs on a fresh context.Background(), for the same reason the
+// generated main calls Shutdown(context.Background()): the drain has to
+// survive the cancellation that triggered it. Drain comes first so a
+// streaming consumer unblocks before its context is pulled out from
+// under it; Flush comes after the Run goroutines have returned, so
+// anything Run buffered is flushed rather than discarded.
+func (e *testUserIDEntry) teardown() servo.NodeResult {
+	ctx := context.Background()
+	var results []servo.NodeResult
+	e.cancel()
+	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, e.name(), e.waitRun))
+	results = append(results, e.stopSession(ctx)...)
+	return servo.MergeNodeResults(e.name(), results...)
+}
+
+func (e *testUserIDEntry) waitRun(context.Context) error {
+	e.runWG.Wait()
+	e.runMu.Lock()
+	defer e.runMu.Unlock()
+	return errors.Join(e.runErrs...)
+}
+
+// waitTorn blocks until this entry has finished tearing down. Shutdown
+// calls it through servo.RunStop so the wait is bounded.
+func (e *testUserIDEntry) waitTorn(ctx context.Context) error {
+	select {
+	case <-e.torn:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// acquireSession resolves ctx to a key, then hands back the instance for that
+// key and a closure that releases it. The reference unit is the caller's
+// use of the instance, not the lifetime of ctx: cancellation is not
+// completion, and a client disconnecting mid-handler must not free an
+// instance whose deferred cleanups are still running.
+func (s *testUserIDScope) acquireSession(ctx context.Context) (*session.Session, func(), error) {
+	// A context that can never be done disables the release backstop
+	// below, so a caller who forgets the closure would pin this instance
+	// for the life of the process. Refusing is the only way to say so.
+	if ctx.Done() == nil {
+		return nil, nil, servo.ErrNoLifetime
+	}
+	// Called on a typed nil: the key has to be known before an instance
+	// can be chosen, so there is no instance to call it on. Safe because
+	// servo rejects a ScopeKey method whose receiver its body could reach.
+	var zero *session.Session
+	key, err := zero.ScopeKey(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for {
+		e, created, err := s.lookupOrCreate(key)
+		if err != nil {
+			return nil, nil, err
+		}
+		if created {
+			if err := s.start(e); err != nil {
+				return nil, nil, err
+			}
+			// The loop is running now, and its very first select may have
+			// taken quit. Handing back an instance that is already torn
+			// down would be worse than refusing: the retry sees the scope
+			// closed and says so.
+			select {
+			case <-e.dead:
+				continue
+			default:
+			}
+			s.refs.Add(1)
+			s.acquires.Add(1)
+			return e.session, e.releaser(ctx), nil
+		}
+
+		select {
+		case <-e.ready:
+		case <-e.dead:
+			if e.buildErr != nil {
+				return nil, nil, e.buildErr
+			}
+			continue
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+
+		select {
+		case e.joins <- struct{}{}:
+			s.refs.Add(1)
+			s.acquires.Add(1)
+			return e.session, e.releaser(ctx), nil
+		case <-e.dead:
+			// Lost the race with eviction. The retry misses the map — the
+			// key was removed before dead closed — and creates fresh.
+			continue
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		}
+	}
+}
+
+func (s *testUserIDScope) start(entry *testUserIDEntry) (err error) {
+	started := false
+	defer func() {
+		if started {
+			return
+		}
+		if r := recover(); r != nil {
+			entry.rollback()
+			err = s.abandon(entry, fmt.Errorf("servo: panic constructing %s: %v", entry.name(), r))
+		}
+	}()
+
+	if err := entry.build(); err != nil {
+		started = true // the unwind below is not ours; build already rolled back
+		return s.abandon(entry, err)
+	}
+	go entry.loop()
+	close(entry.ready)
+	started = true
+	return nil
+}
+
+// releaser returns the closure the caller defers, with ctx ending as a
+// backstop behind it. Both paths run the same sync.Once, so a caller who
+// forgets the closure still releases when their request ends — later
+// than ideal, but not never.
+func (e *testUserIDEntry) releaser(ctx context.Context) func() {
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			e.scope.refs.Add(-1)
+			select {
+			case e.leaves <- struct{}{}:
+			case <-e.dead:
+			}
+		})
+	}
+	stop := context.AfterFunc(ctx, release)
+	return func() {
+		stop()
+		release()
+	}
+}
+
+// testSessionsAccessor is what satisfies example.com/servoorders/session.Sessions. It is a distinct type per
+// exposed root so that two roots sharing one scope can each have a method
+// literally named Acquire.
+type testSessionsAccessor struct{ s *testUserIDScope }
+
+func (x testSessionsAccessor) Acquire(ctx context.Context) (*session.Session, func(), error) {
+	return x.s.acquireSession(ctx)
+}
+
+func (x testSessionsAccessor) Stats() servo.ScopeStats { return x.s.Stats() }
+
 func NewTestApp(ctx context.Context) (*TestApp, error) {
 	a := &TestApp{}
+
+	a.userIDScope = newTestUserIDScope(ctx, a)
+	a.sessions = testSessionsAccessor{s: a.userIDScope}
 
 	config, err := config.New()
 	if err != nil {
@@ -126,7 +593,7 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	rateLimiter := resilience.NewRateLimiter(config, metrics)
 	a.rateLimiter = rateLimiter
 
-	server := api.New(config, orderService, authService, issuer, metrics, tracer, rateLimiter)
+	server := api.New(config, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions)
 	a.server = server
 
 	notifier := notifier.New(config)
@@ -153,6 +620,46 @@ func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
 	return a.serverStopResult
 }
 
+func (a *TestApp) stopUserIDScope(ctx context.Context) servo.NodeResult {
+	a.userIDScopeStopOnce.Do(func() {
+		s := a.userIDScope
+		s.mu.Lock()
+		if !s.closed {
+			s.closed = true
+			close(s.quit)
+		}
+		// Both sets, not just items: an entry that began evicting a moment
+		// ago has already left the map, and waiting only on what is mapped
+		// would let Shutdown return while its Drain and Flush were still
+		// running — against singletons this very function is about to stop.
+		entries := make([]*testUserIDEntry, 0, s.liveLocked())
+		for _, e := range s.items {
+			entries = append(entries, e)
+		}
+		for e := range s.tearing {
+			entries = append(entries, e)
+		}
+		s.mu.Unlock()
+
+		results := make([]servo.NodeResult, 0, len(entries))
+		// Budgeted like every other stop call, so an instance wedged in a
+		// constructor or a Drain is reported abandoned rather than holding
+		// the whole shutdown open past the deadline its caller passed. The
+		// multiplier is the number of budgeted calls one teardown makes
+		// (3 here): a single budget would time out on an entry that was
+		// tearing down perfectly correctly, and report it abandoned.
+		for _, e := range entries {
+			if res := servo.RunStop(ctx, 3*servo.DefaultStopBudget, e.name(), e.waitTorn); res.Status != servo.StatusOK {
+				results = append(results, res)
+				continue
+			}
+			results = append(results, e.stopResult)
+		}
+		a.userIDScopeStopResult = servo.MergeNodeResults("scope example.com/servoorders/session.UserID", results...)
+	})
+	return a.userIDScopeStopResult
+}
+
 func (a *TestApp) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return a.server.Run(gctx) })
@@ -176,6 +683,7 @@ func (a *TestApp) Shutdown(ctx context.Context) servo.Report {
 
 	var nodes []servo.NodeResult
 	nodes = append(nodes, a.stopServer(ctx))
+	nodes = append(nodes, a.stopUserIDScope(ctx))
 	nodes = append(nodes, a.stopTracer(ctx))
 	return servo.Report{Nodes: nodes}
 }
@@ -192,7 +700,7 @@ func (a *TestApp) Ready(ctx context.Context) servo.Report {
 
 func (a *TestApp) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/servoorders/config.Config", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "config/config.go:39:6"},
+		{Type: "*example.com/servoorders/config.Config", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "config/config.go:46:6"},
 		{Type: "*example.com/servoorders/mocks.OrderRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:24:6"},
 		{Type: "*example.com/servoorders/mocks.OrderCacheForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:44:6"},
 		{Type: "*example.com/servoorders/mocks.EventPublisherForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:54:6"},
@@ -203,8 +711,11 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "observability/metrics.go:18:6"},
 		{Type: "*example.com/servoorders/observability.Tracer", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "observability/tracing.go:30:6"},
 		{Type: "*example.com/servoorders/resilience.RateLimiter", Level: 2, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:23:6"},
-		{Type: "*example.com/servoorders/api.Server", Level: 4, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:26:6"},
+		{Type: "*example.com/servoorders/api.Server", Level: 4, Deps: []string{"*example.com/servoorders/config.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:32:6"},
 		{Type: "*example.com/servoorders/notifier.Notifier", Level: 2, Deps: []string{"*example.com/servoorders/config.Config"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:23:6"},
+		{Type: "*example.com/servoorders/session.Session", Level: 1, Deps: []string{"example.com/servoorders/session.UserID", "*example.com/servoorders/config.Config"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "session/session.go:60:6", Scope: "example.com/servoorders/session.UserID"},
+	}, Scopes: []servo.GraphScope{
+		{Key: "example.com/servoorders/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/session.Sessions"}, Members: []string{"*example.com/servoorders/session.Session"}, Borrows: []string{"*example.com/servoorders/config.Config"}},
 	}}
 }
 

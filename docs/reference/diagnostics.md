@@ -11,16 +11,23 @@ All of them exit 1. All of them go to stderr.
 
 ## Reproducing them yourself
 
-[`examples/diagnostics`](https://github.com/okian/servo/tree/master/examples/diagnostics) is three
-small, permanently broken fixtures — one per resolution failure mode — each runnable on its own:
+[`examples/diagnostics`](https://github.com/okian/servo/tree/master/examples/diagnostics) is seven
+small, permanently broken fixtures — one per failure mode — each runnable on its own:
 
 ```
 go run ./cmd/servo generate --dir examples/diagnostics/missing
 go run ./cmd/servo generate --dir examples/diagnostics/ambiguous
 go run ./cmd/servo generate --dir examples/diagnostics/cycle
+go run ./cmd/servo generate --dir examples/diagnostics/widening
+go run ./cmd/servo generate --dir examples/diagnostics/crossscope
+go run ./cmd/servo generate --dir examples/diagnostics/extractor
+go run ./cmd/servo generate --dir examples/diagnostics/undeclared
 ```
 
-Every resolution example below is that command's real output, with absolute paths shortened.
+Every example below is that command's real output, with two consistent abbreviations for width:
+absolute file paths are shortened to their module-relative form, and fully qualified type names to
+their last two segments — `missing.Store`, not `example.com/servodiagnostics/missing.Store`. The
+tool always prints the full path.
 
 ## Anatomy of a resolution diagnostic
 
@@ -203,6 +210,162 @@ From `graph`, `explain`, `why` or `list` — commands that answer a question abo
 `--dir` at one injector's own directory. `generate`, `check` and `doctor` process all of them and
 never print this.
 
+## Scopes
+
+These four are what a hand-written registry beside servo cannot give you. All are `generate`
+failures; widening and cross-scope carry the same needed-by chain a resolution diagnostic does,
+while the extractor-cycle and undeclared-scope messages name the two positions involved instead —
+there is no consumer chain to walk for either. See [Scoped instances](scopes.md) for the feature
+they belong to.
+
+They are the four *named* scope diagnostics. A dozen and a half narrower ones — a stray scope key,
+a node two scopes both claim, a scoped type declared as a root, a bound accessor — are tabulated
+under [Other scope errors](#other-scope-errors) below.
+
+### Widening
+
+```
+widening/rooms.go:37:6: servo: *widening.Room is scoped, but *widening.Server is a
+singleton that depends on it
+  needed by *widening.Server  widening/rooms.go:37:6
+  root                        widening/spec.go:9:3
+
+  A singleton is constructed once and held for the life of the process, so it
+  would capture whichever *widening.Room happened to be built first and hand that same
+  one to every caller afterwards, whatever key they present. Nothing about the
+  running program would say so.
+
+  Two ways out:
+    - depend on the accessor instead: change widening.NewServer's parameter from *widening.Room to widening.Rooms,
+      and call Acquire(ctx) per request
+    - make *widening.Server scoped too, by giving it a dependency on widening.RoomKey
+```
+
+The one this feature exists for. A singleton holding a scoped instance pins one key's instance for
+the life of the process — the first room anyone joins becomes everyone's room — and it is invisible
+until production.
+
+The usual fix is the first one: take the accessor interface and `Acquire(ctx)` inside the method
+that needs it, so the reference lasts for one call rather than for the process.
+
+### Cross-scope
+
+```
+crossscope/nested.go:50:6: servo: *crossscope.Room and *crossscope.Tenant are in
+different scopes
+  needed by *crossscope.Room  crossscope/nested.go:50:6
+  root                        crossscope/spec.go:10:3
+
+  *crossscope.Room is keyed by crossscope.RoomKey
+  *crossscope.Tenant is keyed by crossscope.TenantKey
+
+  Nested scopes are deliberately not supported in this release: one instance
+  per key pair means two reference counts and two linger windows with no single
+  owner, and no obvious answer for what happens when the outer one evicts while
+  the inner one is still held. This is a rejection, not an oversight.
+
+  Depend on *crossscope.Tenant's accessor interface instead and Acquire it inside the method
+  that needs it, so the inner instance is held only for that call.
+```
+
+Nested scopes are rejected on purpose, not as a side effect of how the reachability pass happens to
+work. Holding the inner scope's *accessor* is fine and is the intended answer — that edge crosses
+no scope boundary, because an accessor is not an instance.
+
+### Extractor cycle
+
+```
+extractor/session.go:36:17: servo: *extractor.Session's ScopeKey extractor depends on
+*extractor.Decoder, which is itself scoped
+  ScopeKey            extractor/session.go:36:17
+  *extractor.Decoder  extractor/session.go:25:6
+
+  The extractor is what decides which instance a caller gets, so it runs before
+  any instance exists. Everything it takes must already be constructed — that is,
+  a singleton.
+```
+
+A `ScopeKey` method may take dependencies after its `ctx`, and they resolve as ordinary graph
+edges. They just cannot be scoped: choosing the instance is the thing the extractor is being called
+to do.
+
+### Undeclared scope
+
+```
+undeclared/tenant.go:22:16: servo: *undeclared.Tenant declares a ScopeKey method but no
+servo.Scoped declares it
+  ScopeKey  undeclared/tenant.go:22:16
+  provider  undeclared/tenant.go:20:6
+
+  A ScopeKey method is what makes a type keyed rather than a singleton, and servo
+  will not infer the rest of the declaration from it: the accessor interface has
+  to be one you name, because servo cannot emit a type into your package.
+
+  In package undeclared:
+
+	type Tenants interface {
+	    Acquire(ctx context.Context) (*Tenant, func(), error)
+	}
+
+  In servo.Build:
+
+	servo.Scoped[*undeclared.Tenant, undeclared.Tenants](),
+
+  Or delete the ScopeKey method, if this type is meant to be an ordinary singleton.
+```
+
+The mirror image also fires — a `servo.Scoped[T, I]` whose `T` has no `ScopeKey` method names the
+missing method and prints its required shape.
+
+### Other scope errors
+
+Resolution stage — these carry the `servo: ` prefix:
+
+| Message | Cause |
+| --- | --- |
+| `servo: X.ScopeKey must not name its receiver` | Generated code calls it on a typed nil. Write `func (*T) ScopeKey(...)` |
+| `servo: ScopeKey's first parameter must be context.Context` | The key comes from the request context |
+| `servo: ScopeKey must return exactly (K, error)` | Without the error, a missing key becomes the zero `K` |
+| `servo: ScopeKey must not be variadic` | Every parameter after `ctx` is a dependency, and a variadic one is a slice |
+| `servo: ScopeKey's key type is X, which is not a defined type` | Scope identity is type identity; `string` cannot be one |
+| `servo: ScopeKey's key type X is an interface` | Two callers' dynamic types would never compare equal |
+| `servo: ScopeKey's key type X is not comparable` | It keys the instance map |
+| `servo: ScopeKey must be declared on the pointer receiver` | The node in the graph is `*T`, and a value receiver would dereference the typed nil |
+| `servo: X is a scope key and is not resolvable outside its scope` | A singleton asked for the key type directly |
+| `servo: X depends on K, which is a scope key` | A singleton took a scope's key — usually a node reached only through a *different* scope's sub-graph |
+| `servo: X is keyed by K1 but depends on K2, another scope's key` | The same, for a node that is in a scope, just not that one |
+| `servo: X belongs to two scopes at once` | Two scopes both claim one node. A nested scope by another route |
+| `servo: servo.Root[X] declares a scoped type as a root` | A root is held by the App for the life of the process — widening, with the App as the consumer |
+| `servo: servo.Root[I] declares a scope accessor as a root` | An accessor is generated code, not a node a root can pull in |
+| `servo: I is a scope accessor interface and cannot be bound or overridden` | servo emits the value satisfying `I`; there is no selection for a `Bind` to change |
+| `servo: F produces I, which is a scope accessor interface` | The same mistake made with a constructor: an accepted candidate resolution would never select |
+| `servo: T's ScopeKey extractor takes I, its own scope's accessor` | `Acquire` calls the extractor, so acquiring from inside it recurses without bound. *Another* scope's accessor is fine |
+| `servo: scope accessor interface I cannot be satisfied` | `I` declares a method the generated accessor does not have, or one whose signature does not match |
+| `servo: conflicting servo.Linger for scope K` | Two declarations share a key type — and therefore one registry — but disagree about its window |
+| `servo: conflicting servo.Max for scope K` | The same, for the instance cap |
+
+Spec-parsing stage — read as syntax, before resolution, and reported without the prefix:
+
+| Message | Cause |
+| --- | --- |
+| `servo.Scoped expects exactly two type arguments` | Wrong arity |
+| `servo.Scoped's first type argument must be the concrete scoped type, not an interface (X)` | An interface where the scoped type belongs |
+| `servo.Scoped's first type argument must be a pointer, not X` | `Acquire` reports failure by returning a nil instance beside the error, and a value type has no nil to return |
+| `servo.Scoped's second type argument must be an interface` | A concrete type where the accessor interface belongs |
+| `servo.Scoped's accessor interface I declares no methods` | `any` is satisfied by everything |
+| `servo.Scoped[T, ...] declared twice` | One scoped type, one declaration |
+| `servo.Scoped[..., I] declared twice` | One accessor interface cannot stand for two scoped types |
+| `servo.Scoped's arguments must be servo.Linger(...) or servo.Max(...) calls` | Something else in the option list |
+| `servo.X is not a scope option` | A `servo` marker that is neither `Linger` nor `Max` |
+| `servo.Linger is a scope option, not a Build marker` | An option at the top level of `Build` |
+| `servo.Linger/Max declared twice in the same servo.Scoped` | One value each per declaration |
+| `servo.Linger/Max expects exactly one argument` | Wrong arity |
+| `servo.Linger's argument must be a constant expression` | The spec file is read as syntax, never executed |
+| `servo.Linger's argument must be a constant time.Duration` | The folded constant is not an integer |
+| `servo.Max's argument must be a constant integer` | The same, for `Max` |
+| `servo.Linger(...) must not be negative` | Use `servo.Linger(0)` for die-with-the-last-holder |
+| `servo.Max(N) must be positive` | A scope that can hold no instances can never hand one out |
+
 ## Emission
 
 ```
@@ -258,6 +421,7 @@ problem. `[WARN]` lines never cause this.
 | `servo: "X" matches multiple nodes, be more specific: …` | Ambiguous suffix. The candidates are listed; pick one |
 | `servo why: X is not reachable from any root` | The node resolved but no root depends on it |
 | `usage: servo explain [--json] <type>` | Zero or several positional arguments. Flags must come *before* the type |
+| `usage: servo why [--json] <type>` | The same, for `why` |
 
 ### Others
 
@@ -277,9 +441,15 @@ spec.go:9:2: servo: servo.Build called in a file without a `//go:build servoinje
 it will compile into the real binary and panic at runtime; run `servo init` or add the tag
 ```
 
-The one thing [`servo-vet`](cli.md#servo-vet) reports. The generator makes the same check for spec
-files it finds; the analyzer catches marker calls anywhere, in your editor, before generation runs at
-all.
+```
+chat/chat.go:91:6: servo: ScopeKey must not name its receiver — servo calls it on a typed nil,
+so a receiver the body can reach is a nil dereference in production; write
+`func (*T) ScopeKey(...)`
+```
+
+The two things [`servo-vet`](cli.md#servo-vet) reports, and the two mistakes the compiler cannot
+catch on its own. The generator makes both checks too; the analyzer catches them anywhere, in your
+editor, before generation runs at all — including in packages no injector has reached yet.
 
 ## Runtime reports are not diagnostics
 

@@ -23,7 +23,15 @@ having the method.
 | [`Root`](#root) | func | Declares a graph root (marker) |
 | [`Bind`](#bind) | func | Binds an interface to a concrete type (marker) |
 | [`Override`](#override) | func | Test-only binding (marker) |
+| [`Scoped`](#scoped) | func | Declares a keyed, refcounted instance (marker) |
+| [`Linger`](#linger-and-max), [`Max`](#linger-and-max) | funcs | Scope policy (markers) |
 | [`Marker`](#marker) | type | The markers' opaque return type |
+| [`ScopeOption`](#scopeoption) | type | `Linger`/`Max`'s opaque return type |
+| [`DefaultLinger`](#linger-and-max), [`DefaultMax`](#linger-and-max) | consts | What an omitted scope option becomes |
+| [`ErrNoScopeKey`](#scope-errors) … [`ErrScopeClosed`](#scope-errors) | vars | The four scope errors |
+| [`ScopeStats`](#scopestats) | type | A point-in-time view of one scope |
+| [`LingerOverride`](#lingeroverride-and-lingerwindow) | var | Test hook for the linger window |
+| [`LingerWindow`](#lingeroverride-and-lingerwindow) | func | Reads that hook; called by generated code |
 | [`Initializer`](#capability-interfaces) … [`Readier`](#capability-interfaces) | types | The seven capability interfaces |
 | [`Report`](#report) | type | Every node's outcome for one pass |
 | [`NodeResult`](#noderesult) | type | One node's outcome |
@@ -31,7 +39,7 @@ having the method.
 | [`MergeNodeResults`](#mergenoderesults) | func | Combines a node's per-phase results |
 | [`RunStop`](#runstop) | func | Runs a stop call under a budget |
 | [`DefaultStopBudget`](#defaultstopbudget) | var | The budget every stop call gets |
-| [`Graph`](#graph-and-graphnode), [`GraphNode`](#graph-and-graphnode) | types | The resolved graph as data |
+| [`Graph`](#graph-and-graphnode), [`GraphNode`](#graph-and-graphnode), [`GraphScope`](#graphscope) | types | The resolved graph as data |
 | [`StartupReport`](#startupreport-and-startupnode), [`StartupNode`](#startupreport-and-startupnode) | types | Per-node `Init` timings |
 
 ## Markers
@@ -76,14 +84,53 @@ func Override[I, C any]() Marker
 Declares a test-only replacement for `I`, used only when emitting `NewTestApp`. Takes priority over
 a `Bind` for the same interface.
 
+### `Scoped`
+
+```go
+func Scoped[T, I any](...ScopeOption) Marker
+```
+
+Declares `T` as a keyed, refcounted, lifecycle-managed instance instead of a singleton, reachable
+through the accessor interface `I` that you declare in your own package. `T` must have a `ScopeKey`
+method. Panics if it ever runs.
+
+Full treatment: [Scoped instances](scopes.md).
+
+### `Linger` and `Max`
+
+```go
+func Linger(time.Duration) ScopeOption
+func Max(int) ScopeOption
+
+const DefaultLinger = 30 * time.Second
+const DefaultMax    = 10_000
+```
+
+`Linger` is how long a scope keeps an instance alive after its last holder releases it; `Max` caps
+how many keys it will hold instances for at once. Both arguments must be constant expressions —
+the spec file is read, never run — and both panic if they ever execute.
+
+`DefaultLinger` and `DefaultMax` are what `servo generate` bakes in when the option is omitted.
+They are generate-time constants: changing them changes what the *next* generation emits and has no
+effect on already-generated code.
+
 ### `Marker`
 
 ```go
 type Marker struct{}
 ```
 
-The opaque return type of `Root`, `Bind` and `Override`. Carries no data; it exists so `Build`'s
+The opaque return type of `Root`, `Bind`, `Override` and `Scoped`. Carries no data; it exists so `Build`'s
 argument list type-checks.
+
+### `ScopeOption`
+
+```go
+type ScopeOption struct{}
+```
+
+`Linger` and `Max`'s opaque return type, for the same reason `Marker` exists: it gives them a type
+that makes `Scoped`'s argument list type-check. It carries no data.
 
 ## Capability interfaces
 
@@ -194,6 +241,66 @@ outcome a `Report` enumerates. **Abandoned outranks failed outranks OK**, and ev
 joined with `errors.Join`. Called by generated code; exported because generated code is in your
 package, not servo's.
 
+## Scopes
+
+### Scope errors
+
+```go
+var ErrNoScopeKey  = errors.New("servo: no scope key in context")
+var ErrNoLifetime  = errors.New("servo: context has no Done channel — …")
+var ErrScopeFull   = errors.New("servo: scope is at its Max live-instance cap")
+var ErrScopeClosed = errors.New("servo: scope is shut down")
+```
+
+| Error | Returned by | Means |
+| --- | --- | --- |
+| `ErrNoScopeKey` | Your own `ScopeKey` method | The context carries no key. A convention, not a requirement — return any error you like |
+| `ErrNoLifetime` | `Acquire` | The context can never be done, so the release backstop would never fire. `Background`, `TODO` and `WithoutCancel` are refused |
+| `ErrScopeFull` | `Acquire` | The scope already holds `Max` live instances and this key is not one of them |
+| `ErrScopeClosed` | `Acquire` | `Shutdown` has begun; the scope no longer accepts acquires |
+
+All four are distinct sentinels — match them with `errors.Is`.
+
+### `ScopeStats`
+
+```go
+type ScopeStats struct {
+	Live      int    `json:"live"`
+	Refs      int    `json:"refs"`
+	Acquires  uint64 `json:"acquires"`
+	Evictions uint64 `json:"evictions"`
+	Failures  uint64 `json:"failures"`
+}
+```
+
+Returned by a generated accessor's `Stats()`. `Live` counts instances, including one whose teardown
+is still running — so waiting for it to reach zero is a valid way to wait for a scope to go quiet.
+`Refs` is outstanding references across every instance. `Acquires` and `Evictions` are monotonic
+totals, and an eviction counts once its instance has finished draining and stopping. `Failures` is
+how many of those evictions did not come out clean — the only signal there is for a mid-life
+teardown that failed, since no `Report` is being assembled at the time.
+
+`Live` and `Refs` are sampled a nanosecond apart under a scope other goroutines are still using:
+a snapshot of a moving system, not two halves of one atomic read.
+
+Test- and debug-facing. Wiring it to Prometheus is your job — servo exports no metrics.
+
+### `LingerOverride` and `LingerWindow`
+
+```go
+var LingerOverride time.Duration = -1
+
+func LingerWindow(declared time.Duration) time.Duration
+```
+
+Generated code calls `LingerWindow` exactly once per scope, inside `New`, to decide that scope's
+window. `LingerOverride` replaces every declared window when it is non-negative — which is why the
+"no override" sentinel is `-1` and not `0`: zero is a real policy.
+
+Set it through [`servotest.Linger`](servotest-package.md#linger) rather than directly. Like
+`DefaultStopBudget`, it is a package variable, so tests that use it must not run in parallel with
+each other or with tests that depend on a scope's real window, and must set it before `New`.
+
 ## Stop budget
 
 ### `DefaultStopBudget`
@@ -265,6 +372,26 @@ views can't drift.
 
 Display-only: type strings are labels, never lookup keys, and there is no path from a `GraphNode`
 back to the instance it describes.
+
+### `GraphScope`
+
+```go
+type GraphScope struct {
+	Key       string   `json:"key"`
+	Linger    string   `json:"linger"`
+	Max       int      `json:"max"`
+	Accessors []string `json:"accessors"`
+	Members   []string `json:"members"`
+	Borrows   []string `json:"borrows"`
+}
+```
+
+One per declared scope, in `Graph.Scopes`. `Members` is what one instance holds; `Borrows` is the
+singletons it shares with the rest of the app. A scoped node's `GraphNode` carries the same `Key`
+string in its `Scope` field, and its `Level` counts from the scope's own floor.
+
+Both `GraphNode.Scope` and `Graph.Scopes` are `omitempty`, so a graph with nothing scoped
+serialises exactly as it did before scopes existed.
 
 ### `StartupReport` and `StartupNode`
 

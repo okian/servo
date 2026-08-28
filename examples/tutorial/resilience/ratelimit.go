@@ -14,7 +14,7 @@ import (
 // being overwhelmed. A real multi-tenant service usually wants one bucket
 // per client (keyed by API key or IP), which trades this simplicity for
 // needing an eviction strategy so the map of limiters doesn't grow
-// forever; see docs/tutorial/13-resilience.md.
+// forever; see docs/tutorial/14-resilience.md.
 type RateLimiter struct {
 	limiter    *rate.Limiter
 	rejections prometheus.Counter
@@ -32,7 +32,7 @@ func NewRateLimiter(cfg *config.Config, metrics *observability.Metrics) *RateLim
 // requests_total/duration — those are labeled by r.Pattern, and a request
 // this middleware rejects never reaches the mux that sets it. Counting it
 // under a synthetic "unmatched" route would say less than a purpose-built
-// counter does. See docs/tutorial/13-resilience.md.
+// counter does. See docs/tutorial/14-resilience.md.
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !rl.limiter.Allow() {

@@ -1,9 +1,16 @@
-// Command servo-vet is a go/analysis analyzer flagging servo marker calls
-// (Build/Root/Bind/Override) in files that don't carry a build constraint
-// requiring the servoinject tag. Marker bodies panic when actually executed,
-// so a call left in an untagged file would compile into the real binary and
-// panic at runtime instead of being caught here, in the editor, before
-// `go generate` ever runs.
+// Command servo-vet is a go/analysis analyzer for the two servo mistakes
+// the compiler cannot catch.
+//
+// The first is a marker call (Build/Root/Bind/Override/Scoped/Linger/Max)
+// in a file that doesn't carry a build constraint requiring the
+// servoinject tag. Marker bodies panic when actually executed, so such a
+// call would compile into the real binary and panic at runtime instead of
+// being caught here, in the editor, before `go generate` ever runs.
+//
+// The second is a ScopeKey method with a receiver its body can reach.
+// servo calls that method on a typed nil, and no signature can express
+// "never dereferences the receiver" — so it is checked rather than
+// assumed.
 package main
 
 import (
@@ -19,7 +26,7 @@ import (
 
 var Analyzer = &analysis.Analyzer{
 	Name: "servovet",
-	Doc:  "flags servo.Build/Root/Bind/Override calls in files missing the servoinject build tag",
+	Doc:  "flags servo marker calls in files missing the servoinject build tag, and ScopeKey methods with a non-blank receiver",
 	Run:  run,
 }
 
@@ -27,9 +34,14 @@ func main() {
 	singlechecker.Main(Analyzer)
 }
 
-var markerNames = map[string]bool{"Build": true, "Root": true, "Bind": true, "Override": true}
+var markerNames = map[string]bool{
+	"Build": true, "Root": true, "Bind": true, "Override": true,
+	"Scoped": true, "Linger": true, "Max": true,
+}
 
 func run(pass *analysis.Pass) (any, error) {
+	checkScopeKeyReceivers(pass)
+
 	for _, file := range pass.Files {
 		if load.FileRequiresBuildTag(file, load.BuildTag) {
 			continue

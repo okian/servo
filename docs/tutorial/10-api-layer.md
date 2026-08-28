@@ -159,7 +159,7 @@ func (w *statusWriter) WriteHeader(status int) {
 
 `statusWriter` exists because `http.ResponseWriter` doesn't expose what status code a handler
 already wrote — wrapping it is the standard way to capture that for logging. This logging is
-intentionally bare-bones; [chapter 12](12-observability.md) replaces it with something that
+intentionally bare-bones; [chapter 13](13-observability.md) replaces it with something that
 correlates each line to a trace, using the same wrapper.
 
 ## Write the handlers
@@ -373,7 +373,7 @@ func New(cfg *config.Config, orders *service.OrderService, authSvc *service.Auth
 `"POST /auth/login"` — method and pattern in one string — is Go 1.22+'s stdlib
 `http.ServeMux`. It's enough for four routes with no path-parameter conflicts, so there's no
 third-party router to introduce or explain; see
-[chapter 18](18-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
+[chapter 19](19-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
 
 ## Run and Stop — and a bug worth hitting on purpose
 

@@ -11,7 +11,7 @@ and reviewable like any other file. What follows is exactly what it contains.
 
 | File | When | Contains |
 | --- | --- | --- |
-| `servo_gen.go` | Always | `App`, `New`, and the full method set |
+| `servo_gen.go` | Always | `App`, `New`, the full method set, and one registry per declared scope |
 | `servo_gen_test.go` | Only when the spec declares at least one `servo.Override` | `TestApp`, `NewTestApp`, and the same method set |
 
 Both land in the **same directory as the spec file**, in that directory's package — which is why
@@ -59,6 +59,22 @@ was chosen, and the position is **relative to the module root** so the file is b
 checkouts. This block is the reason a reviewer can see the effect of a signature change in the diff:
 a new dependency shows up here, not just in a call site.
 
+An app with a [scope](scopes.md) gets a second block per scope, below the node list — its policy,
+the accessors that expose it, what one instance holds (`[Sn]` is the level *within* that scope),
+and the singletons it borrows from the app:
+
+```go
+// scope example.com/servoscoped/chat.RoomKey
+//
+//	linger: 30s | max: 10000
+//	accessor: example.com/servoscoped/chat.Rooms -> *example.com/servoscoped/chat.Room
+//	[S1] *example.com/servoscoped/chat.RoomLog
+//	      capabilities: Initializer, Flusher
+//	[S2] *example.com/servoscoped/chat.Room
+//	      capabilities: Initializer, Runner, Drainer, Finalizer
+//	borrows: *example.com/servoscoped/logger.Logger
+```
+
 ## The `App` type
 
 ```go
@@ -94,6 +110,18 @@ In the example above, `consumer` implements only `Runner` and the two queue acco
 nothing, so neither gets stop bookkeeping. That's the general rule: you pay for the capabilities you
 implement and nothing else.
 
+When the spec declares a [scope](scopes.md), the `App` gains four more fields per scope:
+
+| Field | Purpose |
+| --- | --- |
+| `<key>Scope *<key>Scope` | The registry: the instance map, the policy, the counters |
+| `<iface>` | One accessor value per exposed root, passed to whatever consumer asked for that interface |
+| `<key>ScopeStopOnce sync.Once` | Same idempotence bookkeeping every stoppable node gets |
+| `<key>ScopeStopResult servo.NodeResult` | The whole scope's merged outcome — one result, not one per instance |
+
+The registry, its entry type and its accessors are package-level declarations in the same file. The
+override variant prefixes all of them with `test`, since both files land in the same package.
+
 **Every field is unexported.** The generated file is part of *your* package, so code in that package
 — including its tests — can reach any component directly, and code outside it cannot. That boundary
 is deliberate: a graph node is not a service locator. If another package needs a component, pass it
@@ -109,6 +137,8 @@ Derived from the type's own name, so the generated code reads like something a p
 | All-caps names lowercase entirely | `*postgres.DB` | `db` (not `dB`) |
 | Collisions get a readable numeric suffix | two `Pool` types | `pool`, `pool2` |
 | Keywords and predeclared names are avoided | `*pkg.Range`, `*pkg.New` | `range2`, `new2` |
+| A scope is named for its key type | `chat.RoomKey` | `roomKeyScope` |
+| An accessor is named for its interface | `chat.Rooms` | `rooms` |
 
 That last rule covers both the illegal case (`range` can't be an identifier) and the merely
 unwise one (`new` would legally shadow the builtin — fine for the compiler, not something to emit
@@ -183,6 +213,28 @@ It is display-only. Type strings are labels, not lookup keys, and there is no pa
 `GraphNode` back to the instance it describes. Useful for a `/debug/graph` endpoint, a startup log
 line, or asserting graph shape in a test. It serialises to the same JSON schema
 `servo graph --format=json` produces at build time — the two paths populate the identical struct.
+
+Scoped nodes appear here too, after the singletons, each carrying its scope's key in `Scope` and
+its level *within that scope* in `Level`. The scopes themselves are listed in `Graph.Scopes`, with
+their policy, their accessor interfaces, their members and the singletons they borrow. Both fields
+are `omitempty`: an app with no scopes serialises exactly as it did before scopes existed.
+
+### Scope accessors
+
+A scope adds no *public* method to `App` — only an unexported `stop<Key>Scope`, alongside the
+per-node `stop<Name>` methods. What consumers see is a field, satisfying the interface you
+declared:
+
+```go
+type roomsAccessor struct{ s *roomKeyScope }
+
+func (x roomsAccessor) Acquire(ctx context.Context) (*chat.Room, func(), error) { ... }
+func (x roomsAccessor) Stats() servo.ScopeStats                                { ... }
+```
+
+That shape is part of the contract — an interface declaring anything else is a generate-time
+diagnostic. Everything the accessor does is documented on
+[Scoped instances](scopes.md).
 
 ### `Report`
 

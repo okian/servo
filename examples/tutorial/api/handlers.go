@@ -56,7 +56,30 @@ func (s *Server) handleGetOrder(w http.ResponseWriter, r *http.Request) {
 		writeDomainError(w, err)
 		return
 	}
+
+	// Acquire, defer the release, use it. The reference lasts for this
+	// call, not for the process — which is the whole difference between a
+	// scope and a singleton.
+	if sess, release, err := s.sessions.Acquire(r.Context()); err == nil {
+		defer release()
+		sess.RecordView(order.ID)
+	}
+
 	writeJSON(w, http.StatusOK, newOrderResponse(order))
+}
+
+// handleRecent reads back the per-user list the handler above builds. It
+// is the only endpoint whose answer differs per user without touching
+// Postgres, Redis or NATS at all — the session *is* the storage.
+func (s *Server) handleRecent(w http.ResponseWriter, r *http.Request) {
+	sess, release, err := s.sessions.Acquire(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "session unavailable")
+		return
+	}
+	defer release()
+
+	writeJSON(w, http.StatusOK, recentResponse{Recent: sess.Recent()})
 }
 
 const (

@@ -71,7 +71,7 @@ func shortestPathFromRoot(resolved *resolve.Resolved, target *resolve.Node) ([]*
 		if item.node.Key == target.Key {
 			return item.path, true
 		}
-		for _, dep := range item.node.Deps {
+		for _, dep := range scopeAwareDeps(item.node) {
 			if visited[dep.Key] {
 				continue
 			}
@@ -81,4 +81,24 @@ func shortestPathFromRoot(resolved *resolve.Resolved, target *resolve.Node) ([]*
 		}
 	}
 	return nil, false
+}
+
+// scopeAwareDeps follows a dependency on a scope's accessor through to the
+// instances it hands out. An accessor is generated code rather than a
+// resolved node, so a plain walk over Deps would stop at the interface and
+// report every scoped node as unreachable from any root — which is exactly
+// backwards: they are in the binary *because* something acquires them.
+func scopeAwareDeps(n *resolve.Node) []*resolve.Node {
+	var out []*resolve.Node
+	for _, dep := range n.Deps {
+		switch dep.Kind {
+		case resolve.NodeScopeAccessor:
+			if dep.ScopeRoot != nil && dep.ScopeRoot.Node != nil {
+				out = append(out, dep.ScopeRoot.Node)
+			}
+		case resolve.NodeProvider:
+			out = append(out, dep)
+		}
+	}
+	return out
 }

@@ -1,4 +1,4 @@
-# 16. Running and deployment
+# 17. Running and deployment
 
 Every earlier chapter ran this service with `go run ./cmd/orders` against infrastructure started by
 hand. This chapter packages it properly: a `Dockerfile` that builds a small, static binary image,
@@ -11,7 +11,7 @@ time you actually try this: a full disk, and a runtime image with no shell to de
 
 ```dockerfile
 # Built with the repo root as context, not this module's own directory —
-# see docs/tutorial/16-running-and-deployment.md for why: this module's
+# see docs/tutorial/17-running-and-deployment.md for why: this module's
 # go.mod replaces github.com/okian/servo/v3 with a local path (../.., the
 # servo repo itself), which only resolves if that path is actually present
 # in the build context. A real project with a real, published dependency
@@ -119,7 +119,7 @@ services:
       - "4318:4318"   # OTLP over HTTP -- what OTLPEndpoint points at
 
   # orders is the service itself, built from the same Dockerfile a reader
-  # would build by hand (chapter 16). Its build context is the repo root,
+  # would build by hand (chapter 17). Its build context is the repo root,
   # not this directory — see deploy/Dockerfile's own top comment for why —
   # so this compose file must also be invoked with that in mind; `make up`
   # does this for you (see the Makefile) rather than a bare `docker compose
@@ -186,7 +186,7 @@ That's fine for a compose file meant to be run locally and thrown away — it is
 into anything real. See Do's and don'ts below.
 
 `redis`'s `--save ""` and every healthcheck's short `2s` interval are both local-development
-choices, not requirements — chapter 15 makes the same point about not carrying every local
+choices, not requirements — chapter 16 makes the same point about not carrying every local
 convenience into CI, and it applies in reverse too: CI's actual `services:` block skips `--save`
 entirely, since GitHub's runners are destroyed after every job anyway and there's nothing to
 protect.
@@ -244,7 +244,7 @@ $ docker compose -f deploy/docker-compose.yml logs orders --no-log-prefix
 ```
 
 And confirm the trace actually made it out of the container and into Jaeger. This can take a few
-seconds — the OTel SDK's batch span processor (chapter 12) doesn't export on every request, only
+seconds — the OTel SDK's batch span processor (chapter 13) doesn't export on every request, only
 once its batch timeout elapses — and `jaeger-all-in-one` reports itself as a service too, since it
 instruments its own query API the same way any other OTel-instrumented service would:
 
@@ -264,7 +264,7 @@ Every field `config.Config` reads (chapter 3), in one place:
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `HTTP_ADDR` | No | `:8080` | The public API — login, orders |
-| `ADMIN_ADDR` | No | `:8081` | `/healthz`, `/readyz`, `/metrics` — chapter 10, 12 |
+| `ADMIN_ADDR` | No | `:8081` | `/healthz`, `/readyz`, `/metrics` — chapter 10, 13 |
 | `POSTGRES_DSN` | **Yes** | — | e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 | `REDIS_ADDR` | **Yes** | — | `host:port`, no scheme |
 | `NATS_URL` | **Yes** | — | e.g. `nats://host:4222` |
@@ -272,7 +272,8 @@ Every field `config.Config` reads (chapter 3), in one place:
 | `JWT_EXPIRY` | No | `1h` | Go duration string (`30m`, `2h`) |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
 | `OTLP_ENDPOINT` | No | *(empty)* | `host:port`, no scheme — tracing is a no-op exporter until set |
-| `RATE_LIMIT_RPS` | No | `50` | See chapter 13; a bare `&config.Config{}` in a test omits this at its peril |
+| `RATE_LIMIT_RPS` | No | `50` | See chapter 14; a bare `&config.Config{}` in a test omits this at its peril |
+| `SESSION_RECENT` | No | `10` | How many recently-viewed orders a session keeps. The scope's linger window and Max are *not* here — both are constants in the spec file; see chapter 12 |
 
 The three required variables with no default (`POSTGRES_DSN`, `REDIS_ADDR`, `NATS_URL`) plus
 `JWT_SECRET` are the four things `config.New()` refuses to start without — this is what
@@ -321,7 +322,7 @@ chapter 3's `,required` tag is for, and it's the same reason the very first thin
   can't-find-package error** — check the build context. It must be the repository root (the `.` at
   the end, run from the repo's top level), not `examples/tutorial/`, because `go.mod`'s `replace
   github.com/okian/servo/v3 => ../..` needs that path physically present in what gets sent to the
-  Docker daemon. `make up` and the CI workflow (chapter 15) both already get this right; a bare
+  Docker daemon. `make up` and the CI workflow (chapter 16) both already get this right; a bare
   `docker build` run from inside `examples/tutorial/deploy/` will not.
 
 ## Do's and don'ts
@@ -354,10 +355,10 @@ chapter 3's `,required` tag is for, and it's the same reason the very first thin
   each service into a `Deployment` (or a `StatefulSet` for Postgres), the health checks into
   `livenessProbe`/`readinessProbe` hitting the same `/healthz`/`/readyz` this service already
   exposes, and `JWT_SECRET` into a `Secret` mounted as an environment variable rather than written
-  into a manifest. [Chapter 18](18-alternatives-and-further-reading.md) goes further into what
+  into a manifest. [Chapter 19](19-alternatives-and-further-reading.md) goes further into what
   changes at that scale.
 - **A registry and a real image tag instead of a local-only build.** Nothing here pushes an image
-  anywhere — chapter 15's `docker-build` job proves the image builds, and that's the limit of what
+  anywhere — chapter 16's `docker-build` job proves the image builds, and that's the limit of what
   this tutorial's CI has credentials to do. A real pipeline would tag with the commit SHA (or a
   semantic version) and push to a registry (ECR, GCR, Docker Hub, or a self-hosted one) as a
   release step.
@@ -375,5 +376,5 @@ chapter 3's `,required` tag is for, and it's the same reason the very first thin
 
 ## Next
 
-[Chapter 17: Troubleshooting](17-troubleshooting.md) — every diagnostic scattered across the last
-sixteen chapters, gathered into one place organized by symptom instead of by layer.
+[Chapter 18: Troubleshooting](18-troubleshooting.md) — every diagnostic scattered across the last
+seventeen chapters, gathered into one place organized by symptom instead of by layer.

@@ -1,4 +1,4 @@
-# 13. Resilience
+# 14. Resilience
 
 [Chapter 6](06-caching-layer.md) already made the service layer tolerate a broken cache: any
 `Get` error other than `cache.ErrMiss` gets logged and treated as a fallback to Postgres. That's
@@ -265,7 +265,7 @@ that actually protects the process — a burst of traffic from anywhere gets thr
 means one aggressive client can use up budget that a well-behaved client needed. A real
 multi-tenant service usually wants a bucket per client, keyed by API key or IP, which trades this
 simplicity for needing an eviction strategy so that map of limiters doesn't grow without bound;
-see [chapter 18](18-alternatives-and-further-reading.md#per-client-rate-limiting).
+see [chapter 19](19-alternatives-and-further-reading.md#per-client-rate-limiting).
 
 ## A wiring mistake worth walking through, not just avoiding
 
@@ -483,5 +483,5 @@ of its own, purely logic wrapping logic.
 
 ## Next
 
-[Chapter 14: Testing strategy](14-testing-strategy.md) — pulling together the unit, integration,
+[Chapter 15: Testing strategy](15-testing-strategy.md) — pulling together the unit, integration,
 and API-level tests written across every chapter so far into one coherent picture.

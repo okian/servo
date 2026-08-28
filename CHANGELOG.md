@@ -23,6 +23,62 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
+## [3.1.0] - 2026-08-28
+
+### Added
+- **Scoped instances.** A type declaring a `ScopeKey` method gets one instance per key instead of
+  one per process: everyone presenting the same key shares it, and it is drained, stopped and
+  evicted once the last holder lets go and a linger window closes. The instance map, the reference
+  counting, the timer and the per-instance `Init`/`Run`/`Drain`/`Flush`/`Stop` are all generated.
+  See [Scoped instances](https://okian.github.io/servo/reference/scopes.html) and
+  [`examples/scoped`](examples/scoped).
+- `servo.Scoped[T, I](...)`, `servo.Linger(d)` and `servo.Max(n)` markers, plus `servo.ScopeOption`,
+  `servo.DefaultLinger`, `servo.DefaultMax`, `servo.ScopeStats`, `servo.LingerWindow`,
+  `servo.LingerOverride`, and the errors `servo.ErrNoScopeKey`, `servo.ErrNoLifetime`,
+  `servo.ErrScopeFull` and `servo.ErrScopeClosed`.
+- `servotest.Linger(t, d)`, which shrinks every scope's linger window for one test the way
+  `servotest.Timeout` shrinks the stop budget.
+- Four generate-time diagnostics, each with the full needed-by chain: **widening** (a singleton
+  depending on a scoped node — the one that makes this worth generating rather than hand-writing),
+  **cross-scope** (nested scopes, rejected on purpose), **extractor cycle** (a `ScopeKey` parameter
+  that is itself scoped), and **undeclared scope** (a `ScopeKey` with no `servo.Scoped`, or the
+  reverse). Four new fixtures in [`examples/diagnostics`](examples/diagnostics) reproduce them.
+- `cmd/servo-vet` gains a second rule: a `ScopeKey` method whose body can reach its own receiver.
+  Generated code calls that method on a typed nil, and no signature can express "never
+  dereferences the receiver", so it is checked rather than assumed. `servo generate` makes the same
+  check.
+- `servo graph` reports scope attribution in all four formats; `servo explain` reports a node's
+  lifetime and, for a scoped node, its level within its own scope. `explain --json` gains
+  `lifetime`, and `scope` for a scoped node.
+- Further scope diagnostics, each covering a case that would otherwise be silently wrong or emit a
+  generated file that does not compile: a node holding a scope key it is not in scope for, a node
+  two scopes both claim, a scoped type or accessor declared as a `servo.Root`, a `servo.Bind` or
+  `servo.Override` naming an accessor interface, and a non-pointer scoped type.
+- More scope diagnostics from a second review round: a constructor that produces an accessor
+  interface (dead code resolution would never call), and a `ScopeKey` extractor that takes its own
+  scope's accessor (unbounded recursion). An extractor taking *another* scope's accessor is now
+  correctly allowed — it is the documented way out of a cross-scope dependency.
+- A panic in a scoped constructor or `Init` is recovered, rolled back, and returned from `Acquire`
+  as an error. Uniform on both the sequential and concurrent `Init` paths: a panic from an
+  `errgroup` goroutine would otherwise take the process down for one failed request.
+- **Fixed (pre-existing, not scope-related):** generated code failed to compile when a component
+  type was named `A`, `Ctx` or `Err`, because `New`'s own locals collide with the variable names
+  derived from those types. Output is byte-identical for every graph without such a type.
+- `servo.ScopeStats.Failures` counts evictions whose teardown did not come out clean. An instance
+  evicted mid-life has no `Report` to appear in, so without it a component that consistently fails
+  to stop left no trace anywhere.
+
+### Changed
+- `servo.GraphNode` gains a `Scope` field and `servo.Graph` a `Scopes` field, both `omitempty`, so
+  `servo graph --format=json` is byte-identical for an app that declares no scopes. Consumers
+  reading that schema should expect the two new keys once scopes are in use. This is additive: it
+  breaks only code constructing a `servo.GraphNode` with an unkeyed composite literal.
+- An app with no `servo.Scoped` declaration generates byte-identical output to 3.0.1. The evidence
+  is that `examples/basic` and `examples/mocking` regenerate with no diff against their committed
+  3.0.1 files, and `internal/emit/testdata/golden/fullapp.go.golden` is unchanged.
+  (`examples/tutorial` is *not* evidence for this: it now declares a scope, so its generated file
+  changed on purpose.)
+
 ## [3.0.1] - 2026-08-28
 
 ### Changed

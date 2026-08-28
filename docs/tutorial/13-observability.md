@@ -1,7 +1,8 @@
-# 12. Observability
+# 13. Observability
 
-The service works end to end now, but from the outside, a running instance is a black box —
-there's no way to tell whether it's healthy, slow, or actually doing what a request asked for
+The service works end to end now — including the one per-user piece
+[chapter 12](12-scoped-instances.md) added — but from the outside, a running instance is a black
+box: there's no way to tell whether it's healthy, slow, or actually doing what a request asked for
 without attaching a debugger. This chapter adds the three tools that answer those questions in
 production: structured logs for "what happened," metrics for "how much and how fast," and traces
 for "what did this one request actually do."
@@ -430,5 +431,5 @@ UUID baked into a hundred different span names.
 
 ## Next
 
-[Chapter 13: Resilience](13-resilience.md) — a circuit breaker around the cache, and a rate
+[Chapter 14: Resilience](14-resilience.md) — a circuit breaker around the cache, and a rate
 limiter in front of the API.

@@ -43,6 +43,10 @@ type listOrdersResponse struct {
 	Orders []orderResponse `json:"orders"`
 }
 
+type recentResponse struct {
+	Recent []uuid.UUID `json:"recent"`
+}
+
 type errorResponse struct {
 	Error string `json:"error"`
 }

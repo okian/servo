@@ -8,6 +8,17 @@ Resolution is the stage between "here is my module" and "here is the file to wri
 two outcomes: a complete, ordered construction plan, or a set of diagnostics. Never a partial
 graph.
 
+## Every node is a singleton, with one exception
+
+Everything on this page describes how servo resolves **singletons**: one instance per type, built
+once in `New`, held for the life of the process.
+
+The exception is a [scope](scopes.md) — a keyed sub-graph whose members are built once per live key
+instead. Scopes reuse every rule here (identity by type, provider shapes, selection precedence,
+levelling) and add three of their own: the key type resolves to the extracted key rather than to a
+provider, an accessor interface resolves to generated code rather than to a candidate, and a node
+becomes scoped by transitively depending on either. The page above covers all three.
+
 ## Identity is by type
 
 Every value in the graph is identified by one thing: the fully qualified string of its type.
@@ -206,6 +217,14 @@ concurrent — it's cheap, and sequential construction keeps the generated code 
 candidate that nothing reaches is not an error and not a warning — it simply isn't in the generated
 file. `servo why <type>` reports which root pulled a node in; `servo list` shows everything that
 was a candidate, reachable or not.
+
+## Scoped nodes and levels
+
+A scoped node's level is counted from its own scope's floor, not the app's. `*chat.RoomLog` sits at
+scope level 1 even when the `*logger.Logger` it borrows is at app level 4 — the scope's `Init`
+phases don't depend on how deep the singletons it borrows happen to be. `servo explain` reports
+the scope-relative number for a scoped node and the app-relative one for a singleton, and says
+which it is on the `lifetime:` line.
 
 ## Cycles
 

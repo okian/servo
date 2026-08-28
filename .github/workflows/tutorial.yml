@@ -64,7 +64,7 @@ jobs:
       # integration test (see e.g. postgres/postgres_test.go) skips itself
       # when its env var isn't set, rather than failing, so this step only
       # ever exercises the mock-backed unit tests. See
-      # docs/tutorial/14-testing-strategy.md for why the split matters:
+      # docs/tutorial/15-testing-strategy.md for why the split matters:
       # this job has no services: block at all, so a test that forgot to
       # skip would fail here with a connection error, not silently pass.
       - name: Unit test

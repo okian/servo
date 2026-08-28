@@ -2,7 +2,10 @@ package main
 
 import (
 	"fmt"
+	"go/token"
 	"strings"
+
+	"golang.org/x/tools/go/packages"
 
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
@@ -121,12 +124,22 @@ func mainModuleScope(loaded *load.Loaded) map[string]bool {
 // overrides) with priority — returning a formatted, non-nil error listing
 // every diagnostic when resolution fails, never a partially resolved graph.
 func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error) {
+	// Fset/Pkgs are only ever read by scope detection, and a couple of
+	// tests build a *pipeline by hand with no loaded module at all, so a
+	// missing one is "nothing to inspect", not a nil dereference.
+	var fset *token.FileSet
+	var pkgs []*packages.Package
+	if p.loaded != nil {
+		fset, pkgs = p.loaded.Fset, p.loaded.All
+	}
 	resolved, diags := resolve.Resolve(resolve.Input{
 		Spec:       p.spec,
 		Candidates: p.candidates,
 		Caps:       p.caps,
 		Scope:      p.scope,
 		ExtraBinds: extraBinds,
+		Fset:       fset,
+		Pkgs:       pkgs,
 	})
 	if len(diags) > 0 {
 		msg := fmt.Sprintf("servo: %d diagnostic(s):\n", len(diags))
@@ -144,13 +157,14 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 // path, but stays precise (an error, not a guess) when that suffix is
 // ambiguous.
 func findNode(resolved *resolve.Resolved, query string) (*resolve.Node, error) {
-	for _, n := range resolved.Order {
+	all := allNodes(resolved)
+	for _, n := range all {
 		if n.Key.String() == query || n.Key.Type == query {
 			return n, nil
 		}
 	}
 	var matches []*resolve.Node
-	for _, n := range resolved.Order {
+	for _, n := range all {
 		if strings.HasSuffix(n.Key.Type, query) {
 			matches = append(matches, n)
 		}
@@ -167,6 +181,19 @@ func findNode(resolved *resolve.Resolved, query string) (*resolve.Node, error) {
 		}
 		return nil, fmt.Errorf("servo: %q matches multiple nodes, be more specific: %s", query, strings.Join(names, ", "))
 	}
+}
+
+// allNodes is every resolved node the user could ask about: the app's
+// singletons followed by each scope's members. Scoped nodes are kept out
+// of Resolved.Order (they are constructed per key, not once by New), but
+// `servo explain` and `servo why` are questions about the graph, and a
+// scoped node is as much a part of it as any other.
+func allNodes(resolved *resolve.Resolved) []*resolve.Node {
+	all := append([]*resolve.Node(nil), resolved.Order...)
+	for _, s := range resolved.Scopes {
+		all = append(all, s.Order...)
+	}
+	return all
 }
 
 func joinOrNone(ss []string) string {

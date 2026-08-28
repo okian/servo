@@ -14,6 +14,7 @@ import (
 	"example.com/servoorders/observability"
 	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
+	"example.com/servoorders/session"
 )
 
 type Server struct {
@@ -21,6 +22,11 @@ type Server struct {
 	orders  *service.OrderService
 	auth    *service.AuthService
 	metrics *observability.Metrics
+	// sessions is the scope accessor, not a session. Holding a *Session
+	// here would pin one user's session for the life of the process, and
+	// `servo generate` refuses to emit that — see
+	// docs/tutorial/12-scoped-instances.md.
+	sessions session.Sessions
 }
 
 func New(
@@ -31,14 +37,16 @@ func New(
 	metrics *observability.Metrics,
 	tracer *observability.Tracer,
 	limiter *resilience.RateLimiter,
+	sessions session.Sessions,
 ) *Server {
-	s := &Server{orders: orders, auth: authSvc, metrics: metrics}
+	s := &Server{orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /orders", requireAuth(issuer, s.handleCreateOrder))
 	mux.HandleFunc("GET /orders/{id}", requireAuth(issuer, s.handleGetOrder))
 	mux.HandleFunc("GET /orders", requireAuth(issuer, s.handleListOrders))
+	mux.HandleFunc("GET /me/recent", requireAuth(issuer, s.handleRecent))
 
 	// Outermost first: recover must see a panic from anything below it.
 	// Metrics has to sit directly against logging/mux, not further out —
@@ -47,7 +55,7 @@ func New(
 	// on that fork, not on whatever *http.Request an outer middleware is
 	// still holding. Metrics outside tracer would read an empty Pattern on
 	// every request, not just rejected ones — see
-	// docs/tutorial/13-resilience.md. limiter sits outside tracer so a
+	// docs/tutorial/14-resilience.md. limiter sits outside tracer so a
 	// rejected request costs no span; it counts its own rejections
 	// directly (see resilience.RateLimiter) rather than trying to route
 	// them through requests_total, which a rejected request never reaches
@@ -74,7 +82,7 @@ func (s *Server) Handler() http.Handler {
 // binary (or a normal one and a NewTestApp one) never collide trying to
 // register the same metric name twice. main.go reaches for this directly
 // (app.server.MetricsHandler()) since /metrics lives on the admin server,
-// not this one — see docs/tutorial/12-observability.md.
+// not this one — see docs/tutorial/13-observability.md.
 func (s *Server) MetricsHandler() http.Handler {
 	return s.metrics.Handler()
 }
