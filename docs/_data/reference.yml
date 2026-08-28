@@ -1,0 +1,84 @@
+# Drives the reference sidebar, its prev/next pager, the landing-page
+# reference band, and the search index's titles for these pages.
+#
+# Kept here rather than in each page's front matter for the same reason
+# _data/nav.yml exists: the reference pages stay plain markdown with no front
+# matter, so they render correctly in GitHub's own file browser as well as on
+# the site. `description` is what the <meta name="description"> and the
+# og:description fall back to, since there is no front matter to hold it.
+#
+# Order in this file is the reading order; prev/next is derived by flattening
+# every section's pages in sequence.
+
+intro:
+  title: Reference
+  url: /reference/
+  description: >-
+    Complete reference for servo: every CLI command, every marker, every
+    resolution rule, the lifecycle contract, the generated API, and every
+    exported identifier in the servo and servotest packages.
+
+sections:
+  - title: The build step
+    summary: What you run, what you write, and how servo turns one into the other.
+    pages:
+      - title: CLI commands
+        url: /reference/cli.html
+        blurb: Every command, every flag, what it prints, and what it exits with.
+        description: >-
+          Complete reference for the servo CLI — generate, check, graph,
+          explain, why, list, init, doctor, migrate, new — plus servo-vet.
+      - title: Spec file and markers
+        url: /reference/spec.html
+        blurb: Build, Root, Bind, Override, and the build tag that keeps them out of your binary.
+        description: >-
+          Reference for servo's spec file: the servoinject build tag, spec
+          discovery, and the Build/Root/Bind/Override markers.
+      - title: Resolution rules
+        url: /reference/resolution.html
+        blurb: What counts as a constructor, how a dependency is matched, and how order is derived.
+        description: >-
+          Exactly which functions servo accepts as providers, the precedence
+          it applies when selecting one, and how it derives construction
+          order and concurrency levels.
+      - title: Diagnostics
+        url: /reference/diagnostics.html
+        blurb: Every message servo can print, what caused it, and what to change.
+        description: >-
+          Every diagnostic and error servo can emit, grouped by the stage that
+          produces it, with the cause and the fix for each.
+
+  - title: The generated application
+    summary: The code servo writes, and what it does when it runs.
+    pages:
+      - title: Lifecycle
+        url: /reference/lifecycle.html
+        blurb: The seven capability interfaces, the five phases, and the guarantees of each.
+        description: >-
+          servo's lifecycle contract: the seven capability interfaces,
+          construction, Init, Run, Shutdown, Health and Ready, and the stop
+          budget that bounds them.
+      - title: Generated API
+        url: /reference/generated-api.html
+        blurb: The App type, every method on it, and how its fields get their names.
+        description: >-
+          Reference for the code servo generates: the App and TestApp types,
+          New, Run, Shutdown, Health, Ready, Graph and Report, and the naming
+          rules behind every field.
+
+  - title: Go packages
+    summary: Every exported identifier in the two packages you can import.
+    pages:
+      - title: servo package
+        url: /reference/servo-package.html
+        blurb: The markers, the capability interfaces, and the ~200-line runtime.
+        description: >-
+          Complete API reference for the servo package — markers, capability
+          interfaces, Report, NodeResult, NodeStatus, Graph, StartupReport,
+          RunStop, MergeNodeResults and DefaultStopBudget.
+      - title: servotest package
+        url: /reference/servotest-package.html
+        blurb: Leak checks, order assertions, shrunken stop budgets, and a mock reporter.
+        description: >-
+          Complete API reference for the servotest package — NoLeaks, Timeout,
+          Recorder, AssertInitOrder, AssertStopOrder and PanicReporter.

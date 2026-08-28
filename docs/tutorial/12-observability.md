@@ -423,7 +423,7 @@ UUID baked into a hundred different span names.
   easier.
 - **Don't** log a full request or response body at `INFO` by default — `loggingMiddleware` only
   ever logs method, path, and status, deliberately, going back to
-  [chapter 10](10-api-layer.md#do-and-donts).
+  [chapter 10](10-api-layer.md#dos-and-donts).
 - **Don't** reach for a global metrics/tracer registry out of habit. It's the more common pattern
   in small single-instance programs, but it's also exactly what makes two `*App`s (or an `*App` and
   a `NewTestApp`) in the same process collide.

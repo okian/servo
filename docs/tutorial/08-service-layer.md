@@ -203,7 +203,7 @@ func TestCreateOrderPersistsCachesAndPublishes(t *testing.T) {
 code running inside servo's generated graph — is simpler than the `servotest.PanicReporter`
 pattern servo's mocking examples use. That pattern earns its keep specifically when a mock has to
 be constructed *inside* the graph itself, with no `*testing.T` reachable at all; you'll see exactly
-that situation in [chapter 11](11-wiring-with-servo.md#capabilities-recap). Here, testing
+that situation in [chapter 11](11-wiring-with-servo.md#capabilities-side-by-side). Here, testing
 `OrderService` directly, the simple form is all you need.
 
 The next two tests are where mocks genuinely earn their keep over a real database — proving a

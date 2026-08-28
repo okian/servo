@@ -201,6 +201,10 @@ more convincing once you've got nine packages sitting there needing to be wired.
 `google/wire`, `uber-go/fx`, `uber-go/dig`, and writing it by hand — including the cases where one
 of those is the better answer.
 
+**If you need one specific answer:** the [reference](reference/) covers every command, every
+marker, the lifecycle contract, the generated API, and every exported identifier — organised to be
+looked up rather than read.
+
 **If you're deciding whether to adopt it:** read [Limitations](limitations.md) first. It's the
 shortest path to finding out this is the wrong tool for you, which is a genuinely useful thing for
 a page to do.
