@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose a new marker, CLI command, or resolution-rule change.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Per [CONTRIBUTING.md](https://github.com/okian/servo/blob/master/CONTRIBUTING.md),
+        it's cheaper to align on approach here before a PR than after.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that servo doesn't support today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: >
+        How would you want this to work? Sketch the spec syntax, CLI flag, or generated
+        output if relevant.
+    validations:
+      required: false
