@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -64,5 +65,20 @@ func TestRunGraphUnknownFormat(t *testing.T) {
 	err := runGraph(dir, "yaml")
 	if err == nil || !strings.Contains(err.Error(), "unknown --format") {
 		t.Fatalf("got err=%v, want an 'unknown --format' error", err)
+	}
+}
+
+func TestRunGraphFailsWhenModuleFailsToLoad(t *testing.T) {
+	err := runGraph(filepath.Join(t.TempDir(), "does-not-exist"), "text")
+	if err == nil {
+		t.Fatal("expected an error for a nonexistent directory")
+	}
+}
+
+func TestRunGraphFailsWhenResolutionFails(t *testing.T) {
+	dir := writeAppModule(t, "example.com/graphresolvefail", false, "")
+	err := runGraph(dir, "text")
+	if err == nil || !strings.Contains(err.Error(), "no provider for") {
+		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
 	}
 }

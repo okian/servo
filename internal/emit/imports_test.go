@@ -42,6 +42,24 @@ func TestImportManagerAliasesByPathSegmentOnCollision(t *testing.T) {
 	}
 }
 
+// TestImportManagerReAddAfterAliasingReturnsCachedAlias covers Add's
+// already-registered-with-a-non-empty-alias branch: once a path has been
+// aliased by a collision, registering the exact same path again (a second
+// type from the same already-colliding package) must return that same
+// alias from the cache, not recompute or drop it.
+func TestImportManagerReAddAfterAliasingReturnsCachedAlias(t *testing.T) {
+	m := NewImportManager()
+	m.Add("example.com/foo/config", "config")
+	first := m.Add("example.com/bar/config", "config")
+	if first != "barconfig" {
+		t.Fatalf("first = %q, want barconfig", first)
+	}
+	second := m.Add("example.com/bar/config", "config")
+	if second != "barconfig" {
+		t.Errorf("re-add of an already-aliased path = %q, want the cached alias barconfig", second)
+	}
+}
+
 func TestImportManagerThreeWayCollisionExtendsFurther(t *testing.T) {
 	m := NewImportManager()
 	m.Add("example.com/foo/config", "config")
@@ -142,5 +160,36 @@ func TestSanitizeIdentAvoidsKeywords(t *testing.T) {
 		if got := sanitizeIdent(c.in); got != c.want {
 			t.Errorf("sanitizeIdent(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestSanitizeIdentStripsDotsAndDashes covers aliasFor's real motivation:
+// path segments like "gopkg.in" or "x-tools" contain characters that are
+// legal in an import path but not in a Go identifier.
+func TestSanitizeIdentStripsDotsAndDashes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"gopkg.in", "gopkgin"},
+		{"x-tools", "xtools"},
+		{"3rdparty", "_3rdparty"}, // a leading digit is not a legal identifier start
+		{"..--", "pkg"},           // nothing survives stripping: falls back to a fixed name
+	}
+	for _, c := range cases {
+		if got := sanitizeIdent(c.in); got != c.want {
+			t.Errorf("sanitizeIdent(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestImportManagerRenderImportsIncludesAliasForm covers RenderImports'
+// aliased-line branch: TestImportManagerRenderImportsSortedByPath only
+// exercises unaliased imports, so the "alias \"path\"" rendering (as
+// opposed to a bare "path") was never reached.
+func TestImportManagerRenderImportsIncludesAliasForm(t *testing.T) {
+	m := NewImportManager()
+	m.Add("example.com/foo/config", "config")
+	m.Add("example.com/bar/config", "config") // collides -> aliased to barconfig
+	out := m.RenderImports()
+	if !strings.Contains(out, `barconfig "example.com/bar/config"`) {
+		t.Errorf("expected an aliased import line, got:\n%s", out)
 	}
 }
