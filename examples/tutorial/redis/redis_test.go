@@ -6,11 +6,11 @@ import (
 	"os"
 	"testing"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/cache"
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 // testCache skips unless TEST_REDIS_ADDR is set — start

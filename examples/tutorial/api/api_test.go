@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/api"
 	"example.com/servoorders/auth"
@@ -20,7 +21,6 @@ import (
 	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
 	"example.com/servoorders/session"
-	"github.com/google/uuid"
 	"github.com/okian/servo/v3/servo"
 	"go.uber.org/mock/gomock"
 )

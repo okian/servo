@@ -65,18 +65,24 @@ lint:
   name: Lint
   runs-on: ubuntu-latest
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
-    - uses: golangci/golangci-lint-action@v6
+        go-version: '1.27'
+    - uses: golangci/golangci-lint-action@v9
       with:
+        version: v2.13
         working-directory: examples/tutorial
 ```
 
-`golangci-lint-action` handles installing the right version and reading the module's own
-`go.mod` — nothing tutorial-specific here beyond `working-directory`, since `examples/tutorial` is
-a separate Go module from the repository root and needs to be linted as one.
+`working-directory` is here because `examples/tutorial` is a separate Go module from the
+repository root and needs to be linted as one. The other two lines are less obvious and both
+matter. The action's major version is `v9` rather than its older `v6`, because `v6` defaults to
+golangci-lint v1.64.8 — a v1 binary built with go1.24, which can neither read this module's
+v2-schema `.golangci.yml` nor lint a module targeting `go 1.27.0` (it refuses outright: "the Go
+language version used to build golangci-lint is lower than the targeted Go version"). And
+`version` is pinned rather than left to float on the action's default, so a new default release
+cannot turn a green build red without a commit that says so.
 
 `examples/tutorial/.golangci.yml` matters more than its size suggests. golangci-lint's default
 rule set enables `errcheck`, which flags every unchecked error return — including things like
@@ -101,10 +107,10 @@ build-and-unit-test:
     run:
       working-directory: examples/tutorial
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        go-version: '1.27'
 
     - name: Build
       run: go build ./...
@@ -198,10 +204,10 @@ integration-test:
         --health-timeout 5s
         --health-retries 10
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - uses: actions/setup-go@v5
       with:
-        go-version: '1.25'
+        go-version: '1.27'
 
     # GitHub Actions publishes service container ports to the runner's
     # own localhost, so these are the same values docker-compose.yml
@@ -244,7 +250,7 @@ docker-build:
   name: Docker build
   runs-on: ubuntu-latest
   steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     # Built with the repo root as context, not examples/tutorial/ — see
     # deploy/Dockerfile's own top comment: this module's go.mod replaces

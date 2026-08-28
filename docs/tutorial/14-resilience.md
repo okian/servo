@@ -19,11 +19,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"uuid"
 
 	"example.com/servoorders/cache"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/redis"
-	"github.com/google/uuid"
 	"github.com/sony/gobreaker/v2"
 )
 

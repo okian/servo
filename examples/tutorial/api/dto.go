@@ -2,9 +2,9 @@ package api
 
 import (
 	"time"
+	"uuid"
 
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 type loginRequest struct {

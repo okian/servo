@@ -5,7 +5,7 @@
 # in the build context. A real project with a real, published dependency
 # wouldn't need this; it's specific to this tutorial living inside servo's
 # own repo.
-FROM golang:1.25 AS build
+FROM golang:1.27 AS build
 WORKDIR /src
 COPY . .
 WORKDIR /src/examples/tutorial

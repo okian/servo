@@ -20,12 +20,12 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/broker"
 	"example.com/servoorders/cache"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/repository"
-	"github.com/google/uuid"
 )
 
 type OrderService struct {

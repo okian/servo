@@ -1,6 +1,6 @@
 module example.com/servomocking
 
-go 1.26
+go 1.27.0
 
 require (
 	github.com/okian/servo/v3 v3.0.0

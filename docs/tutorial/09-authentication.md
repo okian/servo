@@ -17,10 +17,10 @@ package auth
 import (
 	"fmt"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/config"
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 )
 

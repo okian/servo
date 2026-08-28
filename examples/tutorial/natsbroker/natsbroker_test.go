@@ -6,11 +6,11 @@ import (
 	"os"
 	"testing"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/broker"
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 )
 

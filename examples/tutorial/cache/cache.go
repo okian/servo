@@ -7,9 +7,9 @@ package cache
 import (
 	"context"
 	"errors"
+	"uuid"
 
 	"example.com/servoorders/domain"
-	"github.com/google/uuid"
 )
 
 var ErrMiss = errors.New("cache: miss")

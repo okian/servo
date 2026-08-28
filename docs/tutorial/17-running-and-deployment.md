@@ -17,7 +17,7 @@ time you actually try this: a full disk, and a runtime image with no shell to de
 # in the build context. A real project with a real, published dependency
 # wouldn't need this; it's specific to this tutorial living inside servo's
 # own repo.
-FROM golang:1.25 AS build
+FROM golang:1.27 AS build
 WORKDIR /src
 COPY . .
 WORKDIR /src/examples/tutorial
@@ -32,7 +32,7 @@ EXPOSE 8080 8081
 ENTRYPOINT ["/orders"]
 ```
 
-Two stages, doing two different jobs. The first, `build`, is a full `golang:1.25` image — over a
+Two stages, doing two different jobs. The first, `build`, is a full `golang:1.27` image — over a
 gigabyte, with a C toolchain, package caches, everything `go build` might need — and none of it
 ends up in the final image. `CGO_ENABLED=0` matters here: it produces a statically-linked binary
 with no dynamic dependency on `libc`, which is what makes the second stage possible at all. The
