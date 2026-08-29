@@ -177,6 +177,12 @@ func TestBuildFlagsValidate(t *testing.T) {
 		// go1 without a minor is an ordinary tag, not a version tag.
 		{"go1 alone is ordinary", "go1", ""},
 		{"goat is not a version tag", "goat", ""},
+		// The version check must not swallow every tag that merely starts
+		// like one: `go1.` names no release, and neither does `go1.x`.
+		// Rejecting them would refuse a legal tag on the strength of its
+		// prefix alone.
+		{"go1. with no release number is ordinary", "go1.", ""},
+		{"go1.x is not a version tag", "go1.x", ""},
 		{"one bad tag among good ones is still reported", "prod,linux", "GOOS/GOARCH"},
 	}
 	for _, c := range cases {
@@ -190,6 +196,26 @@ func TestBuildFlagsValidate(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
 				t.Fatalf("Validate(%q) = %v, want an error containing %q", c.tags, err, c.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidTagAgreesWithValidate pins the two entry points to one rule.
+// ValidTag exists for the caller that reads generated file names back off
+// disk and has to decide which tag set produced them; if it and Validate
+// ever disagreed, servo would either refuse to recognize a file it wrote
+// itself or claim one it could never have written.
+func TestValidTagAgreesWithValidate(t *testing.T) {
+	tags := []string{"prod", "integration", "sqlite_omit.v2", "race", "Prod", "a-b", "linux", "arm64", "unix", "ignore", "go1.21"}
+	for _, tag := range tags {
+		t.Run(tag, func(t *testing.T) {
+			direct, viaFlags := ValidTag(tag), BuildFlags{Tags: tag}.Validate()
+			if (direct == nil) != (viaFlags == nil) {
+				t.Fatalf("ValidTag(%q) = %v but Validate = %v", tag, direct, viaFlags)
+			}
+			if direct != nil && direct.Error() != viaFlags.Error() {
+				t.Errorf("ValidTag(%q) = %q, want the identical diagnostic Validate gives: %q", tag, direct, viaFlags)
 			}
 		})
 	}

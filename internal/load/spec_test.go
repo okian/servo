@@ -424,3 +424,47 @@ func Wire() {
 		t.Fatalf("got err=%v, want a 'not a servo marker call' error", err)
 	}
 }
+
+// TestFindSpecRejectsAServoFunctionThatIsNotABuildMarker covers
+// parseMarkerArgs' final branch. The servo package exports functions that
+// are not Build markers — the report helpers, the scope-window
+// calculation — and one of them written into a Build call resolves exactly
+// as a marker does: same package, same call shape, so every check up to
+// the switch passes. The switch has to name what it found, because the
+// alternative is accepting the argument and silently resolving a graph
+// that ignores it.
+func TestFindSpecRejectsAServoFunctionThatIsNotABuildMarker(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/notamarker\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "api/api.go", "package api\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
+	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
+
+package spec
+
+import (
+	"example.com/notamarker/api"
+	"github.com/okian/servo/v3/servo"
+)
+
+func Wire() {
+	servo.Build(
+		servo.Root[*api.Server](),
+		servo.MergeNodeResults("health"),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+
+	loaded, err := Load(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	_, err = FindSpec(loaded)
+	if err == nil || !strings.Contains(err.Error(), "unrecognized servo marker") {
+		t.Fatalf("got err=%v, want an 'unrecognized servo marker' error", err)
+	}
+	if !strings.Contains(err.Error(), "MergeNodeResults") {
+		t.Errorf("got err=%v, want it to name the function it did not recognize", err)
+	}
+}
