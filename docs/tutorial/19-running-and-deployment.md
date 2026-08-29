@@ -222,7 +222,7 @@ chapters did against `go run`, this time against the containerized binary:
 
 ```
 $ curl -s http://localhost:8081/healthz
-{"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/internal/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/internal/natsbroker.Publisher","status":"ok"}]}
+{"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/repository/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/internal/cache/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/internal/broker/natsbroker.Publisher","status":"ok"}]}
 
 $ curl -s -X POST http://localhost:8080/auth/login -H 'Content-Type: application/json' \
     -d '{"username":"alice","password":"password123"}'

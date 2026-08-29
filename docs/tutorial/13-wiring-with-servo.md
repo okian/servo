@@ -16,13 +16,13 @@ real binary:
 package main
 
 import (
-	"example.com/servoorders/internal/api"
+	"example.com/servoorders/internal/transport/api"
 	"example.com/servoorders/internal/broker"
 	"example.com/servoorders/internal/cache"
-	"example.com/servoorders/internal/natsbroker"
-	"example.com/servoorders/internal/notifier"
-	"example.com/servoorders/internal/postgres"
-	"example.com/servoorders/internal/redis"
+	"example.com/servoorders/internal/broker/natsbroker"
+	"example.com/servoorders/internal/broker/notifier"
+	"example.com/servoorders/internal/repository/postgres"
+	"example.com/servoorders/internal/cache/redis"
 	"example.com/servoorders/internal/repository"
 	"github.com/okian/servo/v3/servo"
 )
@@ -57,13 +57,13 @@ example.com/servoorders/cmd/orders: servo: 4 diagnostic(s):
 
 .../service/service.go:28:6: servo: no provider for example.com/servoorders/internal/repository.OrderRepository
   needed by *example.com/servoorders/internal/service.OrderService  .../service/service.go:28:6
-  needed by *example.com/servoorders/internal/api.Server            .../api/server.go:49:6
+  needed by *example.com/servoorders/internal/transport/api.Server            .../transport/api/server.go:49:6
   root                                                      .../cmd/orders/spec.go:23:3
 
   3 types implement example.com/servoorders/internal/repository.OrderRepository — add one of:
       servo.Bind[example.com/servoorders/internal/repository.OrderRepository, *example.com/servoorders/internal/mocks.MockOrderRepository]()      .../mocks/repository_mock.go:34:6
       servo.Bind[example.com/servoorders/internal/repository.OrderRepository, *example.com/servoorders/internal/mocks.OrderRepositoryForServo]()      .../mocks/servo_adapters.go:24:6
-      servo.Bind[example.com/servoorders/internal/repository.OrderRepository, *example.com/servoorders/internal/postgres.Store]()      .../postgres/postgres.go:41:6
+      servo.Bind[example.com/servoorders/internal/repository.OrderRepository, *example.com/servoorders/internal/repository/postgres.Store]()      .../repository/postgres/postgres.go:41:6
 ```
 
 (Three more diagnostics follow, identical in shape, for `UserRepository`, `OrderCache`, and
@@ -107,32 +107,32 @@ point and you'll get the same shape with those omitted:
 //	[L3] *example.com/servoorders/internal/observability.Logger
 //	      deps: *example.com/servoorders/internal/observability.Config
 //	      capabilities: none | binding: sole candidate | observability/logging.go:35:6
-//	[L2] *example.com/servoorders/internal/api.Config
+//	[L2] *example.com/servoorders/internal/transport/api.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | api/server.go:45:6
-//	[L2] *example.com/servoorders/internal/postgres.Config
+//	      capabilities: none | binding: sole candidate | transport/api/server.go:45:6
+//	[L2] *example.com/servoorders/internal/repository/postgres.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | postgres/postgres.go:37:6
-//	[L3] *example.com/servoorders/internal/postgres.Store
-//	      deps: *example.com/servoorders/internal/postgres.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | postgres/postgres.go:41:6
-//	[L2] *example.com/servoorders/internal/redis.Config
+//	      capabilities: none | binding: sole candidate | repository/postgres/postgres.go:37:6
+//	[L3] *example.com/servoorders/internal/repository/postgres.Store
+//	      deps: *example.com/servoorders/internal/repository/postgres.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | repository/postgres/postgres.go:41:6
+//	[L2] *example.com/servoorders/internal/cache/redis.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | redis/redis.go:36:6
-//	[L3] *example.com/servoorders/internal/redis.Cache
-//	      deps: *example.com/servoorders/internal/redis.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:40:6
+//	      capabilities: none | binding: sole candidate | cache/redis/redis.go:36:6
+//	[L3] *example.com/servoorders/internal/cache/redis.Cache
+//	      deps: *example.com/servoorders/internal/cache/redis.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | cache/redis/redis.go:40:6
 //	[L4] *example.com/servoorders/internal/resilience.CircuitBreakerCache
-//	      deps: *example.com/servoorders/internal/redis.Cache
+//	      deps: *example.com/servoorders/internal/cache/redis.Cache
 //	      capabilities: none | binding: explicit bind | resilience/breaker.go:38:6
-//	[L2] *example.com/servoorders/internal/natsbroker.Config
+//	[L2] *example.com/servoorders/internal/broker/natsbroker.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | natsbroker/natsbroker.go:35:6
-//	[L3] *example.com/servoorders/internal/natsbroker.Publisher
-//	      deps: *example.com/servoorders/internal/natsbroker.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | natsbroker/natsbroker.go:46:6
+//	      capabilities: none | binding: sole candidate | broker/natsbroker/natsbroker.go:35:6
+//	[L3] *example.com/servoorders/internal/broker/natsbroker.Publisher
+//	      deps: *example.com/servoorders/internal/broker/natsbroker.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | broker/natsbroker/natsbroker.go:46:6
 //	[L5] *example.com/servoorders/internal/service.OrderService
-//	      deps: *example.com/servoorders/internal/postgres.Store, *example.com/servoorders/internal/resilience.CircuitBreakerCache, *example.com/servoorders/internal/natsbroker.Publisher, *example.com/servoorders/internal/observability.Logger
+//	      deps: *example.com/servoorders/internal/repository/postgres.Store, *example.com/servoorders/internal/resilience.CircuitBreakerCache, *example.com/servoorders/internal/broker/natsbroker.Publisher, *example.com/servoorders/internal/observability.Logger
 //	      capabilities: none | binding: sole candidate | service/service.go:28:6
 //	[L2] *example.com/servoorders/internal/auth.Config
 //	      deps: *example.com/servoorders/internal/config.Env
@@ -141,7 +141,7 @@ point and you'll get the same shape with those omitted:
 //	      deps: *example.com/servoorders/internal/auth.Config
 //	      capabilities: none | binding: sole candidate | auth/auth.go:39:6
 //	[L4] *example.com/servoorders/internal/service.AuthService
-//	      deps: *example.com/servoorders/internal/postgres.Store, *example.com/servoorders/internal/auth.Issuer
+//	      deps: *example.com/servoorders/internal/repository/postgres.Store, *example.com/servoorders/internal/auth.Issuer
 //	      capabilities: none | binding: sole candidate | service/auth_service.go:18:6
 //	[L1] *example.com/servoorders/internal/observability.Metrics
 //	      deps: none
@@ -155,15 +155,15 @@ point and you'll get the same shape with those omitted:
 //	[L3] *example.com/servoorders/internal/resilience.RateLimiter
 //	      deps: *example.com/servoorders/internal/resilience.Config, *example.com/servoorders/internal/observability.Metrics
 //	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:33:6
-//	[L6] *example.com/servoorders/internal/api.Server
-//	      deps: *example.com/servoorders/internal/api.Config, *example.com/servoorders/internal/service.OrderService, *example.com/servoorders/internal/service.AuthService, *example.com/servoorders/internal/auth.Issuer, *example.com/servoorders/internal/observability.Metrics, *example.com/servoorders/internal/observability.Tracer, *example.com/servoorders/internal/resilience.RateLimiter, example.com/servoorders/internal/session.Sessions, *example.com/servoorders/internal/observability.Logger
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:49:6
-//	[L2] *example.com/servoorders/internal/notifier.Config
+//	[L6] *example.com/servoorders/internal/transport/api.Server
+//	      deps: *example.com/servoorders/internal/transport/api.Config, *example.com/servoorders/internal/service.OrderService, *example.com/servoorders/internal/service.AuthService, *example.com/servoorders/internal/auth.Issuer, *example.com/servoorders/internal/observability.Metrics, *example.com/servoorders/internal/observability.Tracer, *example.com/servoorders/internal/resilience.RateLimiter, example.com/servoorders/internal/session.Sessions, *example.com/servoorders/internal/observability.Logger
+//	      capabilities: Runner, Finalizer | binding: sole candidate | transport/api/server.go:49:6
+//	[L2] *example.com/servoorders/internal/broker/notifier.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | notifier/notifier.go:28:6
-//	[L4] *example.com/servoorders/internal/notifier.Notifier
-//	      deps: *example.com/servoorders/internal/notifier.Config, *example.com/servoorders/internal/observability.Logger
-//	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:37:6
+//	      capabilities: none | binding: sole candidate | broker/notifier/notifier.go:28:6
+//	[L4] *example.com/servoorders/internal/broker/notifier.Notifier
+//	      deps: *example.com/servoorders/internal/broker/notifier.Config, *example.com/servoorders/internal/observability.Logger
+//	      capabilities: Runner | binding: sole candidate | broker/notifier/notifier.go:37:6
 // scope example.com/servoorders/internal/session.UserID
 //	linger: 5m0s | max: 50000
 //	accessor: example.com/servoorders/internal/session.Sessions -> *example.com/servoorders/internal/session.Session
@@ -226,7 +226,7 @@ func New(ctx context.Context) (*App, error) {
 			start := time.Now()
 			err := a.store.Init(gctx)
 			timingMu.Lock()
-			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servoorders/internal/postgres.Store", Duration: time.Since(start)})
+			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servoorders/internal/repository/postgres.Store", Duration: time.Since(start)})
 			timingMu.Unlock()
 			return err
 		})
@@ -270,14 +270,14 @@ graph BT
   n1["*example.com/servoorders/internal/session.Config"]:::level2
   n2["*example.com/servoorders/internal/observability.Config"]:::level2
   n3["*example.com/servoorders/internal/observability.Logger"]:::level3
-  n4["*example.com/servoorders/internal/api.Config"]:::level2
-  n5["*example.com/servoorders/internal/postgres.Config"]:::level2
-  n6["*example.com/servoorders/internal/postgres.Store"]:::level3
-  n7["*example.com/servoorders/internal/redis.Config"]:::level2
-  n8["*example.com/servoorders/internal/redis.Cache"]:::level3
+  n4["*example.com/servoorders/internal/transport/api.Config"]:::level2
+  n5["*example.com/servoorders/internal/repository/postgres.Config"]:::level2
+  n6["*example.com/servoorders/internal/repository/postgres.Store"]:::level3
+  n7["*example.com/servoorders/internal/cache/redis.Config"]:::level2
+  n8["*example.com/servoorders/internal/cache/redis.Cache"]:::level3
   n9["*example.com/servoorders/internal/resilience.CircuitBreakerCache"]:::level4
-  n10["*example.com/servoorders/internal/natsbroker.Config"]:::level2
-  n11["*example.com/servoorders/internal/natsbroker.Publisher"]:::level3
+  n10["*example.com/servoorders/internal/broker/natsbroker.Config"]:::level2
+  n11["*example.com/servoorders/internal/broker/natsbroker.Publisher"]:::level3
   n12["*example.com/servoorders/internal/service.OrderService"]:::level5
   n13["*example.com/servoorders/internal/auth.Config"]:::level2
   n14["*example.com/servoorders/internal/auth.Issuer"]:::level3
@@ -286,9 +286,9 @@ graph BT
   n17["*example.com/servoorders/internal/observability.Tracer"]:::level3
   n18["*example.com/servoorders/internal/resilience.Config"]:::level2
   n19["*example.com/servoorders/internal/resilience.RateLimiter"]:::level3
-  n20["*example.com/servoorders/internal/api.Server"]:::level6
-  n21["*example.com/servoorders/internal/notifier.Config"]:::level2
-  n22["*example.com/servoorders/internal/notifier.Notifier"]:::level4
+  n20["*example.com/servoorders/internal/transport/api.Server"]:::level6
+  n21["*example.com/servoorders/internal/broker/notifier.Config"]:::level2
+  n22["*example.com/servoorders/internal/broker/notifier.Notifier"]:::level4
   subgraph scope0["scope example.com/servoorders/internal/session.UserID — linger 5m0s, max 50000"]
     k0["example.com/servoorders/internal/session.UserID"]:::scopekey
     n23["*example.com/servoorders/internal/session.Session"]:::level1
@@ -424,9 +424,9 @@ And a targeted question — why does `postgres.Store` exist at all, from the gra
 
 ```
 $ go run github.com/okian/servo/v3/cmd/servo why --dir ./cmd/orders postgres.Store
-root  *example.com/servoorders/internal/api.Server
+root  *example.com/servoorders/internal/transport/api.Server
   -> *example.com/servoorders/internal/service.OrderService
-  -> *example.com/servoorders/internal/postgres.Store
+  -> *example.com/servoorders/internal/repository/postgres.Store
 ```
 
 ## Testing the whole thing without any of it running

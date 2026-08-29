@@ -12,7 +12,6 @@ import (
 	"time"
 	"uuid"
 
-	"example.com/servoorders/internal/api"
 	"example.com/servoorders/internal/auth"
 	"example.com/servoorders/internal/cache"
 	"example.com/servoorders/internal/domain"
@@ -21,6 +20,7 @@ import (
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
 	"example.com/servoorders/internal/session"
+	"example.com/servoorders/internal/transport/api"
 	"github.com/okian/servo/v3/servo"
 	"go.uber.org/mock/gomock"
 )

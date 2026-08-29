@@ -23,7 +23,7 @@ and both chapters assume this one.
 
 The API's JSON shapes are their own thing, separate from `domain.Order` — a domain type can gain a
 field for internal reasons without that automatically becoming part of the public API contract.
-Create `api/dto.go`:
+Create `transport/api/dto.go`:
 
 ```go
 package api
@@ -103,7 +103,7 @@ between them.
 ## Build the middleware chain
 
 Two cross-cutting concerns apply to (almost) every request: authentication, and not letting a
-panic in one handler take down every other in-flight request. Create `api/middleware.go`. Start
+panic in one handler take down every other in-flight request. Create `transport/api/middleware.go`. Start
 with how a verified request identifies its caller — a `context.Context` key, and the two functions
 that use it:
 
@@ -198,7 +198,7 @@ correlates each line to a trace, using the same wrapper.
 
 ## Write the handlers
 
-Create `api/handlers.go`. `handleLogin` is the simplest one — decode, delegate to
+Create `transport/api/handlers.go`. `handleLogin` is the simplest one — decode, delegate to
 `service.AuthService`, map whatever comes back:
 
 ```go
@@ -365,7 +365,7 @@ either erroring or, worse, actually trying to return an unbounded result set.
 
 ## Wire the routes and build the server
 
-Create `api/server.go`:
+Create `transport/api/server.go`:
 
 ```go
 package api
@@ -592,13 +592,13 @@ constructor trick; it's just outside what dependency injection is for. The strai
 is to wire these two routes by hand, on a *separate* listener from the API's own — which also
 means health checks never compete with real traffic for the same connection pool.
 
-It goes in its own package, `admin/`, rather than in `main.go`. That looks like over-engineering
+It goes in its own package, `transport/admin/`, rather than in `main.go`. That looks like over-engineering
 for two routes until you notice the two companion transports need exactly the same thing: three
 copies of a security boundary is three chances to get one wrong. `admin.New` takes an interface
 rather than a concrete `*App` precisely so one implementation serves every injector.
 
 ```go
-// admin/admin.go
+// transport/admin/admin.go
 package admin
 
 // Checker is the part of a generated servo App this package needs. Taking
@@ -724,7 +724,7 @@ And the admin port:
 
 ```
 $ curl -s http://localhost:8081/healthz
-{"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/internal/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/internal/natsbroker.Publisher","status":"ok"}]}
+{"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/repository/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/internal/cache/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/internal/broker/natsbroker.Publisher","status":"ok"}]}
 ```
 
 `/readyz` responds too, but with an empty node list (`{"clean":true,"nodes":null}`) — nothing in
@@ -737,7 +737,7 @@ actually uses, side by side.
 
 Everything above was verified by hand, with `curl`, one endpoint at a time. That's enough to prove
 it works; it isn't enough for someone integrating against this API to discover what it promises
-without reading the handler source. `openapi/openapi.yaml` writes the same contract
+without reading the handler source. `transport/openapi/openapi.yaml` writes the same contract
 down in a form tooling can consume — client generators, `Try it out`-style documentation viewers,
 contract-testing tools. One operation out of the full spec, `GET /orders/{id}`, shown here
 (trimmed of its own trailing `content:`/`schema:` blocks and the shared `429` every operation in
@@ -791,7 +791,7 @@ paths:
 ```
 
 Every schema in the `components:` section is a direct transcription of the real DTOs in
-`api/dto.go` — `Order` mirrors `orderResponse` field for field, right down to `status` being
+`transport/api/dto.go` — `Order` mirrors `orderResponse` field for field, right down to `status` being
 constrained to the single value `pending` this service ever actually assigns, rather than an
 aspirational enum of statuses nothing here implements yet. A spec that describes a richer API than
 the code actually serves is worse than no spec at all: it fails silently, by lying, exactly where a
@@ -817,7 +817,7 @@ intentional for a tutorial spec, not oversights left unfixed.
 
 ### Serving it, and where
 
-A spec that lives only in the repository drifts from the service. `openapi/openapi.go` embeds it
+A spec that lives only in the repository drifts from the service. `transport/openapi/openapi.go` embeds it
 and serves both the raw document and a browser UI, and all three transports mount the same handler:
 
 ```go
@@ -850,7 +850,7 @@ it handed to them out of band.
 One caveat worth knowing: the UI loads Swagger UI's JavaScript from a CDN rather than vendoring
 several megabytes into the repository. A browser with no route to the internet gets an empty page,
 and the spec itself is still readable at `/openapi.yaml`. A service that must document itself in an
-air-gapped network should vendor the assets and serve them from `openapi/`.
+air-gapped network should vendor the assets and serve them from `transport/openapi/`.
 
 ## Diagnostics
 

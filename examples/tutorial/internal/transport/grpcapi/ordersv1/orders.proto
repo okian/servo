@@ -6,7 +6,7 @@ syntax = "proto3";
 // the package is a breaking change and is meant to look like one.
 package ordersv1;
 
-option go_package = "example.com/servoorders/internal/grpcapi/ordersv1";
+option go_package = "example.com/servoorders/internal/transport/grpcapi/ordersv1";
 
 import "google/protobuf/timestamp.proto";
 

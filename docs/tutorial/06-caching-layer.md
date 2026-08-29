@@ -39,7 +39,7 @@ write in the next chapter will be able to tell the two apart without any extra w
 
 ## Implement it against Redis
 
-Create `redis/redis.go`. Start with the type, a fixed TTL, and the constructor:
+Create `cache/redis/redis.go`. Start with the type, a fixed TTL, and the constructor:
 
 ```go
 package redis
@@ -168,7 +168,7 @@ $ TEST_REDIS_ADDR=localhost:6379 go test ./redis/... -v
 === RUN   TestInvalidateRemovesTheKey
 --- PASS: TestInvalidateRemovesTheKey (0.00s)
 PASS
-ok  	example.com/servoorders/internal/redis	0.174s
+ok  	example.com/servoorders/internal/cache/redis	0.174s
 ```
 
 (`make test-integration` runs this alongside Postgres and NATS's own tests together — shown

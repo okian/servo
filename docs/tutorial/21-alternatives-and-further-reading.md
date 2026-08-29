@@ -29,7 +29,7 @@ it means adding a constructor parameter and re-running `servo generate`.
 
 ## HTTP routers
 
-`api/server.go` uses Go 1.22+'s stdlib `http.ServeMux`, which chapter 10 covers in full. The
+`transport/api/server.go` uses Go 1.22+'s stdlib `http.ServeMux`, which chapter 10 covers in full. The
 biggest name in the space, [gin-gonic/gin](https://github.com/gin-gonic/gin), buys back things the
 stdlib router doesn't have — built-in request binding and validation, a middleware ecosystem,
 generally faster routing for very large route tables — at the cost of a framework-specific handler
@@ -52,7 +52,7 @@ answer for relational data in Go. Two axes are worth separating: which *database
 alternative wherever organizational familiarity or existing infrastructure points that way; SQLite
 (via `mattn/go-sqlite3` or the pure-Go `modernc.org/sqlite`) is worth knowing about specifically for
 single-node deployments or embedded use cases, not as a production Postgres replacement at any real
-scale. On the query-layer axis, `postgres/postgres.go` writes SQL directly against `pgx`'s
+scale. On the query-layer axis, `repository/postgres/postgres.go` writes SQL directly against `pgx`'s
 connection pool — no ORM, no query builder. [GORM](https://gorm.io/) and
 [ent](https://entgo.io/) both trade that directness for generated or reflection-based query
 construction, schema migrations tied to Go struct definitions, and (for ent specifically) a real
@@ -64,7 +64,7 @@ relations, frequently-changing shapes), not obviously worth it for the two table
 
 ## Migrations
 
-`migrations/migrations.go` hand-rolls an embedded-SQL runner tracked via a `schema_migrations`
+`repository/migrations/migrations.go` hand-rolls an embedded-SQL runner tracked via a `schema_migrations`
 table — deliberately minimal, to keep the dependency count down for a tutorial. A real project
 reaching for more maturity here has two well-established options:
 [golang-migrate/migrate](https://github.com/golang-migrate/migrate) is the most widely used
@@ -76,7 +76,7 @@ environments becomes a real, recurring problem rather than a hypothetical one.
 
 ## Caching
 
-`redis/redis.go` implements cache-aside (chapter 6): read through the cache, fall back to the
+`cache/redis/redis.go` implements cache-aside (chapter 6): read through the cache, fall back to the
 repository on a miss, write back on write. That pattern generalizes past this tutorial's needs in
 two directions worth naming. First, at higher read concurrency, a cache-aside implementation is
 vulnerable to a *thundering herd* / *cache stampede*: many concurrent requests for the same missing
@@ -103,7 +103,7 @@ used) trades self-hosting for a fully managed queue — no server to run at all 
 requiring an AWS account (or [LocalStack](https://www.localstack.cloud/) for local development,
 which adds its own moving part) and AWS-specific semantics (visibility timeouts, at-least-once with
 no native pub/sub fan-out the way NATS or Kafka have — SQS pairs with SNS for that). None of these
-changes `broker.EventPublisher`'s shape; only `natsbroker/natsbroker.go`'s implementation would
+changes `broker.EventPublisher`'s shape; only `broker/natsbroker/natsbroker.go`'s implementation would
 need to change to swap the underlying system, which is exactly the point of that interface living
 in its own package (chapter 7) rather than being called directly from `service`.
 

@@ -5,16 +5,16 @@ package main
 import (
 	"time"
 
-	"example.com/servoorders/internal/api"
 	"example.com/servoorders/internal/broker"
+	"example.com/servoorders/internal/broker/natsbroker"
+	"example.com/servoorders/internal/broker/notifier"
 	"example.com/servoorders/internal/cache"
 	"example.com/servoorders/internal/mocks"
-	"example.com/servoorders/internal/natsbroker"
-	"example.com/servoorders/internal/notifier"
-	"example.com/servoorders/internal/postgres"
 	"example.com/servoorders/internal/repository"
+	"example.com/servoorders/internal/repository/postgres"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/session"
+	"example.com/servoorders/internal/transport/api"
 	"github.com/okian/servo/v3/servo"
 )
 

@@ -12,7 +12,7 @@ code is
 [`examples/tutorial/grpcapi`](https://github.com/okian/servo/tree/master/examples/tutorial/grpcapi),
 wired by `cmd/ordersgrpc`.
 
-`grpcapi/` is the advanced option, and it does something the other two don't: it serves gRPC and
+`transport/grpcapi/` is the advanced option, and it does something the other two don't: it serves gRPC and
 HTTP from a single listener.
 
 You do not have to. Two listeners on two ports is simpler and perfectly normal. One port buys you
@@ -23,7 +23,7 @@ dispatch function that has to be exactly right.
 ## The contract comes first
 
 With gRPC the wire format is generated from a schema, not written by hand.
-`grpcapi/ordersv1/orders.proto`:
+`transport/grpcapi/ordersv1/orders.proto`:
 
 ```proto
 service Orders {
@@ -55,7 +55,7 @@ differ, and the repository's own format check fails on a file nobody edited.
 ## How one port carries two protocols
 
 gRPC is HTTP/2 with a content type of `application/grpc`. A handler that checks both facts can
-route each request to either the gRPC server or an ordinary mux — `grpcapi/server.go`:
+route each request to either the gRPC server or an ordinary mux — `transport/grpcapi/server.go`:
 
 ```go
 func dispatch(grpcServer *grpc.Server, rest http.Handler) http.Handler {
@@ -122,7 +122,7 @@ header` and the server appears to be fine.
 
 The third shape for the same idea. `net/http` wraps each handler,
 [Gin](11-gin-transport.md) uses a route group, and gRPC uses a unary interceptor that sees every call
-and decides per method — `grpcapi/auth.go`:
+and decides per method — `transport/grpcapi/auth.go`:
 
 ```go
 func authInterceptor(issuer *auth.Issuer) grpc.UnaryServerInterceptor {
@@ -189,7 +189,7 @@ $ grpcurl -plaintext -import-path grpcapi/ordersv1 -proto orders.proto \
 
 `-import-path` is the directory imports resolve against, and `-proto` is the file relative to it.
 The service's own tests reach the same endpoint without any of this, over a real TCP connection —
-see `grpcapi/grpcapi_test.go`, which is the executable version of the claim that one port carries
+see `transport/grpcapi/grpcapi_test.go`, which is the executable version of the claim that one port carries
 both protocols.
 
 ## See also

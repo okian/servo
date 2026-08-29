@@ -23,7 +23,7 @@ import (
 
 	"example.com/servoorders/internal/cache"
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/redis"
+	"example.com/servoorders/internal/cache/redis"
 	"github.com/sony/gobreaker/v2"
 )
 
@@ -405,7 +405,7 @@ limiter, it's a burst of one silently breaking the second HTTP call any other te
 ## Wire it into api.Server
 
 `New` gains one more parameter, and the middleware chain gets one more layer, in the order the
-walkthrough above landed on. This is the finished constructor: it matches `api/server.go` in
+walkthrough above landed on. This is the finished constructor: it matches `transport/api/server.go` in
 `examples/tutorial`, routes included.
 
 ```go
@@ -457,11 +457,11 @@ your own code, or a test — still passes the old argument count. That's `servo_
 comment header confirming the shape actually resolved:
 
 ```
-//	[L3] *example.com/servoorders/internal/redis.Cache
-//	      deps: *example.com/servoorders/internal/redis.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:40:6
+//	[L3] *example.com/servoorders/internal/cache/redis.Cache
+//	      deps: *example.com/servoorders/internal/cache/redis.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | cache/redis/redis.go:40:6
 //	[L4] *example.com/servoorders/internal/resilience.CircuitBreakerCache
-//	      deps: *example.com/servoorders/internal/redis.Cache
+//	      deps: *example.com/servoorders/internal/cache/redis.Cache
 //	      capabilities: none | binding: explicit bind | resilience/breaker.go:38:6
 ```
 

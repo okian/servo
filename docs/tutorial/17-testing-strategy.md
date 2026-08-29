@@ -8,7 +8,7 @@ on purpose. This chapter steps back from individual layers and looks at the whol
 kind of test catches which kind of bug, why there are four distinct styles instead of one, and how
 to run each of them on demand instead of always running everything.
 
-One file gets its first full walkthrough here rather than a recap: `api/api_test.go`. Chapter 10
+One file gets its first full walkthrough here rather than a recap: `transport/api/api_test.go`. Chapter 10
 built the handlers and the middleware chain and proved them with a live `go run` and `curl`, but
 deferred its httptest suite to this chapter, since it's really the second of the four testing
 styles below, not one more handler concern.
@@ -27,7 +27,7 @@ flowchart TB
 ```
 
 Each tier trades speed for scope. A unit test runs in microseconds and pins down one function's
-logic; it can't tell you whether the SQL in `postgres/postgres.go` is actually valid, because it
+logic; it can't tell you whether the SQL in `repository/postgres/postgres.go` is actually valid, because it
 never touches a database. An integration test proves the SQL is valid, the driver handshake works,
 and the schema migration ran — but it's slower, needs Docker, and a failure there says less about
 *which* line is wrong. Neither one replaces the other; a service that only had one of these tiers
@@ -38,7 +38,7 @@ The four tiers, concretely:
 | Tier | Technique | Real infra? | Real HTTP socket? | Real servo graph? | Files |
 |---|---|---|---|---|---|
 | 1. Unit | gomock, `httptest.NewRecorder` | No | No | No | `auth`, `config`, `service` (×2), `resilience` (×2), `observability` (×2), `session` |
-| 2. API-contract | gomock, `httptest.NewServer` (`net.Listen` for gRPC) | No | Yes | No | `api/api_test.go`, and `ginapi`/`grpcapi` for the other two transports (ch 11 and 12) |
+| 2. API-contract | gomock, `httptest.NewServer` (`net.Listen` for gRPC) | No | Yes | No | `transport/api/api_test.go`, and `ginapi`/`grpcapi` for the other two transports (ch 11 and 12) |
 | 3. Full-graph | gomock via `servotest.PanicReporter`, `servo.Override`, `NewTestApp` | No | Yes | Yes | `cmd/orders/app_test.go`, plus one per transport variant |
 | 4. Integration | none — real driver, real server | Yes | Yes (where relevant) | No | `postgres`, `redis`, `natsbroker`, `notifier` |
 
@@ -59,7 +59,7 @@ this.
 ## Tier 2: proving the HTTP contract, not just the handlers
 
 Chapter 10's handlers were tested implicitly, by running the real service and curling it. That
-proves the happy path once, by hand. `api/api_test.go` automates the same kind of check — a real
+proves the happy path once, by hand. `transport/api/api_test.go` automates the same kind of check — a real
 request over a real (loopback) socket, through the real middleware chain, against a real
 `http.ServeMux` — but for every status code the API can return, not just the ones a manual `curl`
 session happened to try.
@@ -199,7 +199,7 @@ all. Under servo's generated `App.Run`, every `Runner`'s `Run` is expected to re
 context is cancelled; `Shutdown` isn't called until they all have. A `Run` that only returns when
 the listener itself fails hangs forever on an ordinary `SIGTERM`. This test reproduces the failure
 directly: it cancels the context and asserts `Run` returns within two seconds, without ever calling
-`Stop`. Revert the fix in `api/server.go` and this is the test that goes red — not
+`Stop`. Revert the fix in `transport/api/server.go` and this is the test that goes red — not
 `TestCreateOrderSucceedsWithValidToken`, which would still pass, because it never exercises shutdown
 at all. That's the point of writing a regression test narrowly: a broad test that happens to also
 catch a bug tells you less about *why* it failed than a test built to fail exactly one way.
@@ -231,7 +231,7 @@ $ go test ./api/... -v -count=1
 === RUN   TestAdminEndpointsAreNotOnThePublicListener
 --- PASS: TestAdminEndpointsAreNotOnThePublicListener (0.06s)
 PASS
-ok  	example.com/servoorders/internal/api	0.969s
+ok  	example.com/servoorders/internal/transport/api	0.969s
 ```
 
 No request logs appear between the `--- PASS` lines, and that is deliberate: the fixture passes a
@@ -246,8 +246,8 @@ real infrastructure, so nothing here needs Docker running:
 ```
 $ make test
 go test ./...
-?   	example.com/servoorders/internal/admin	[no test files]
-ok  	example.com/servoorders/internal/api	1.054s
+?   	example.com/servoorders/internal/transport/admin	[no test files]
+ok  	example.com/servoorders/internal/transport/api	1.054s
 ok  	example.com/servoorders/internal/auth	0.606s
 ?   	example.com/servoorders/internal/broker	[no test files]
 ?   	example.com/servoorders/internal/cache	[no test files]
@@ -256,17 +256,17 @@ ok  	example.com/servoorders/cmd/ordersgin	1.185s
 ok  	example.com/servoorders/cmd/ordersgrpc	0.873s
 ok  	example.com/servoorders/internal/config	0.500s
 ?   	example.com/servoorders/internal/domain	[no test files]
-ok  	example.com/servoorders/internal/ginapi	1.480s
-ok  	example.com/servoorders/internal/grpcapi	0.645s
-?   	example.com/servoorders/internal/grpcapi/ordersv1	[no test files]
-?   	example.com/servoorders/internal/migrations	[no test files]
+ok  	example.com/servoorders/internal/transport/ginapi	1.480s
+ok  	example.com/servoorders/internal/transport/grpcapi	0.645s
+?   	example.com/servoorders/internal/transport/grpcapi/ordersv1	[no test files]
+?   	example.com/servoorders/internal/repository/migrations	[no test files]
 ?   	example.com/servoorders/internal/mocks	[no test files]
-ok  	example.com/servoorders/internal/natsbroker	0.505s
-ok  	example.com/servoorders/internal/notifier	0.344s
+ok  	example.com/servoorders/internal/broker/natsbroker	0.505s
+ok  	example.com/servoorders/internal/broker/notifier	0.344s
 ok  	example.com/servoorders/internal/observability	0.569s
-?   	example.com/servoorders/internal/openapi	[no test files]
-ok  	example.com/servoorders/internal/postgres	0.522s
-ok  	example.com/servoorders/internal/redis	0.508s
+?   	example.com/servoorders/internal/transport/openapi	[no test files]
+ok  	example.com/servoorders/internal/repository/postgres	0.522s
+ok  	example.com/servoorders/internal/cache/redis	0.508s
 ?   	example.com/servoorders/internal/repository	[no test files]
 ok  	example.com/servoorders/internal/resilience	0.384s
 ok  	example.com/servoorders/internal/service	0.719s
@@ -297,7 +297,7 @@ go test ./... -v
 === RUN   TestGetByUsernameUnknownReturnsErrNotFound
 --- PASS: TestGetByUsernameUnknownReturnsErrNotFound (0.01s)
 PASS
-ok  	example.com/servoorders/internal/postgres	0.229s
+ok  	example.com/servoorders/internal/repository/postgres	0.229s
 === RUN   TestGetOnEmptyKeyReturnsErrMiss
 --- PASS: TestGetOnEmptyKeyReturnsErrMiss (0.01s)
 === RUN   TestSetThenGetRoundTrips
@@ -305,7 +305,7 @@ ok  	example.com/servoorders/internal/postgres	0.229s
 === RUN   TestInvalidateRemovesTheKey
 --- PASS: TestInvalidateRemovesTheKey (0.00s)
 PASS
-ok  	example.com/servoorders/internal/redis	0.165s
+ok  	example.com/servoorders/internal/cache/redis	0.165s
 ```
 
 Same command, same test binaries, same `go test ./...` — the only thing that changed is three

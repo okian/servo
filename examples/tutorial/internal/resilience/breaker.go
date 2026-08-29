@@ -11,8 +11,8 @@ import (
 	"uuid"
 
 	"example.com/servoorders/internal/cache"
+	"example.com/servoorders/internal/cache/redis"
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/redis"
 	"github.com/sony/gobreaker/v2"
 )
 

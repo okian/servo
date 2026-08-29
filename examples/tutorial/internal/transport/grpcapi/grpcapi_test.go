@@ -21,13 +21,13 @@ import (
 	"example.com/servoorders/internal/auth"
 	"example.com/servoorders/internal/cache"
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/grpcapi"
-	"example.com/servoorders/internal/grpcapi/ordersv1"
 	"example.com/servoorders/internal/mocks"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
 	"example.com/servoorders/internal/session"
+	"example.com/servoorders/internal/transport/grpcapi"
+	"example.com/servoorders/internal/transport/grpcapi/ordersv1"
 )
 
 // TestOneListenerServesBothProtocols is the claim the single-port design

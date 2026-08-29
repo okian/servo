@@ -14,7 +14,7 @@ root module plus the other `examples/*` modules on every push. `examples/tutoria
 it. It gets its own `.github/workflows/tutorial.yml` instead, for a reason that'll matter more as a
 real project's test suite grows: this module's integration tests need Postgres, Redis, and NATS as
 service containers, and its Docker build takes real time. Bundling that into `go.yml` would mean
-every change anywhere in the servo repository — a comment fix in `breaker/`, a typo in the root
+every change anywhere in the servo repository — a comment fix in `internal/emit/`, a typo in the root
 README — waits on a Docker build it has nothing to do with.
 
 ```yaml
@@ -35,7 +35,7 @@ on:
 
 The `paths:` filter is what makes this safe to keep separate: the workflow simply doesn't run
 unless something under `examples/tutorial/`, `docs/tutorial/`, or the workflow file itself changed.
-A change to `breaker/breaker.go` at the repository root never triggers it. This is the same
+A change to `internal/emit/emit.go` in servo itself never triggers it. This is the same
 trade-off a monorepo with many services eventually has to make deliberately — one fast, universal
 pipeline for the parts everyone touches, and narrower, heavier pipelines path-filtered to the parts
 that need them.
@@ -123,7 +123,7 @@ build-and-unit-test:
         diff <(gofmt -l .) <(echo -n "")
 
     # No TEST_POSTGRES_DSN/TEST_REDIS_ADDR/TEST_NATS_URL here — every
-    # integration test (see e.g. postgres/postgres_test.go) skips itself
+    # integration test (see e.g. repository/postgres/postgres_test.go) skips itself
     # when its env var isn't set, rather than failing, so this step only
     # ever exercises the mock-backed unit tests. See
     # docs/tutorial/17-testing-strategy.md for why the split matters:
@@ -157,10 +157,11 @@ stale generated file.
 
 `go test ./...` here runs with none of the `TEST_POSTGRES_DSN`/`TEST_REDIS_ADDR`/`TEST_NATS_URL`
 variables set, and this job declares no `services:` block at all. That's deliberate, and it's a
-real safety property, not just tidiness: if a test in `postgres/` or `redis/` ever forgot to check
-its environment variable and skip, it would fail *here*, with a connection error, rather than
-silently passing by accident because some service happened to be reachable. Chapter 17 calls this
-out as a real diagnostic to watch for — this job is what makes it visible in the first place.
+real safety property, not just tidiness: if a test in `repository/postgres/` or `cache/redis/`
+ever forgot to check its environment variable and skip, it would fail *here*, with a connection
+error, rather than silently passing by accident because some service happened to be reachable.
+Chapter 17 calls this out as a real diagnostic to watch for — this job is what makes it visible in
+the first place.
 
 ### `integration-test`
 

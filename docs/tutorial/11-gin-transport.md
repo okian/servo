@@ -20,7 +20,7 @@ wired by `cmd/ordersgin`.
 
 ## The router
 
-Same routes, same JSON, same status codes as chapter 10 — `ginapi/server.go`:
+Same routes, same JSON, same status codes as chapter 10 — `transport/ginapi/server.go`:
 
 ```go
 gin.SetMode(gin.ReleaseMode)
@@ -45,7 +45,7 @@ Four things in there are decisions, not boilerplate.
 **`gin.New()`, not `gin.Default()`.** `Default` installs Gin's own `Logger` and `Recovery`
 middleware, which write their own text format straight to stdout. This service emits structured
 JSON through the injected logger ([chapter 15](15-observability.md)), and a second format
-interleaved with the first makes both harder to consume. `ginapi/middleware.go` reimplements both
+interleaved with the first makes both harder to consume. `transport/ginapi/middleware.go` reimplements both
 against `*observability.Logger`.
 
 **`gin.SetMode(gin.ReleaseMode)` is explicit.** Left alone, Gin picks its mode from `GIN_MODE` and
@@ -64,7 +64,7 @@ Forgetting that wrapper on one route publishes it. With a group, authentication 
 where the route is registered, and a new route inside `authed` cannot miss it. That is a small
 structural advantage and it is most of why people reach for a router.
 
-**Binding tags move validation earlier.** `ginapi/dto.go` declares:
+**Binding tags move validation earlier.** `transport/ginapi/dto.go` declares:
 
 ```go
 type loginRequest struct {

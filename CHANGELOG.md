@@ -71,6 +71,31 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   case-insensitive filesystem).
 
 ### Changed
+- **The tutorial is laid out as ports and adapters, under `internal/`.** Every package it builds
+  moved from the module root into `examples/tutorial/internal/`, and each adapter now sits under
+  the port it implements: `broker/natsbroker/` and `broker/notifier/`, `cache/redis/`,
+  `repository/postgres/` and `repository/migrations/`, `transport/api/`, `transport/ginapi/`,
+  `transport/grpcapi/`, `transport/admin/` and `transport/openapi/`. A reader looking for "what
+  speaks HTTP" finds one directory rather than five siblings sorted alphabetically among the rest.
+  Chapter 2 previously said the flat layout was the deliberate choice; it isn't, and no longer
+  says so. This is a change to the example module only — servo resolves providers under
+  `internal/` exactly as it does anywhere else, and no servo API changed.
+- **The tutorial now implements all seven capability interfaces, not five.** `Notifier` gained
+  `Drain` (unsubscribe, then wait for handlers already running) alongside `Stop` (close the
+  connection), which is the one place the difference between the two is visible: draining an
+  at-least-once consumer has to let in-flight messages finish acking before the connection goes,
+  or they are redelivered. The three servers gained `Ready`, which reports whether the listener is
+  actually bound rather than whether the constructor returned. `Flush` on `Session` and the rest
+  were already there.
+- **The reference says what each capability interface is *for*.** `docs/reference/lifecycle.md`
+  and `docs/reference/servo-package.md` previously gave the seven signatures and little else. They
+  now say when each method is called, in what order, against which deadline, and what servo does
+  with a returned error — including why the optional cleanup func returned by a constructor is not
+  redundant with `Finalizer`.
+- **The landing page compares the two `main` functions, not the two constructors.** The
+  constructors, their `Config` types and their `config.Parse` calls are identical whether or not
+  you use servo — showing them as "what servo generates" implied otherwise. Both figures now show
+  the same handwritten code, and differ only in what wires it together.
 - **The Gin and gRPC transports are tutorial chapters again, not reference pages.** They walk
   through rebuilding one chapter's code in another framework, against the tutorial's own
   module — a tutorial's job, not a lookup surface's. `docs/reference/transport-gin.md` and

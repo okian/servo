@@ -39,7 +39,7 @@ without either side knowing it happened.
 
 ## Build the Postgres implementation
 
-Create `postgres/postgres.go`. Start with the type and its constructor:
+Create `repository/postgres/postgres.go`. Start with the type and its constructor:
 
 ```go
 package postgres
@@ -52,7 +52,7 @@ import (
 
 	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/migrations"
+	"example.com/servoorders/internal/repository/migrations"
 	"example.com/servoorders/internal/repository"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -213,7 +213,7 @@ what it does. (A tool like [`golang-migrate`](https://github.com/golang-migrate/
 than a handful of migrations, or needs to roll one back in production — see
 [chapter 21](21-alternatives-and-further-reading.md#migrations) for when to make that switch.)
 
-Create `migrations/migrations.go`:
+Create `repository/migrations/migrations.go`:
 
 ```go
 package migrations
@@ -296,7 +296,7 @@ Each file is checked against `schema_migrations`, skipped if it's already there,
 part that matters — applied and recorded inside one transaction, so a failure partway through a
 file never leaves the tracking table lying about what actually happened.
 
-Now write the SQL itself. Create `migrations/0001_create_tables.sql`:
+Now write the SQL itself. Create `repository/migrations/0001_create_tables.sql`:
 
 ```sql
 CREATE TABLE users (
@@ -317,7 +317,7 @@ CREATE TABLE orders (
 CREATE INDEX orders_user_id_idx ON orders(user_id);
 ```
 
-And `migrations/0002_seed_users.sql`, so there's something to log in against before
+And `repository/migrations/0002_seed_users.sql`, so there's something to log in against before
 [chapter 9](09-authentication.md) exists — two accounts, both with the password `password123`,
 bcrypt-hashed for real rather than a placeholder string:
 
@@ -350,7 +350,7 @@ $ make test-integration
 PASS
 ok  	example.com/servoorders/internal/config	0.351s
 ?   	example.com/servoorders/internal/domain	[no test files]
-?   	example.com/servoorders/internal/migrations	[no test files]
+?   	example.com/servoorders/internal/repository/migrations	[no test files]
 === RUN   TestCreateAndGetOrder
 --- PASS: TestCreateAndGetOrder (0.02s)
 === RUN   TestGetMissingOrderReturnsErrNotFound
@@ -362,11 +362,11 @@ ok  	example.com/servoorders/internal/config	0.351s
 === RUN   TestGetByUsernameUnknownReturnsErrNotFound
 --- PASS: TestGetByUsernameUnknownReturnsErrNotFound (0.01s)
 PASS
-ok  	example.com/servoorders/internal/postgres	0.376s
+ok  	example.com/servoorders/internal/repository/postgres	0.376s
 ?   	example.com/servoorders/internal/repository	[no test files]
 ```
 
-The postgres tests are worth writing yourself, in `postgres/postgres_test.go` — but first, a small
+The postgres tests are worth writing yourself, in `repository/postgres/postgres_test.go` — but first, a small
 helper that every one of them shares, and that's worth understanding before the tests that call it:
 
 ```go
@@ -395,7 +395,7 @@ Without `make up` first, the same command doesn't fail — it just quietly finds
 
 ```
 $ go test ./postgres/...
-ok  	example.com/servoorders/internal/postgres	0.174s
+ok  	example.com/servoorders/internal/repository/postgres	0.174s
 ```
 
 Add `-v` to see why it was that fast:

@@ -14,10 +14,10 @@ import (
 	"example.com/servoorders/internal/auth"
 	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/observability"
-	"example.com/servoorders/internal/openapi"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
 	"example.com/servoorders/internal/session"
+	"example.com/servoorders/internal/transport/openapi"
 )
 
 type Server struct {

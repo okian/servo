@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/grpcapi/ordersv1"
+	"example.com/servoorders/internal/transport/grpcapi/ordersv1"
 )
 
 func (s *Server) Login(ctx context.Context, req *ordersv1.LoginRequest) (*ordersv1.LoginResponse, error) {

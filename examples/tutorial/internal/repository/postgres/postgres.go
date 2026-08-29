@@ -13,8 +13,8 @@ import (
 
 	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/migrations"
 	"example.com/servoorders/internal/repository"
+	"example.com/servoorders/internal/repository/migrations"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )

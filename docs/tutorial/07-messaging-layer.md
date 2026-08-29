@@ -46,14 +46,14 @@ flowchart LR
 
 ## Build the publisher
 
-Create a directory called `natsbroker/`, not `nats/`. Worth pausing on why: the client library
+Create a directory called `broker/natsbroker/`, not `broker/nats/`. Worth pausing on why: the client library
 you're about to import, `github.com/nats-io/nats.go`, declares its own package as `nats`. Name your
 own package `nats` too, and every file that needs both it and the client library ends up needing an
 import alias on one of them — a small, permanent tax for no benefit. This is a real category of
 naming collision, not specific to NATS; watch for it whenever a wrapper's natural name matches the
 library it wraps.
 
-`natsbroker/natsbroker.go`:
+`broker/natsbroker/natsbroker.go`:
 
 ```go
 package natsbroker
@@ -143,7 +143,7 @@ func (p *Publisher) PublishOrderPlaced(ctx context.Context, o *domain.Order) err
 A real second service would subscribe to `orders.placed` independently, in its own process. We're
 building `notifier` in this same binary instead, purely so the event-driven half of this
 architecture is visible and testable without standing up an actual second service. Create
-`notifier/notifier.go`:
+`broker/notifier/notifier.go`:
 
 ```go
 package notifier
@@ -328,11 +328,11 @@ $ TEST_NATS_URL=nats://localhost:4222 go test ./natsbroker/... ./notifier/... -v
 === RUN   TestHealthReflectsConnectionState
 --- PASS: TestHealthReflectsConnectionState (0.00s)
 PASS
-ok  	example.com/servoorders/internal/natsbroker	0.160s
+ok  	example.com/servoorders/internal/broker/natsbroker	0.160s
 === RUN   TestRunLogsReceivedEvents
 --- PASS: TestRunLogsReceivedEvents (0.05s)
 PASS
-ok  	example.com/servoorders/internal/notifier	0.201s
+ok  	example.com/servoorders/internal/broker/notifier	0.201s
 ```
 
 The notifier test is worth a look before you write it, because it has to solve a real timing

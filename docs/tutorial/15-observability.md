@@ -219,7 +219,7 @@ func TestMetricsMiddlewareLabelsByRoutePatternNotRawPath(t *testing.T) {
 }
 ```
 
-`statusRecorder` here looks identical to `statusWriter` in `api/middleware.go` from
+`statusRecorder` here looks identical to `statusWriter` in `transport/api/middleware.go` from
 [chapter 10](10-api-layer.md) — that's not an oversight. They live in different packages for
 different, narrow reasons (this one is `observability`'s own concern; that one is `api`'s), and
 sharing five lines isn't worth a cross-package dependency just to avoid typing them twice.
@@ -381,7 +381,7 @@ func New(
 already reaches `app.server` (both files are `package main`):
 
 ```go
-// api/server.go
+// transport/api/server.go
 func (s *Server) MetricsHandler() http.Handler {
 	return s.metrics.Handler()
 }

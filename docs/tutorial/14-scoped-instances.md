@@ -53,7 +53,7 @@ func WithUser(ctx context.Context, id UserID) context.Context {
 ```
 
 ```go
-// api/middleware.go, inside requireAuth
+// transport/api/middleware.go, inside requireAuth
 ctx := context.WithValue(r.Context(), claimsKey, claims)
 ctx = session.WithUser(ctx, session.UserID(claims.UserID.String()))
 next(w, r.WithContext(ctx))
@@ -202,7 +202,7 @@ func (s *Server) handleRecent(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-with one more DTO beside the others in `api/dto.go`:
+with one more DTO beside the others in `transport/api/dto.go`:
 
 ```go
 type recentResponse struct {
@@ -234,8 +234,8 @@ in `handlers.go` for direct `s.sessions.RecordView(...)` / `s.sessions.Recent()`
 ```
 example.com/servoorders/cmd/orders: servo: 1 diagnostic(s):
 
-api/server.go:49:6: servo: *example.com/servoorders/internal/session.Session is scoped, but *example.com/servoorders/internal/api.Server is a singleton that depends on it
-  needed by *example.com/servoorders/internal/api.Server  api/server.go:49:6
+transport/api/server.go:49:6: servo: *example.com/servoorders/internal/session.Session is scoped, but *example.com/servoorders/internal/transport/api.Server is a singleton that depends on it
+  needed by *example.com/servoorders/internal/transport/api.Server  transport/api/server.go:49:6
   root                                           cmd/orders/spec.go:23:3
 
   A singleton is constructed once and held for the life of the process, so it
@@ -246,7 +246,7 @@ api/server.go:49:6: servo: *example.com/servoorders/internal/session.Session is 
   Two ways out:
     - depend on the accessor instead: change api.New's parameter from *example.com/servoorders/internal/session.Session to example.com/servoorders/internal/session.Sessions,
       and call Acquire(ctx) per request
-    - make *example.com/servoorders/internal/api.Server scoped too, by giving it a dependency on example.com/servoorders/internal/session.UserID
+    - make *example.com/servoorders/internal/transport/api.Server scoped too, by giving it a dependency on example.com/servoorders/internal/session.UserID
 ```
 
 (Absolute paths shortened. `examples/diagnostics/widening` is the same mistake as a permanently

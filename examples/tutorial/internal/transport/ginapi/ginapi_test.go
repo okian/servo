@@ -17,12 +17,12 @@ import (
 	"example.com/servoorders/internal/auth"
 	"example.com/servoorders/internal/cache"
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/ginapi"
 	"example.com/servoorders/internal/mocks"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
 	"example.com/servoorders/internal/session"
+	"example.com/servoorders/internal/transport/ginapi"
 )
 
 // The suite below drives the Gin router the same way api/api_test.go

@@ -508,7 +508,7 @@ const file_orders_proto_rawDesc = "" +
 	"\bGetOrder\x12\x19.ordersv1.GetOrderRequest\x1a\x0f.ordersv1.Order\x12G\n" +
 	"\n" +
 	"ListOrders\x12\x1b.ordersv1.ListOrdersRequest\x1a\x1c.ordersv1.ListOrdersResponse\x12;\n" +
-	"\x06Recent\x12\x17.ordersv1.RecentRequest\x1a\x18.ordersv1.RecentResponseB3Z1example.com/servoorders/internal/grpcapi/ordersv1b\x06proto3"
+	"\x06Recent\x12\x17.ordersv1.RecentRequest\x1a\x18.ordersv1.RecentResponseB=Z;example.com/servoorders/internal/transport/grpcapi/ordersv1b\x06proto3"
 
 var (
 	file_orders_proto_rawDescOnce sync.Once

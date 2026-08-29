@@ -16,9 +16,9 @@
 //	[L3] *example.com/servoorders/internal/observability.Logger
 //	      deps: *example.com/servoorders/internal/observability.Config
 //	      capabilities: none | binding: sole candidate | internal/observability/logging.go:35:6
-//	[L2] *example.com/servoorders/internal/grpcapi.Config
+//	[L2] *example.com/servoorders/internal/transport/grpcapi.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/grpcapi/server.go:52:6
+//	      capabilities: none | binding: sole candidate | internal/transport/grpcapi/server.go:52:6
 //	[L1] *example.com/servoorders/internal/mocks.OrderRepositoryForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | internal/mocks/servo_adapters.go:24:6
@@ -55,15 +55,15 @@
 //	[L3] *example.com/servoorders/internal/resilience.RateLimiter
 //	      deps: *example.com/servoorders/internal/resilience.Config, *example.com/servoorders/internal/observability.Metrics
 //	      capabilities: none | binding: sole candidate | internal/resilience/ratelimit.go:33:6
-//	[L5] *example.com/servoorders/internal/grpcapi.Server
-//	      deps: *example.com/servoorders/internal/grpcapi.Config, *example.com/servoorders/internal/service.OrderService, *example.com/servoorders/internal/service.AuthService, *example.com/servoorders/internal/auth.Issuer, *example.com/servoorders/internal/observability.Metrics, *example.com/servoorders/internal/observability.Tracer, *example.com/servoorders/internal/resilience.RateLimiter, example.com/servoorders/internal/session.Sessions, *example.com/servoorders/internal/observability.Logger
-//	      capabilities: Runner, Finalizer, Readier | binding: sole candidate | internal/grpcapi/server.go:56:6
-//	[L2] *example.com/servoorders/internal/notifier.Config
+//	[L5] *example.com/servoorders/internal/transport/grpcapi.Server
+//	      deps: *example.com/servoorders/internal/transport/grpcapi.Config, *example.com/servoorders/internal/service.OrderService, *example.com/servoorders/internal/service.AuthService, *example.com/servoorders/internal/auth.Issuer, *example.com/servoorders/internal/observability.Metrics, *example.com/servoorders/internal/observability.Tracer, *example.com/servoorders/internal/resilience.RateLimiter, example.com/servoorders/internal/session.Sessions, *example.com/servoorders/internal/observability.Logger
+//	      capabilities: Runner, Finalizer, Readier | binding: sole candidate | internal/transport/grpcapi/server.go:56:6
+//	[L2] *example.com/servoorders/internal/broker/notifier.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/notifier/notifier.go:30:6
-//	[L4] *example.com/servoorders/internal/notifier.Notifier
-//	      deps: *example.com/servoorders/internal/notifier.Config, *example.com/servoorders/internal/observability.Logger
-//	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | internal/notifier/notifier.go:50:6
+//	      capabilities: none | binding: sole candidate | internal/broker/notifier/notifier.go:30:6
+//	[L4] *example.com/servoorders/internal/broker/notifier.Notifier
+//	      deps: *example.com/servoorders/internal/broker/notifier.Config, *example.com/servoorders/internal/observability.Logger
+//	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | internal/broker/notifier/notifier.go:50:6
 //
 // scope example.com/servoorders/internal/session.UserID
 //
@@ -86,14 +86,14 @@ import (
 	"time"
 
 	"example.com/servoorders/internal/auth"
+	"example.com/servoorders/internal/broker/notifier"
 	"example.com/servoorders/internal/config"
-	"example.com/servoorders/internal/grpcapi"
 	"example.com/servoorders/internal/mocks"
-	"example.com/servoorders/internal/notifier"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
 	"example.com/servoorders/internal/session"
+	"example.com/servoorders/internal/transport/grpcapi"
 	"github.com/okian/servo/v3/servo"
 	"golang.org/x/sync/errgroup"
 )
@@ -746,8 +746,8 @@ func (a *TestApp) stopTracer(ctx context.Context) servo.NodeResult {
 func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
 	a.serverStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/grpcapi.Server", a.server.Stop))
-		a.serverStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/grpcapi.Server", results...)
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/transport/grpcapi.Server", a.server.Stop))
+		a.serverStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/transport/grpcapi.Server", results...)
 	})
 	return a.serverStopResult
 }
@@ -755,9 +755,9 @@ func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
 func (a *TestApp) stopNotifier(ctx context.Context) servo.NodeResult {
 	a.notifierStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/notifier.Notifier", a.notifier.Drain))
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/notifier.Notifier", a.notifier.Stop))
-		a.notifierStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/notifier.Notifier", results...)
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Drain))
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Stop))
+		a.notifierStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/broker/notifier.Notifier", results...)
 	})
 	return a.notifierStopResult
 }
@@ -839,9 +839,9 @@ func (a *TestApp) Health(ctx context.Context) servo.Report {
 func (a *TestApp) Ready(ctx context.Context) servo.Report {
 	var nodes []servo.NodeResult
 	if err := a.server.Ready(ctx); err != nil {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/internal/grpcapi.Server", Status: servo.StatusFailed, Err: err})
+		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/internal/transport/grpcapi.Server", Status: servo.StatusFailed, Err: err})
 	} else {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/internal/grpcapi.Server", Status: servo.StatusOK})
+		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/internal/transport/grpcapi.Server", Status: servo.StatusOK})
 	}
 	return servo.Report{Nodes: nodes}
 }
@@ -852,7 +852,7 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/session/session.go:66:6"},
 		{Type: "*example.com/servoorders/internal/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:21:6"},
 		{Type: "*example.com/servoorders/internal/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/internal/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:35:6"},
-		{Type: "*example.com/servoorders/internal/grpcapi.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/grpcapi/server.go:52:6"},
+		{Type: "*example.com/servoorders/internal/transport/grpcapi.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/grpcapi/server.go:52:6"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:24:6"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderCacheForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:44:6"},
 		{Type: "*example.com/servoorders/internal/mocks.EventPublisherForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:54:6"},
@@ -865,9 +865,9 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 3, Deps: []string{"*example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:29:6"},
 		{Type: "*example.com/servoorders/internal/resilience.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:29:6"},
 		{Type: "*example.com/servoorders/internal/resilience.RateLimiter", Level: 3, Deps: []string{"*example.com/servoorders/internal/resilience.Config", "*example.com/servoorders/internal/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:33:6"},
-		{Type: "*example.com/servoorders/internal/grpcapi.Server", Level: 5, Deps: []string{"*example.com/servoorders/internal/grpcapi.Config", "*example.com/servoorders/internal/service.OrderService", "*example.com/servoorders/internal/service.AuthService", "*example.com/servoorders/internal/auth.Issuer", "*example.com/servoorders/internal/observability.Metrics", "*example.com/servoorders/internal/observability.Tracer", "*example.com/servoorders/internal/resilience.RateLimiter", "example.com/servoorders/internal/session.Sessions", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer", "Readier"}, Binding: "sole candidate", Pos: "internal/grpcapi/server.go:56:6"},
-		{Type: "*example.com/servoorders/internal/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/notifier/notifier.go:30:6"},
-		{Type: "*example.com/servoorders/internal/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/internal/notifier.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Pos: "internal/notifier/notifier.go:50:6"},
+		{Type: "*example.com/servoorders/internal/transport/grpcapi.Server", Level: 5, Deps: []string{"*example.com/servoorders/internal/transport/grpcapi.Config", "*example.com/servoorders/internal/service.OrderService", "*example.com/servoorders/internal/service.AuthService", "*example.com/servoorders/internal/auth.Issuer", "*example.com/servoorders/internal/observability.Metrics", "*example.com/servoorders/internal/observability.Tracer", "*example.com/servoorders/internal/resilience.RateLimiter", "example.com/servoorders/internal/session.Sessions", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer", "Readier"}, Binding: "sole candidate", Pos: "internal/transport/grpcapi/server.go:56:6"},
+		{Type: "*example.com/servoorders/internal/broker/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/broker/notifier/notifier.go:30:6"},
+		{Type: "*example.com/servoorders/internal/broker/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/internal/broker/notifier.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Pos: "internal/broker/notifier/notifier.go:50:6"},
 		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:70:6", Scope: "example.com/servoorders/internal/session.UserID"},
 	}, Scopes: []servo.GraphScope{
 		{Key: "example.com/servoorders/internal/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/internal/session.Sessions"}, Members: []string{"*example.com/servoorders/internal/session.Session"}, Borrows: []string{"*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}},
