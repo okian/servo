@@ -45,21 +45,22 @@ layout: default
         <figure>
           <figcaption>What you write</figcaption>
 {% highlight go %}
-// postgres/postgres.go
-func New(cfg *Config) (*Store, error)
-func (s *Store) Init(context.Context) error
-func (s *Store) Stop(context.Context) error
+// logger/logger.go
+func New() *Logger
+func (l *Logger) Stop(context.Context) error
 
-// service/service.go
-func New(store *postgres.Store) *Orders
+// postgres/postgres.go
+func New(log *logger.Logger) (*DB, error)
+func (d *DB) Init(context.Context) error
+func (d *DB) Stop(context.Context) error
 
 // api/api.go
-func New(o *service.Orders) *Server
+func New(db *postgres.DB) *Server
 func (s *Server) Run(context.Context) error
 func (s *Server) Stop(context.Context) error
 
-// cmd/app/spec.go — build-tagged, never
-// compiled into the binary
+// cmd/app/spec.go — build-tagged, so it
+// never reaches your binary
 servo.Build(
     servo.Root[*api.Server](),
 )
@@ -71,30 +72,28 @@ servo.Build(
 func New(ctx context.Context) (*App, error) {
     a := &App{}
 
-    cfg, err := postgres.NewConfig(env)
+    log := logger.New()
+    a.log = log
+
+    db, err := postgres.New(log)
     if err != nil {
+        _ = a.stopLog(ctx) // unwind what exists
         return nil, err
     }
+    a.db = db
+    a.server = api.New(db)
 
-    store, err := postgres.New(cfg)
-    if err != nil {
-        return nil, err
-    }
-    a.store = store
-
-    orders := service.New(store)
-    a.server = api.New(orders)
-
-    // Init runs before anything serves. A
-    // failure here rolls back what was built.
-    if err := a.store.Init(ctx); err != nil {
+    // Init before anything serves, concurrent
+    // within a level. A failure rolls the
+    // whole graph back.
+    if err := a.db.Init(ctx); err != nil {
         return nil, errors.Join(err, a.Shutdown(ctx))
     }
     return a, nil
 }
 
-// Run supervises every Runner; Shutdown stops
-// in reverse — server first, store last.
+// Run supervises every Runner. Shutdown stops
+// in reverse: server, then db, then log.
 func (a *App) Run(ctx context.Context) error
 func (a *App) Shutdown(ctx context.Context) servo.Report
 {% endhighlight %}
