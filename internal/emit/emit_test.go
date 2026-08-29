@@ -175,7 +175,7 @@ func TestEmitFullApp(t *testing.T) {
 		"func (a *App) Graph() servo.Graph",
 		"func (a *App) Report() servo.StartupReport",
 		"db, dbCleanup, err := NewDB(logger)",                     // construction with cleanup + error
-		"_ = a.stopLogger(ctx)",                                   // rollback stops the one prior stoppable node
+		"_ = a.stopLogger(context.WithoutCancel(ctx))",            // rollback stops the one prior stoppable node, on a context the signal that started the shutdown cannot cancel
 		"errgroup.WithContext(ctx)",                               // both the concurrent Init level and the 2-runner Run need this
 		"a.db.Health(ctx)",                                        // Health only iterates Healther nodes
 		"a.server.Ready(ctx)",                                     // Ready only iterates Readier nodes
@@ -692,7 +692,7 @@ func NewErrorOnly(c *CleanupOnly) (*ErrorOnly, error) { return &ErrorOnly{}, nil
 	if !strings.Contains(src2, "errorOnly, err := NewErrorOnly(cleanupOnly)") {
 		t.Errorf("missing the error-without-cleanup construction shape:\n%s", src2)
 	}
-	if !strings.Contains(src2, "_ = a.stopCleanupOnly(ctx)") {
+	if !strings.Contains(src2, "_ = a.stopCleanupOnly(context.WithoutCancel(ctx))") {
 		t.Errorf("expected ErrorOnly's rollback to stop the earlier, stoppable CleanupOnly:\n%s", src2)
 	}
 	if strings.Contains(src2, "stopLeaf") {

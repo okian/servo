@@ -26,6 +26,7 @@ type Spec struct {
 	Binds       []BindDecl
 	Overrides   []BindDecl
 	Scopes      []ScopeDecl
+	Values      []ValueDecl
 
 	// Variant is the canonical tag set the load ran under, copied from
 	// Loaded.Tags. Empty for a plain `servo generate`, which is what
@@ -45,12 +46,25 @@ type RootDecl struct {
 	Pos  token.Position
 }
 
+// ValueDecl is one servo.Value[T]() — a type the caller supplies to the
+// generated NewWith rather than one any provider builds.
+type ValueDecl struct {
+	Key  graph.Key
+	Type types.Type
+	Pos  token.Position
+}
+
 type BindDecl struct {
 	Iface        graph.Key
 	IfaceType    types.Type
 	Concrete     graph.Key
 	ConcreteType types.Type
 	Pos          token.Position
+	// Included marks a declaration spliced in by servo.Include rather than
+	// written in the spec file itself. A local declaration is allowed to
+	// supersede an included one; two local ones for the same interface are
+	// still the ambiguity they always were.
+	Included bool
 }
 
 // FindSpecs locates every servo.Build(...) call across the main module's
@@ -176,28 +190,57 @@ func resolveCalledFunc(pkg *packages.Package, call *ast.CallExpr) (*types.Func, 
 
 func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (*Spec, error) {
 	spec := &Spec{InjectorPkg: pkg, File: file, Pos: pkg.Fset.Position(call.Pos())}
+	if err := parseMarkerArgs(pkg, spec, call.Args, nil); err != nil {
+		return nil, err
+	}
+	if err := checkScopeDecls(spec.Scopes); err != nil {
+		return nil, err
+	}
+	return spec, nil
+}
 
-	for _, arg := range call.Args {
+// parseMarkerArgs reads one marker argument list into spec. It is called
+// for servo.Build's own arguments and, recursively, for the slice literal
+// an Include names — the two are the same syntax, so they are read by the
+// same code rather than by two that could drift.
+//
+// including is the chain of functions already being spliced, so a cycle is
+// reported with the path that closed it instead of recursing forever.
+func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, including []*types.Func) error {
+	for _, arg := range args {
 		argCall, ok := arg.(*ast.CallExpr)
 		if !ok {
-			return nil, fmt.Errorf("%s: servo.Build argument is not a marker call", pkg.Fset.Position(arg.Pos()))
+			return fmt.Errorf("%s: servo.Build argument is not a marker call", pkg.Fset.Position(arg.Pos()))
 		}
 		name, typeArgs, pos, err := markerCall(pkg, argCall)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		switch name {
 		case "Root":
 			if len(typeArgs) != 1 {
-				return nil, fmt.Errorf("%s: servo.Root expects exactly one type argument", pos)
+				return fmt.Errorf("%s: servo.Root expects exactly one type argument", pos)
 			}
 			spec.Roots = append(spec.Roots, RootDecl{Key: graph.NewKey(typeArgs[0], ""), Type: typeArgs[0], Pos: pos})
+		case "Value":
+			if len(typeArgs) != 1 {
+				return fmt.Errorf("%s: servo.Value expects exactly one type argument", pos)
+			}
+			decl := ValueDecl{Key: graph.NewKey(typeArgs[0], ""), Type: typeArgs[0], Pos: pos}
+			if prior, dup := findValue(spec.Values, decl.Key); dup {
+				return fmt.Errorf("%s: servo.Value[%s]() declared twice — first at %s", pos, decl.Key.String(), prior.Pos)
+			}
+			spec.Values = append(spec.Values, decl)
+		case "Include":
+			if err := spliceInclude(pkg, spec, argCall, pos, including); err != nil {
+				return err
+			}
 		case "Bind", "Override":
 			if len(typeArgs) != 2 {
-				return nil, fmt.Errorf("%s: servo.%s expects exactly two type arguments", pos, name)
+				return fmt.Errorf("%s: servo.%s expects exactly two type arguments", pos, name)
 			}
 			if isInterfaceType(typeArgs[1]) {
-				return nil, fmt.Errorf("%s: servo.%s's second type argument must be a concrete type, not an interface (%s) — Bind/Override name the concrete implementation, they don't chain to another interface", pos, name, typeArgs[1].String())
+				return fmt.Errorf("%s: servo.%s's second type argument must be a concrete type, not an interface (%s) — Bind/Override name the concrete implementation, they don't chain to another interface", pos, name, typeArgs[1].String())
 			}
 			decl := BindDecl{
 				Iface: graph.NewKey(typeArgs[0], ""), IfaceType: typeArgs[0],
@@ -205,32 +248,67 @@ func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (
 				Pos: pos,
 			}
 			if name == "Bind" {
+				// An Include's markers are spliced in where the Include
+				// sits, so a Bind written after it in the spec file is a
+				// duplicate of a shared one — and the local file wins,
+				// which is the only ordering that makes a shared set worth
+				// having. A duplicate between two *local* Binds is still
+				// the ambiguity it always was.
 				if prior, dup := findByIface(spec.Binds, decl.Iface); dup {
-					return nil, fmt.Errorf("%s: servo.Bind[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
+					if prior.Included {
+						replaceByIface(spec.Binds, decl)
+						continue
+					}
+					return fmt.Errorf("%s: servo.Bind[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
 				}
+				decl.Included = len(including) > 0
 				spec.Binds = append(spec.Binds, decl)
 			} else {
 				if prior, dup := findByIface(spec.Overrides, decl.Iface); dup {
-					return nil, fmt.Errorf("%s: servo.Override[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
+					if prior.Included {
+						replaceByIface(spec.Overrides, decl)
+						continue
+					}
+					return fmt.Errorf("%s: servo.Override[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
 				}
+				decl.Included = len(including) > 0
 				spec.Overrides = append(spec.Overrides, decl)
 			}
 		case "Scoped":
 			decl, err := parseScopedCall(pkg, argCall, typeArgs, pos)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			spec.Scopes = append(spec.Scopes, decl)
 		case "Linger", "Max":
-			return nil, fmt.Errorf("%s: servo.%s is a scope option, not a Build marker — it belongs inside a servo.Scoped[T, I](...) argument list", pos, name)
+			return fmt.Errorf("%s: servo.%s is a scope option, not a Build marker — it belongs inside a servo.Scoped[T, I](...) argument list", pos, name)
 		default:
-			return nil, fmt.Errorf("%s: unrecognized servo marker %q inside Build(...)", pos, name)
+			return fmt.Errorf("%s: unrecognized servo marker %q inside Build(...)", pos, name)
 		}
 	}
-	if err := checkScopeDecls(spec.Scopes); err != nil {
-		return nil, err
+	return nil
+}
+
+// findValue is findByIface for Value declarations.
+func findValue(decls []ValueDecl, k graph.Key) (ValueDecl, bool) {
+	for _, d := range decls {
+		if d.Key == k {
+			return d, true
+		}
 	}
-	return spec, nil
+	return ValueDecl{}, false
+}
+
+// replaceByIface overwrites the declaration bound to decl.Iface in place,
+// so a local declaration supersedes an included one without changing where
+// in the list it sits.
+func replaceByIface(decls []BindDecl, decl BindDecl) {
+	for i, d := range decls {
+		if d.Iface == decl.Iface {
+			decls[i] = decl
+			return
+		}
+	}
 }
 
 // findByIface returns the first declaration in decls bound to iface, so a
@@ -339,4 +417,144 @@ func FileRequiresBuildTag(file *ast.File, tag string) bool {
 func requiresTag(expr constraint.Expr, tag string) bool {
 	couldPassWithoutTag := expr.Eval(func(t string) bool { return t != tag })
 	return !couldPassWithoutTag
+}
+
+// spliceInclude reads the marker list returned by the function a
+// servo.Include names and appends it to spec, in place.
+//
+// The function is never called. Its body is read as syntax, exactly as
+// Build's own argument list is — which is why the shape it must have is
+// narrow and checked: one return statement, of one slice literal of marker
+// calls. Anything else (a variable, a conditional, an append) would be a
+// program servo would have to run to know the answer to, and the whole
+// point of the spec file is that it is read and never run.
+func spliceInclude(pkg *packages.Package, spec *Spec, call *ast.CallExpr, pos token.Position, including []*types.Func) error {
+	if len(call.Args) != 1 {
+		return fmt.Errorf("%s: servo.Include takes exactly one argument, the name of a func() []servo.Marker", pos)
+	}
+	fn, ok := includedFunc(pkg, call.Args[0])
+	if !ok {
+		return fmt.Errorf("%s: servo.Include's argument must name a declared func() []servo.Marker — not a literal, a method value, or a call", pos)
+	}
+	for _, seen := range including {
+		if seen == fn {
+			var b strings.Builder
+			fmt.Fprintf(&b, "%s: servo.Include cycle — %s includes itself, through:\n", pos, fn.Name())
+			for _, f := range including {
+				fmt.Fprintf(&b, "  %s\n", f.FullName())
+			}
+			return errors.New(b.String())
+		}
+	}
+
+	decl, declPkg, ok := findFuncDecl(pkg, fn)
+	if !ok {
+		return fmt.Errorf("%s: servo.Include names %s, whose declaration is not in this build — a shared marker set must carry the `//go:build %s` constraint, the same as a spec file", pos, fn.FullName(), BuildTag)
+	}
+	if !FileRequiresBuildTag(fileOf(declPkg, decl), BuildTag) {
+		return fmt.Errorf("%s: servo.Include names %s, which is declared in a file without a `//go:build %s` constraint — as written it would compile into the real binary, where every marker it returns panics", pos, fn.FullName(), BuildTag)
+	}
+	elts, err := markerSliceLiteral(declPkg, decl)
+	if err != nil {
+		return err
+	}
+	return parseMarkerArgs(declPkg, spec, elts, append(append([]*types.Func{}, including...), fn))
+}
+
+// includedFunc resolves the identifier or selector servo.Include was given
+// to the function it names.
+func includedFunc(pkg *packages.Package, arg ast.Expr) (*types.Func, bool) {
+	var ident *ast.Ident
+	switch a := arg.(type) {
+	case *ast.Ident:
+		ident = a
+	case *ast.SelectorExpr:
+		ident = a.Sel
+	default:
+		return nil, false
+	}
+	fn, ok := pkg.TypesInfo.Uses[ident].(*types.Func)
+	if !ok || fn.Signature().Recv() != nil {
+		return nil, false
+	}
+	return fn, true
+}
+
+// findFuncDecl locates fn's declaration and the package whose TypesInfo
+// resolves the marker calls inside it. The declaring package is not
+// necessarily the injector's: a shared marker set living in its own
+// package is the whole reason Include exists.
+func findFuncDecl(from *packages.Package, fn *types.Func) (*ast.FuncDecl, *packages.Package, bool) {
+	for _, p := range allPackages(from) {
+		if p.Types == nil || p.Types != fn.Pkg() {
+			continue
+		}
+		for _, file := range p.Syntax {
+			for _, d := range file.Decls {
+				decl, ok := d.(*ast.FuncDecl)
+				if !ok || decl.Recv != nil || decl.Name == nil {
+					continue
+				}
+				if p.TypesInfo.Defs[decl.Name] == fn {
+					return decl, p, true
+				}
+			}
+		}
+	}
+	return nil, nil, false
+}
+
+// allPackages walks from's import graph, which is where a package other
+// than the injector's own is reachable from. Visiting is breadth-first and
+// deduplicated by path, so a diamond is walked once.
+func allPackages(from *packages.Package) []*packages.Package {
+	seen := map[string]bool{from.PkgPath: true}
+	queue := []*packages.Package{from}
+	var out []*packages.Package
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		out = append(out, p)
+		paths := make([]string, 0, len(p.Imports))
+		for path := range p.Imports {
+			paths = append(paths, path)
+		}
+		sort.Strings(paths)
+		for _, path := range paths {
+			if seen[path] {
+				continue
+			}
+			seen[path] = true
+			queue = append(queue, p.Imports[path])
+		}
+	}
+	return out
+}
+
+func fileOf(pkg *packages.Package, decl *ast.FuncDecl) *ast.File {
+	for _, f := range pkg.Syntax {
+		if f.Pos() <= decl.Pos() && decl.Pos() <= f.End() {
+			return f
+		}
+	}
+	return &ast.File{}
+}
+
+// markerSliceLiteral extracts the elements of the one slice literal decl
+// returns.
+func markerSliceLiteral(pkg *packages.Package, decl *ast.FuncDecl) ([]ast.Expr, error) {
+	pos := pkg.Fset.Position(decl.Pos())
+	shape := fmt.Errorf("%s: %s must be exactly `return []servo.Marker{ ...marker calls... }` — its body is read as syntax and never run, so anything servo would have to execute to know the answer is refused", pos, decl.Name.Name)
+	if decl.Body == nil || len(decl.Body.List) != 1 {
+		return nil, shape
+	}
+	ret, ok := decl.Body.List[0].(*ast.ReturnStmt)
+	if !ok || len(ret.Results) != 1 {
+		return nil, shape
+	}
+	lit, ok := ret.Results[0].(*ast.CompositeLit)
+	if !ok {
+		return nil, shape
+	}
+	return lit.Elts, nil
 }

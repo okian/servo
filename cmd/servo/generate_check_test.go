@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -595,5 +596,342 @@ var _ = servo.Build(
 	if out, err := cmd.CombinedOutput(); err != nil {
 		gen, _ := os.ReadFile(filepath.Join(dir, "cmd", "app", "servo_gen.go"))
 		t.Fatalf("generated code does not compile: %v\n%s\n---\n%s", err, out, gen)
+	}
+}
+
+// mustCompileGeneratedModule generates for dir and then builds it, which is
+// the only honest witness for this family of bugs: every one of them exits
+// 0 from `servo generate` and fails in the compiler, inside the one file
+// users are told not to read.
+func mustCompileGeneratedModule(t *testing.T, dir string) {
+	t.Helper()
+	runGoModTidy(t, dir)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		gen, _ := os.ReadFile(filepath.Join(dir, "cmd", "app", "servo_gen.go"))
+		t.Fatalf("generated code does not compile: %v\n%s\n---\n%s", err, out, gen)
+	}
+}
+
+// scratchModule writes the go.mod and the main/spec pair every case below
+// shares, rooted at the type named by root.
+func scratchModule(t *testing.T, module, importPath, root string) string {
+	t.Helper()
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module "+module+`
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+repoRoot(t)+`
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", `package main
+
+func main() {}
+`)
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	`+strconv.Quote(importPath)+`
+	"github.com/okian/servo/v3/servo"
+)
+
+var _ = servo.Build(
+	servo.Root[`+root+`](),
+)
+`)
+	return dir
+}
+
+// TestGeneratedCodeCompilesWithAComponentNamedAfterACleanupField: a
+// provider returning (T, func()) makes the App carry a <field>Cleanup
+// field derived from the node's own variable name. Only the variable was
+// ever reserved, so a second component whose name allocates to that same
+// derived identifier redeclared it.
+func TestGeneratedCodeCompilesWithAComponentNamedAfterACleanupField(t *testing.T) {
+	dir := scratchModule(t, "example.com/cleanupapp", "example.com/cleanupapp/comp", "*comp.Root")
+	mustWriteFile(t, dir, "comp/comp.go", `package comp
+
+type Foo struct{}
+
+func NewFoo() (*Foo, func()) { return &Foo{}, func() {} }
+
+// FooCleanup allocates the same identifier Foo's cleanup field derives.
+type FooCleanup struct{}
+
+func NewFooCleanup() *FooCleanup { return &FooCleanup{} }
+
+type Root struct{}
+
+func NewRoot(f *Foo, fc *FooCleanup) *Root { return &Root{} }
+`)
+	mustCompileGeneratedModule(t, dir)
+}
+
+// TestGeneratedCodeCompilesWithAComponentNamedLikeAnEmittedPackage: New's
+// locals share one scope with the package identifiers its own body
+// qualifies calls with, so a component named Servo took the local `servo`
+// and shadowed the package every `servo.StartupNode` after it resolves
+// against.
+func TestGeneratedCodeCompilesWithAComponentNamedLikeAnEmittedPackage(t *testing.T) {
+	dir := scratchModule(t, "example.com/identapp", "example.com/identapp/comp", "*comp.Root")
+	mustWriteFile(t, dir, "comp/comp.go", `package comp
+
+import "context"
+
+type Servo struct{}
+
+func NewServo() *Servo { return &Servo{} }
+
+func (s *Servo) Init(ctx context.Context) error { return nil }
+
+type Time struct{}
+
+func NewTime() *Time { return &Time{} }
+
+type Errors struct{}
+
+func NewErrors() *Errors { return &Errors{} }
+
+type Sync struct{}
+
+func NewSync() *Sync { return &Sync{} }
+
+type Root struct{}
+
+func NewRoot(s *Servo, ti *Time, e *Errors, sy *Sync) *Root { return &Root{} }
+
+func (r *Root) Init(ctx context.Context) error { return nil }
+`)
+	mustCompileGeneratedModule(t, dir)
+}
+
+// TestGeneratedCodeCompilesWithAUserPackageNamedLikeTheStandardLibrary:
+// the import manager could not alias a single-segment path, so the stdlib
+// errors import arriving after a user package of that name was rendered
+// under the identifier already taken.
+func TestGeneratedCodeCompilesWithAUserPackageNamedLikeTheStandardLibrary(t *testing.T) {
+	dir := scratchModule(t, "example.com/stdnameapp", "example.com/stdnameapp/errors", "*errors.Reporter")
+	mustWriteFile(t, dir, "errors/errors.go", `package errors
+
+import "context"
+
+type Reporter struct{}
+
+func NewReporter() *Reporter { return &Reporter{} }
+
+// Init is what pulls the stdlib errors import in, via the Init phase's
+// errors.Join on the rollback path.
+func (r *Reporter) Init(ctx context.Context) error { return nil }
+`)
+	mustCompileGeneratedModule(t, dir)
+}
+
+// TestGeneratedCodeCompilesWhenAProviderReturnsAnotherPackagesType: the
+// shadow guard compared later nodes' result-type packages, but the call it
+// protects is qualified by the provider function's package. The two
+// coincide only for the idiomatic `package foo; func New() *foo.Foo`,
+// which is exactly what the sibling test above covers.
+func TestGeneratedCodeCompilesWhenAProviderReturnsAnotherPackagesType(t *testing.T) {
+	dir := scratchModule(t, "example.com/factoryapp", "example.com/factoryapp/widget", "*widget.Widget")
+	mustWriteFile(t, dir, "widget/widget.go", `package widget
+
+type Widget struct{}
+`)
+	mustWriteFile(t, dir, "factory/factory.go", `package factory
+
+import "example.com/factoryapp/widget"
+
+type Factory struct{}
+
+func NewFactory() *Factory { return &Factory{} }
+
+// NewWidget is qualified by factory at the call site while its result type
+// is qualified by widget, so a node named factory shadows the caller.
+func NewWidget(f *Factory) *widget.Widget { return &widget.Widget{} }
+`)
+	mustCompileGeneratedModule(t, dir)
+}
+
+// TestRollbackSurvivesACancelledStartupContext is the behavioural guard on
+// the rollback context, and it has to run the generated program: the golden
+// files pin the emitted text, and the text was never the problem — handing
+// that text an already-cancelled ctx was.
+//
+// Every main in the docs and the examples passes New the signal context, so
+// a SIGTERM arriving mid-startup cancels it. servo.RunStop derives its
+// budget from whatever it is given, so a cancelled parent means Done is
+// closed before the select runs and every node is reported abandoned with
+// its Drain, Flush and Stop never getting a chance to do anything.
+func TestRollbackSurvivesACancelledStartupContext(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+
+	mustWriteFile(t, dir, "go.mod", `module example.com/rollback
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+root+`
+`)
+	mustWriteFile(t, dir, "comp/comp.go", `package comp
+
+import (
+	"context"
+	"errors"
+	"fmt"
+)
+
+// A is constructed and initialised first, and is the node whose Stop has to
+// run even though the context that started the unwind is already dead.
+type A struct{}
+
+func NewA() *A { return &A{} }
+
+func (a *A) Init(ctx context.Context) error { return nil }
+
+func (a *A) Stop(ctx context.Context) error {
+	fmt.Println("A.Stop ran")
+	return nil
+}
+
+// B initialises after A and fails, which is what triggers the rollback.
+type B struct{}
+
+func NewB(a *A) *B { return &B{} }
+
+func (b *B) Init(ctx context.Context) error { return errors.New("B cannot reach its backend") }
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", `package main
+
+import (
+	"context"
+	"fmt"
+)
+
+func main() {
+	// Exactly the state a SIGTERM during startup leaves New in.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := New(ctx); err != nil {
+		fmt.Println("New failed:", err)
+		return
+	}
+	fmt.Println("New unexpectedly succeeded")
+}
+`)
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/rollback/comp"
+	"github.com/okian/servo/v3/servo"
+)
+
+var _ = servo.Build(
+	servo.Root[*comp.B](),
+)
+`)
+	runGoModTidy(t, dir)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	cmd := exec.Command("go", "run", "./cmd/app")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run: %v\n%s", err, out)
+	}
+	got := string(out)
+	if !strings.Contains(got, "A.Stop ran") {
+		t.Errorf("the rollback did not stop the already-initialised node — it was handed a dead context:\n%s", got)
+	}
+	// And the failure that caused the unwind has to survive it, not be
+	// buried under a node-by-node wall of "abandoned: context canceled".
+	if !strings.Contains(got, "B cannot reach its backend") {
+		t.Errorf("the real startup error did not survive the rollback:\n%s", got)
+	}
+	if strings.Contains(got, "abandoned") {
+		t.Errorf("a node was abandoned during a rollback that had a full budget:\n%s", got)
+	}
+}
+
+// TestInitFailureWithACleanRollbackReturnsTheBareError: Report satisfies
+// error by value, so errors.Join never skips it, and a clean report's
+// Error() is "" — which errors.Join still separates with a newline.
+func TestInitFailureWithACleanRollbackReturnsTheBareError(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+
+	mustWriteFile(t, dir, "go.mod", `module example.com/joined
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+root+`
+`)
+	mustWriteFile(t, dir, "comp/comp.go", `package comp
+
+import (
+	"context"
+	"errors"
+)
+
+type A struct{}
+
+func NewA() *A { return &A{} }
+
+func (a *A) Init(ctx context.Context) error { return errors.New("connection refused") }
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", `package main
+
+import (
+	"context"
+	"fmt"
+)
+
+func main() {
+	_, err := New(context.Background())
+	fmt.Printf("%q\n", err.Error())
+}
+`)
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/joined/comp"
+	"github.com/okian/servo/v3/servo"
+)
+
+var _ = servo.Build(
+	servo.Root[*comp.A](),
+)
+`)
+	runGoModTidy(t, dir)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	cmd := exec.Command("go", "run", "./cmd/app")
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run: %v\n%s", err, out)
+	}
+	if got := strings.TrimSpace(string(out)); got != `"connection refused"` {
+		t.Errorf("New returned %s, want the bare error with no trailing newline from the clean report", got)
 	}
 }

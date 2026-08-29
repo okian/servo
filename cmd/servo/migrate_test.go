@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -99,5 +100,36 @@ func setup() {
 	})
 	if strings.Contains(out, "HexOrder") {
 		t.Errorf("a Register(...) call whose order literal strconv.Atoi can't parse must be ignored, got:\n%s", out)
+	}
+}
+
+// TestExampleMigrateREADMEMatchesRealOutput pins the one example nothing
+// else checks. examples/migrate has no generated file, so `servo check`
+// has nothing to compare there and CI never runs `servo migrate` at all —
+// which is how its README came to show line numbers four off from reality
+// after the fixture gained a comment block.
+func TestExampleMigrateREADMEMatchesRealOutput(t *testing.T) {
+	root := repoRoot(t)
+	out := captureStdout(t, func() {
+		if err := runMigrate(filepath.Join(root, "examples", "migrate")); err != nil {
+			t.Fatalf("runMigrate: %v", err)
+		}
+	})
+	// The report prints whatever path it walked, and the test has to pass
+	// an absolute one; the README quotes the documented invocation from the
+	// repo root, so the prefix is normalised back to that before comparing.
+	readme, err := os.ReadFile(filepath.Join(root, "examples", "migrate", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out = strings.ReplaceAll(out, root+string(filepath.Separator), "")
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if !strings.Contains(string(readme), line) {
+			t.Errorf("examples/migrate/README.md does not contain this line of the real output:\n  %s", line)
+		}
 	}
 }

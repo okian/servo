@@ -11,8 +11,14 @@ import (
 // with statically unrolled rollback, then the Init phase.
 func (e *emitter) newFunc() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "func %s(ctx context.Context) (*%s, error) {\n", e.constructorName(), e.appType())
+	b.WriteString(e.zeroValueDelegate())
+	if len(e.values) > 0 {
+		fmt.Fprintf(&b, "func %s(ctx context.Context, v %s) (*%s, error) {\n", e.withConstructorName(), e.valuesType(), e.appType())
+	} else {
+		fmt.Fprintf(&b, "func %s(ctx context.Context) (*%s, error) {\n", e.constructorName(), e.appType())
+	}
 	fmt.Fprintf(&b, "\ta := &%s{}\n\n", e.appType())
+	b.WriteString(e.valueAssignments())
 	b.WriteString(e.scopeSetup())
 
 	for i, n := range e.resolved.Order {
@@ -70,9 +76,23 @@ func (e *emitter) writeConstructionRollback(b *strings.Builder, index int) {
 		if !e.needsStopMethod(n) {
 			continue
 		}
-		fmt.Fprintf(b, "\t\t_ = a.stop%s(ctx)\n", capitalize(e.varName[n.Key]))
+		fmt.Fprintf(b, "\t\t_ = a.stop%s(%s)\n", capitalize(e.varName[n.Key]), rollbackCtx)
 	}
 }
+
+// rollbackCtx is the context every rollback path hands the stop calls.
+//
+// New's own ctx is almost always the signal context — every main in the
+// docs and the examples passes it — so a SIGTERM arriving mid-startup
+// cancels it, aborts an Init, and then the unwind that follows would be
+// handed the same, already-cancelled context. servo.RunStop derives its
+// budget from it, so Done is closed before the select runs and every node
+// is reported abandoned without its Drain, Flush or Stop ever getting a
+// chance to do anything. Stripping the cancellation is the same rule
+// lifecycle.md states for a hand-written main's Shutdown, and the same one
+// scoped teardown already follows; RunStop still caps each phase, so
+// nothing here can hang.
+const rollbackCtx = "context.WithoutCancel(ctx)"
 
 // initPhase calls Init in topological order, one errgroup per concurrency
 // level, rolling back via the now-fully-constructed App's own Shutdown on
@@ -99,9 +119,27 @@ func (e *emitter) writeSingleInit(b *strings.Builder, n *resolve.Node) {
 	fmt.Fprintf(b, "\t\terr := a.%s.Init(ctx)\n", name)
 	fmt.Fprintf(b, "\t\ta.startupReport.Nodes = append(a.startupReport.Nodes, %s.StartupNode{Type: %q, Duration: time.Since(start)})\n", e.servoAlias, n.Key.String())
 	b.WriteString("\t\tif err != nil {\n")
-	b.WriteString("\t\t\treport := a.Shutdown(ctx)\n")
-	b.WriteString("\t\t\treturn nil, errors.Join(err, report)\n")
+	b.WriteString(e.rollbackReturn())
 	b.WriteString("\t\t}\n\t}\n")
+}
+
+// rollbackReturn is the shared tail of both Init-failure paths: unwind,
+// then return the failure with the unwind's report attached only when the
+// unwind had something to say.
+//
+// Report satisfies error by value, so it is never nil and errors.Join
+// never skips it — and a clean report's Error() is the empty string, which
+// errors.Join still separates with a newline. Joining unconditionally
+// therefore appended a blank line to every ordinary startup failure, which
+// survives into any log field or %w wrapping built from it.
+func (e *emitter) rollbackReturn() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "\t\t\treport := a.Shutdown(%s)\n", rollbackCtx)
+	b.WriteString("\t\t\tif report.Clean() {\n")
+	b.WriteString("\t\t\t\treturn nil, err\n")
+	b.WriteString("\t\t\t}\n")
+	b.WriteString("\t\t\treturn nil, errors.Join(err, report)\n")
+	return b.String()
 }
 
 func (e *emitter) writeConcurrentInit(b *strings.Builder, nodes []*resolve.Node) {
@@ -120,8 +158,7 @@ func (e *emitter) writeConcurrentInit(b *strings.Builder, nodes []*resolve.Node)
 		b.WriteString("\t\t\ttimingMu.Unlock()\n\t\t\treturn err\n\t\t})\n")
 	}
 	b.WriteString("\t\tif err := g.Wait(); err != nil {\n")
-	b.WriteString("\t\t\treport := a.Shutdown(ctx)\n")
-	b.WriteString("\t\t\treturn nil, errors.Join(err, report)\n")
+	b.WriteString(e.rollbackReturn())
 	b.WriteString("\t\t}\n\t}\n")
 }
 

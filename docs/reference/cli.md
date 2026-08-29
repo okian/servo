@@ -5,8 +5,9 @@ job, who needs to know exactly what a command does and what it will print.
 
 Every command below was run against
 [`examples/basic`](https://github.com/okian/servo/tree/master/examples/basic) to produce the output
-shown. Positions are printed as absolute paths; they have been shortened on this page to fit the
-column.
+shown. Positions are printed as absolute paths, shortened on this page to fit the column — with one
+exception: `graph` prints them relative to the module root, because it shares its output struct with
+the generated `App.Graph()` and the two have to agree byte for byte.
 
 ## Installing
 
@@ -14,13 +15,32 @@ column.
 go install github.com/okian/servo/v3/cmd/servo@latest
 ```
 
-Or without installing anything, pinned to whatever version your module already requires — which is
-what a `go:generate` directive should use, so every developer and every CI runner uses the same
-version:
+That puts a `servo` on your `PATH` pinned to nothing in particular. For a project, add the generator
+to the module instead, so its version is recorded in `go.mod` beside every other dependency and
+every developer and every CI runner runs the same one:
 
 ```
-go run github.com/okian/servo/v3/cmd/servo generate
+go get -tool github.com/okian/servo/v3/cmd/servo
 ```
+
+It is then invoked through the go command:
+
+```
+go tool servo generate
+```
+
+**Not `go run github.com/okian/servo/v3/cmd/servo`.** A consumer module requires servo for the
+marker package alone, so the generator's own dependencies are not in that module's build list and
+the command fails before it starts:
+
+```
+missing go.sum entry for module providing package golang.org/x/tools/go/packages
+(imported by github.com/okian/servo/v3/cmd/servo)
+```
+
+`go get -tool` adds a `tool` directive to `go.mod` and pulls those dependencies in, which is what
+makes `go tool servo` resolve. It is a one-time step per module, and the one
+[`servo init`](#init) prints.
 
 ## Invocation
 
@@ -30,7 +50,13 @@ servo [<command>] [flags] [arguments]
 
 **The command is optional.** If the first argument doesn't start with `-`, it is taken as the
 command name. Otherwise the command defaults to `generate`, so `servo`, `servo generate`, and
-`servo --dir=cmd/api` are all generate invocations.
+`servo --dir=cmd/api` are all generate invocations. That default is the contract, not an accident:
+a bare `servo` generates.
+
+**The default does not swallow `-h`.** A leading dash otherwise means "no command", which for a
+while made `servo -h` parse as `generate --help` and print `generate`'s four flags — the one place
+a new user looks for the other eleven commands. A help request is now recognised before the command
+is extracted, so `-h`, `--help`, `-help` and [`help`](#help) all print the same list and exit 0.
 
 **Flags come before positional arguments.** Flag parsing stops at the first non-flag argument, so
 `servo explain --json api.Server` works and `servo explain api.Server --json` does not — the
@@ -38,9 +64,10 @@ second form treats `--json` as a second positional argument and fails with a usa
 single and double dashes are accepted (`-dir`, `--dir`), with either a space or an equals sign
 (`--dir cmd/api`, `--dir=cmd/api`).
 
-**Exit status is 0 or 1.** Success is 0. Every failure — a resolution diagnostic, a stale generated
-file, an unknown command, a bad flag — is 1. There are no other exit codes, so a CI job needs no
-special-casing.
+**Exit status is 0 or 1.** Success is 0, including a help request. Every failure — a resolution
+diagnostic, a stale generated file, an unknown command, a bad flag — is 1. There are no other exit codes, so a CI job needs no
+special-casing. (The separate [`servo-vet`](#servo-vet) binary exits 2 when it refuses a flag, which
+is `go vet`'s own convention for "the tool would not run", not a servo diagnostic.)
 
 **Diagnostics go to stderr, results to stdout.** `generate` and `check` print *nothing at all* on
 success: silence means the work is done.
@@ -58,7 +85,7 @@ split into two groups on how they handle that:
 | --- | --- |
 | Processes **every** injector in scope, reporting all of them | `generate`, `check`, `doctor` |
 | Answers a question about **one** graph, so it asks you to disambiguate | `graph`, `explain`, `why`, `list` |
-| Doesn't scan a module at all | `init`, `migrate`, `new` |
+| Doesn't scan a module at all | `init`, `migrate`, `new`, `version`, `help` |
 
 The second group errors out when more than one injector is in scope, listing the positions it
 found:
@@ -91,7 +118,9 @@ takes the last one, exactly as the go command does.
 
 They are accepted by the seven commands that load packages — `generate`, `check`, `graph`,
 `explain`, `why`, `list`, `doctor` — and by no others. `init` and `new` write files without loading
-anything. `migrate` walks the tree with `go/parser` and never evaluates a build constraint at all,
+anything, and `version` and `help` read nothing at all. (`init` does take `--tags`, but only to
+choose the constraint it scaffolds; it never loads a package with them.)
+`migrate` walks the tree with `go/parser` and never evaluates a build constraint at all,
 so a `--tags` there would be a lie: it reads v1 `Register` calls whether or not a tag would have
 excluded the file.
 
@@ -192,6 +221,14 @@ servo: servo.prod_gen.go and servo_gen.go would both compile in the same build
 
   servo_gen.go:      //go:build !servoinject
   servo.prod_gen.go: //go:build !servoinject && prod
+
+Some build satisfies both constraints at once, and the package would then
+declare App and New twice. Servo mirrors each spec file's own constraint and
+never invents a negation, so the exclusion has to come from the spec files.
+Either gate them so no configuration matches two — `//go:build servoinject && !prod`
+on the default spec, `//go:build servoinject && prod` on the other — or, if this
+injector does not vary with these tags at all, leave it alone and scope the
+run to the one that does with --dir
 ```
 
 Detecting it is servo's job; resolving it is not. Rewriting the sibling file to insert the
@@ -307,10 +344,22 @@ servo check: cmd/migrator/servo_gen.go is stale — run `servo generate`
 +++ cmd/migrator/servo_gen.go (fresh)
 -func (a *App) Report() servo.StartupReport { // hand-edited
 +func (a *App) Report() servo.StartupReport {
+
+note: this is servo v3.2.1. If regenerating does not settle it, the machine that
+      committed the file was running a different version — compare `servo version`, and
+      pin one for everybody with `go get -tool github.com/okian/servo/v3/cmd/servo`.
 ```
 
 The diff is `+`/`-` lines only — no hunk headers, no unchanged context — which for a generated file
 is usually the whole story in two lines.
+
+The trailing note is on every stale report, because "stale" has exactly one other cause and the
+diff cannot tell them apart. A change to generated code's internal shape is deliberately *not* a
+breaking change — consumers regenerate — so two machines on two servo versions produce a real
+difference in a file neither of them edited, and it reads exactly like a forgotten regenerate.
+Without the note the loop is: CI says stale, the developer runs the command it names with their own
+binary, pushes, CI says stale again. The version it prints is [`servo version`](#version)'s, so the
+two can be compared directly.
 
 A missing generated file is reported distinctly from a stale one:
 
@@ -354,9 +403,9 @@ to its dependency.
       pos: api/api.go:15:6
 ```
 
-**`json`** — the stable machine format, and the same schema the generated `App.Graph()` serialises
-to. It is `servo.Graph`, documented field by field in
-[servo package](servo-package.md#graph-and-graphnode):
+**`json`** — the stable machine format, and byte-for-byte the same schema the generated
+`App.Graph()` serialises to. Both paths populate the identical `servo.Graph` struct, documented
+field by field in [servo package](servo-package.md#graph-and-graphnode):
 
 ```json
 {
@@ -364,7 +413,7 @@ to. It is `servo.Graph`, documented field by field in
     {
       "type": "*example.com/servobasic/logger.Logger",
       "level": 1,
-      "deps": [],
+      "deps": null,
       "capabilities": ["Finalizer"],
       "binding": "sole candidate",
       "pos": "logger/logger.go:10:6"
@@ -372,6 +421,13 @@ to. It is `servo.Graph`, documented field by field in
   ]
 }
 ```
+
+Two details there are load-bearing, and both exist so a consumer written against one producer works
+against the other. An empty `deps` is `null`, not `[]` — the generated `App.Graph()` emits a Go
+literal, where the empty slice is `nil`, and a CLI that wrote `[]` beside `null` for an equally
+empty `capabilities` was not even self-consistent. And `pos` is relative to the module root, the
+same rewriting emission does, rather than the absolute path `explain` and `list` print: an absolute
+path would embed the machine's filesystem layout in output the generated file has to match.
 
 **`dot`** — Graphviz, `rankdir=BT`, nodes filled by level and labelled with their capabilities:
 
@@ -581,15 +637,30 @@ because someone asking why their constructor wasn't picked up is never asking ab
 servo init [--dir <path>] [--tags tag,list]
 ```
 
-Scaffolds `servo_spec.go` in `--dir`, with the build tag, the `go:generate` directive, and the
-package clause already correct:
+Scaffolds **two** files in `--dir`, and prints the one-time module setup they need:
+
+```
+$ servo init --dir cmd/app
+servo init: wrote cmd/app/servo_spec.go
+servo init: wrote cmd/app/servo_generate.go
+
+Next, once per module, so that go generate can run the generator and so
+that every machine runs the same one:
+
+    go get -tool github.com/okian/servo/v3/cmd/servo
+
+Then declare your roots in cmd/app/servo_spec.go and run:
+
+    go generate ./...
+```
+
+**`servo_spec.go`** — the spec file, with the build tag and the package clause already correct, and
+no `go:generate` directive in it:
 
 ```go
 //go:build servoinject
 
 package main
-
-//go:generate go run github.com/okian/servo/v3/cmd/servo generate
 
 import "github.com/okian/servo/v3/servo"
 
@@ -600,16 +671,39 @@ func wire() {
 }
 ```
 
-The package name is taken from any existing `.go` file in the directory, falling back to `main` —
-the usual case of a spec file landing next to a `cmd/*/main.go`. Prints
-`servo init: wrote <path>`, creating the directory if it doesn't exist.
+**`servo_generate.go`** — untagged, and holding nothing but the directive:
 
-It refuses to overwrite: `servo init: <path> already exists`.
+```go
+package main
+
+//go:generate go tool servo generate
+```
+
+**The directive cannot live in the spec file.** `go generate` honours build constraints, so a
+directive inside a `//go:build servoinject` file is invisible to `go generate ./...` — which then
+exits 0, prints nothing, and generates nothing. Silence is the worst failure mode available to a
+tool whose whole claim is build-time checking, so the directive gets its own untagged file. There is
+one such file per directory rather than one per variant, because `go generate` has no build tags to
+select between them and a second copy would just run the same generation twice.
+
+**And it is `go tool servo`, not `go run <module path>`,** for the reason under
+[Installing](#installing): the generator's dependencies are not in a consumer module's build list.
+That is what the `go get -tool` line is for, and why `init` prints it.
+
+The package name is taken from any existing `.go` file in the directory, falling back to `main` —
+the usual case of a spec file landing next to a `cmd/*/main.go`. The directory is created if it
+doesn't exist.
+
+It refuses to overwrite the spec: `servo init: <path> already exists`. `servo_generate.go` is
+written only when absent, and left untouched otherwise.
 
 With `--tags`, it scaffolds a [variant](#build-variants) instead: `servo init --tags=prod` writes
-`servo_spec_prod.go` gated `//go:build servoinject && prod`, whose `go:generate` line carries the
-same flags. It then names any sibling spec still visible under those tags, since leaving the default
-spec ungated is what makes two variants collide:
+`servo_spec_prod.go` gated `//go:build servoinject && prod`. When it also has to write the directive
+file, that carries the matching flags — `go tool servo generate --tags=prod`. When one is already
+there from an earlier `init`, it is left alone, so a second variant means adding its
+`//go:generate` line to that file yourself: each configuration needs its own generation, and the
+file is untagged, so both lines live in it side by side. `init` then names any sibling spec still
+visible under those tags, since leaving the default spec ungated is what makes two variants collide:
 
 ```
 servo init: wrote cmd/app/servo_spec_prod.go
@@ -624,8 +718,10 @@ servo doctor [--dir <path>] [--tags tag,list] [--mod mode] [--modfile file] [--o
 ```
 
 Diagnoses setup problems before `go generate` is ever run, across every injector in scope. Every
-line is `[OK  ]`, `[FAIL]`, or `[WARN]`, and any `FAIL` makes the command exit 1 with
-`servo doctor: problems found`.
+line is `[OK  ]`, `[FAIL]`, `[WARN]` or `[INFO]`. Only `[FAIL]` affects the exit status — one is
+enough to make the command exit 1 with `servo doctor: problems found`. `[WARN]` is a check that
+could not reach a verdict, and `[INFO]` is the variant inventory, which reports rather than judges;
+neither ever fails the run.
 
 ```
 $ servo doctor --dir examples/basic
@@ -650,12 +746,36 @@ What each check means:
 | Module loads | `go/packages` can't load the module at all |
 | Spec file found | No `servo.Build(...)` call, or one in a file without the `servoinject` constraint |
 | No build errors outside the injector(s) | Some *other* package doesn't type-check. Errors inside an injector's own package are deliberately ignored: before the first generation, `main.go` legitimately references a `New` that doesn't exist yet |
+| Injector visible in this configuration | A package holds a spec file these flags exclude, so nothing generates its `New`. Reported here and nowhere else — see [Checking variants](#checking-variants) |
 | Generated file present | The generated file — `servo_gen.go`, or the [variant](#build-variants) matching `--tags` — is missing next to the spec |
 | Generated file fresh | Same comparison [`check`](#check) makes |
 | Tracked by git | A `[WARN]`, never a `FAIL` — best-effort, so no git, no repo, or a different VCS just means "can't tell" |
+| No orphaned generated file | A `servo.<tags>_gen.go` beside the spec that no spec file in that directory could produce any more |
+| Variant inventory | Never fails — an `[INFO]` line naming the sibling variants these flags did not check, and the command that would |
 
-The generated file *should* be committed, which is what that last check is nudging: a checkout
-should build without anyone having to run `servo generate` first.
+The generated file *should* be committed, which is what the git check is nudging: a checkout should
+build without anyone having to run `servo generate` first.
+
+The last two exist because everything above them concerns only the one variant the current flags
+select, which leaves a project's other variants invisible to every servo command. An orphan — a
+generated file whose spec was deleted while it stayed behind — is the sharper of the two: it keeps
+compiling into whichever build satisfies its constraint, nothing will ever regenerate it, and so it
+drifts silently from the moment its spec went away. That is a `FAIL`:
+
+```
+$ servo doctor
+  [FAIL] servo.prod_gen.go is generated from a spec that no longer exists — delete it, or
+         restore the spec file it came from
+```
+
+The inventory is the softer half — a stale `prod` variant nobody ran `--tags=prod` against draws
+three green servo commands next to a red `go build`, so `doctor` names it and the command that
+would check it:
+
+```
+$ servo doctor --dir examples/variants
+  [INFO] not checked by this run, being other variants: servo.prod_gen.go (`servo generate --tags=prod`)
+```
 
 ## `migrate`
 
@@ -735,28 +855,106 @@ runnable examples, is in the README's
 
 An unknown kind or tool is an error naming the valid set.
 
-## `servo-vet`
-
-> **Build tags and `servo-vet`.** Run standalone, it analyses only the default configuration, and the
-> `-tags` flag it inherits from `go/analysis` is a documented no-op ("no effect (deprecated)") — so
-> `servo-vet -tags=prod ./...` silently covers nothing extra. To check a tagged configuration, drive
-> it through the go command, which does understand build flags:
->
-> ```
-> go vet -tags=prod -vettool=$(which servo-vet) ./...
-> ```
+## `version`
 
 ```
-go run github.com/okian/servo/v3/cmd/servo-vet ./...
+servo version
+```
+
+Prints one line: the servo version, the Go toolchain that built the binary, and its target
+platform.
+
+```
+$ servo version
+servo v3.2.1 go1.27.0 darwin/arm64
+```
+
+This matters more than it does for most tools. Servo writes files you commit and gates them with
+[`check`](#check), so two machines on two servo versions produce a diff in a file neither of them
+edited — which is indistinguishable, from the diff alone, from a forgotten regenerate. `check`'s
+stale report names this command for exactly that reason.
+
+A binary built straight from a working tree has no module version — `debug.ReadBuildInfo` reports
+`(devel)` — so the VCS stamp the go command embeds is printed instead, which is the only thing that
+distinguishes two such builds from each other: `(devel, 71f44864ed6c)`, or
+`(devel, 71f44864ed6c, dirty)` when the tree had uncommitted changes.
+
+## `help`
+
+```
+servo help [command]
+servo -h | --help | -help
+```
+
+Prints the command list, the shared [build flags](#build-flags), and a link to this reference, to
+stdout, exiting 0. With a command name it prints that command's usage line and summary instead:
+
+```
+$ servo help check
+usage: servo check [--dir]
+
+verify every generated file matches a fresh generation; writes nothing
+```
+
+An unknown command prints the same list rather than only saying the name was wrong — being told
+`unknown command "geneate"` and nothing else is a dead end when the nearest list of the twelve names
+is a website away:
+
+```
+$ servo geneate
+servo: unknown command "geneate"
+
+Commands:
+    generate  resolve every injector found under --dir and write its generated file
+    …
+
+Run `servo help` for flags and usage.
+```
+
+That path exits 1. An unknown *topic* (`servo help geneate`) is the same error, again with the list.
+
+**Write it without dashes.** `servo -h` and `servo --help` are not this command — they start with a
+dash, so they are `generate --help`, which prints `generate`'s four flags and exits 1.
+
+## `servo-vet`
+
+> **Build tags and `servo-vet`.** Run standalone, it analyses only the default configuration, and
+> `-tags` is **refused**, with exit code 2. `go/analysis` registers that flag on every
+> `singlechecker` binary and documents it as "no effect (deprecated)": `checker.Run` builds its own
+> `packages.Config` with no build flags, so `servo-vet -tags=prod ./...` would exit 0 having
+> analysed the default configuration while anyone who typed it believes `prod` was covered. There is
+> no hook to make it work — the config is internal to `x/tools` — so the honest move is to refuse
+> and name the invocation that does:
+>
+> ```
+> $ servo-vet -tags=prod ./...
+> servo-vet: -tags does not work here — it is go/analysis's own no-op flag, so this run would
+> silently analyse only the default configuration.
+>
+> To check a tagged configuration, drive servo-vet through the go command, which does understand
+> build flags:
+>
+> 	go vet -tags=prod -vettool=$(which servo-vet) ./...
+> ```
+>
+> The refusal is by inspection of `os.Args`, so it catches `-tags`, `--tags`, `-tags=prod` and
+> `-tags prod`, wherever they sit in the argument list. `-tags` with no value is left to
+> `go/analysis`'s own parser.
+
+```
+go get -tool github.com/okian/servo/v3/cmd/servo-vet
+go tool servo-vet ./...
 ```
 
 A standalone [`go/analysis`](https://pkg.go.dev/golang.org/x/tools/go/analysis) analyzer (named
-`servovet`) for the two servo mistakes the compiler cannot catch.
+`servovet`) for the two servo mistakes the compiler cannot catch. `go install
+github.com/okian/servo/v3/cmd/servo-vet@latest` works too; `go run` against the module path does
+not, for the [same go.sum reason](#installing) it doesn't for `cmd/servo`.
 
 **A marker call without the build tag.** Calls to `servo.Build`, `Root`, `Bind`, `Override`,
-`Scoped`, `Linger` or `Max` in any file that doesn't carry a build constraint requiring
-`servoinject`. The markers panic when actually executed, so such a call compiles straight into your
-real binary and panics at runtime. This catches it in the editor instead:
+`Scoped`, `Value`, `Include`, `Linger` or `Max` in any file that doesn't carry a build constraint
+requiring `servoinject`. The markers panic when actually executed, so such a call compiles straight
+into your real binary and panics at runtime. This catches it in the editor instead:
 
 ```
 spec.go:9:2: servo: servo.Build called in a file without a `//go:build servoinject` constraint —
@@ -778,20 +976,69 @@ error)` out, `K` a defined non-interface type — so an unrelated method that ha
 name is left alone. `servo generate` makes both checks too; the analyzer runs them everywhere,
 including in packages no injector has reached yet.
 
-Because it's a `singlechecker` binary, it plugs into anything that speaks `go vet`'s analyzer
-protocol, including `golangci-lint`'s custom-analyzer support and most editor integrations.
+`Include` is the marker most worth having the analyzer for. A shared marker set lives in its own
+package, away from any spec file, which is where the `servoinject` constraint is easiest to forget —
+and `servo generate` [refuses an untagged included file](spec.md#include) only once some injector
+reaches it.
+
+### Using the analyzer from another tool
+
+The analyzer is exported, as `Analyzer` in
+[`github.com/okian/servo/v3/servovet`](https://pkg.go.dev/github.com/okian/servo/v3/servovet) — a
+package with exactly that one identifier in it. `cmd/servo-vet` is a thin `singlechecker` wrapper
+around the same variable, so anything that speaks `go vet`'s protocol — `go vet -vettool=`, most
+editor integrations — works against the binary, and anything that wants an `*analysis.Analyzer`
+imports the package. `singlechecker`, `multichecker`, `unitchecker` and `analysistest` all take it
+directly.
+
+`golangci-lint`'s module plugin system is the second kind. It needs a Go module that registers the
+analyzer at init, which is why the variable had to leave `package main`:
+
+```go
+package servolint
+
+import (
+	"github.com/golangci/plugin-module-register/register"
+	"github.com/okian/servo/v3/servovet"
+	"golang.org/x/tools/go/analysis"
+)
+
+func init() {
+	register.Plugin("servovet", func(any) (register.LinterPlugin, error) { return plugin{}, nil })
+}
+
+type plugin struct{}
+
+func (plugin) BuildAnalyzers() ([]*analysis.Analyzer, error) {
+	return []*analysis.Analyzer{servovet.Analyzer}, nil
+}
+
+func (plugin) GetLoadMode() string { return register.LoadModeTypesInfo }
+```
+
+`LoadModeTypesInfo`, not `LoadModeSyntax`: both checks resolve identifiers through
+`pass.TypesInfo` — a marker call is recognised by the `*types.Func` it resolves to, never by the
+text `servo.Build` — so syntax alone is not enough. Name that module in a `.custom-gcl.yml` and
+`golangci-lint custom` builds a linter binary with it compiled in.
 
 ## Wiring it into a project
 
-**`go:generate`** — what `servo init` scaffolds, pinned to your module's own servo version:
+**`go:generate`** — what `servo init` scaffolds, in its own untagged `servo_generate.go`, pinned to
+your module's own servo version by the `tool` directive `go get -tool` wrote into `go.mod`:
 
 ```go
-//go:generate go run github.com/okian/servo/v3/cmd/servo generate
+//go:generate go tool servo generate
 ```
 
+Both halves are load-bearing, and both are covered under [`init`](#init): the directive cannot sit
+in the tagged spec file, because `go generate` honours build constraints; and it cannot be `go run
+github.com/okian/servo/v3/cmd/servo`, because the generator's dependencies are not in a consumer
+module's build list.
+
 If the injector is a [variant](#build-variants), `servo init --tags=prod` scaffolds it already
-gated — `//go:build servoinject && prod`, with a matching `go:generate` line — and names any
-existing spec that does not yet exclude the new tags, which is the step everyone forgets.
+gated — `//go:build servoinject && prod`, with `--tags=prod` on the directive when it writes the
+directive file — and names any existing spec that does not yet exclude the new tags, which is the
+step everyone forgets.
 
 **CI** — run `check`, not `generate`, so a stale file fails the build instead of being quietly
 fixed on the runner. **A project with variants needs one `check` per configuration**, since each
@@ -808,7 +1055,8 @@ two-variant project, checked both ways in this repository's own CI.
 is a reference workflow doing exactly that.
 
 **Pre-commit** — [`githooks/pre-commit`](https://github.com/okian/servo/blob/master/githooks/pre-commit)
-runs the same check locally. It is not enabled by default; turn it on per clone with:
+runs `go tool servo check` locally, in that form and for the same reason the `go:generate` line
+uses it. It is not enabled by default; turn it on per clone with:
 
 ```
 git config core.hooksPath githooks

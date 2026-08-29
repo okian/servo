@@ -58,7 +58,7 @@ type ScopeRoot struct {
 	Pos           token.Position
 }
 
-// NodeKind separates the three things a *Node can stand for. All but
+// NodeKind separates the four things a *Node can stand for. All but
 // NodeProvider exist only as entries in another node's Deps: they are
 // never constructed by a provider function and never appear in an Order.
 type NodeKind int
@@ -72,6 +72,11 @@ const (
 	// NodeScopeAccessor is the generated accessor for a declared scope,
 	// injected wherever that scope's interface is requested.
 	NodeScopeAccessor
+	// NodeSupplied is a servo.Value: handed to the generated NewWith by
+	// the caller, once per app, rather than built from a provider. It has
+	// no provider, no dependencies and no lifecycle — servo did not make
+	// it, so servo does not stop it.
+	NodeSupplied
 )
 
 // scopeName renders a scope's stable identifier.

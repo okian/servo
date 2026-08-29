@@ -7,7 +7,9 @@ Servo's position on failure is that a missing dependency, an ambiguous binding, 
 build error with a source position — never a runtime panic and never a guess. This page lists every
 message it can produce, grouped by the stage that produces it.
 
-All of them exit 1. All of them go to stderr.
+All of them go to stderr, and all of them exit 1 — with one deliberate exception, `servo-vet`'s
+[refusal of `-tags`](#-tags-is-refused), which exits 2 because it is the tool declining to run
+rather than a finding about your code.
 
 ## Reproducing them yourself
 
@@ -155,6 +157,29 @@ both. There is no lazy-injection escape hatch by design.
 Break it by extracting what they share into a third type both depend on, or by having one side accept
 a callback the other registers after construction.
 
+### Unused supplied value
+
+```
+cmd/api/spec.go:13:3: servo: servo.Value[example.com/app/conf.Flags]() is declared, but nothing in
+the graph depends on example.com/app/conf.Flags
+
+  A declared value becomes a field on the generated Values struct, so this
+  one would be supplied by every caller and read by nobody.
+
+  Two ways out:
+    - take it as a constructor parameter somewhere the roots reach:
+      func New(v example.com/app/conf.Flags) *Thing
+    - delete the servo.Value declaration
+```
+
+A [`servo.Value`](spec.md#value) declares a parameter every caller of `NewWith` has to fill in, so
+one nothing reads is a cost with no return. Reported against the marker's own call site rather than
+against the type, since the declaration is what has to change.
+
+Checked per generated file, which is where this most often surprises people: if a
+[`servo.Override`](spec.md#override) swaps out the only consumer of a supplied value, the value is
+unused in the **test variant** and reported there while the production graph resolves fine.
+
 ## Spec file
 
 Full explanations on [Spec file and markers](spec.md#errors-from-this-stage). In short:
@@ -164,13 +189,21 @@ Full explanations on [Spec file and markers](spec.md#errors-from-this-stage). In
 | `servo: no servo.Build(...) call found` | Run `servo init` |
 | `multiple servo.Build(...) calls found in the same package` | Delete one; a package owns one generated file |
 | ``spec file is missing a `//go:build servoinject` constraint`` | Add the tag |
-| `servo.Build argument is not a marker call` | Only `Root`/`Bind`/`Override` calls belong in `Build` |
-| `servo.Build argument must be a Root/Bind/Override call with explicit type arguments` | Write markers inline, not via a variable or a helper |
+| `servo.Build argument is not a marker call` | Only marker calls belong in `Build` |
+| `servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments` | Write markers inline, not via a variable or a helper — or use [`servo.Include`](spec.md#include) for a shared set |
 | `unrecognized servo marker "X" inside Build(...)` | Not a marker function |
 | `servo.Root expects exactly one type argument` | `Root[T]()` |
 | `servo.Bind/Override expects exactly two type arguments` | `Bind[I, C]()` |
 | `second type argument must be a concrete type, not an interface` | Name the implementation, not another interface |
-| `servo.Bind[…] declared twice` | One bind per interface |
+| `servo.Bind[…] declared twice` | One bind per interface — unless the first came from an `Include`, in which case the local one wins silently |
+| `servo.Value expects exactly one type argument` | `Value[T]()` |
+| `servo.Value[…]() declared twice` | One `Value` per type |
+| `servo.Include takes exactly one argument, the name of a func() []servo.Marker` | `Include(pkg.Shared)` |
+| `servo.Include's argument must name a declared func() []servo.Marker` | Pass the function's name, not a literal, a method value, or a call |
+| `servo.Include names …, whose declaration is not in this build` | The included function is excluded by a constraint this run doesn't satisfy |
+| ``servo.Include names …, which is declared in a file without a `//go:build servoinject` constraint`` | Tag the shared marker set's file, exactly like a spec file |
+| ``X must be exactly `return []servo.Marker{ ... }` `` | The included body is read as syntax, so it can't be a variable, a conditional, or an `append` |
+| `servo.Include cycle — X includes itself, through:` | Two shared sets include each other; the path that closed the loop is printed |
 
 ## Loading
 
@@ -191,12 +224,24 @@ reason to generate, not a reason to refuse.
 ### Missing runtime package
 
 ```
-load: servo runtime package github.com/okian/servo/v3/servo not found among loaded packages
-(the spec file must import it to call Build/Root/Bind)
+load: servo runtime package github.com/okian/servo/v3/servo is not imported by any file this
+build configuration (the default one, with no build tags) can see — either no spec file exists
+yet (run `servo init`), or every spec file is gated on a build constraint this configuration
+does not satisfy, which makes it invisible to this run
 ```
 
-The spec file must import `github.com/okian/servo/v3/servo`. Usually this means the file was moved
-outside the module being scanned, or `--dir` points somewhere with no spec at all.
+Nothing this run can see imports the servo runtime, which for a module with an injector is only
+possible if the spec file was excluded. The two causes are named in the message because they need
+different fixes, and the parenthesis tells you which configuration you were in:
+
+- **No spec file yet.** Run `servo init`.
+- **Every spec file is gated out.** With [variants](cli.md#build-variants), a spec constrained
+  `//go:build servoinject && prod` is invisible to a plain `servo check`, and one constrained
+  `servoinject && !prod` is invisible to `servo check --tags=prod`. The configuration is named
+  verbatim — `-tags=prod`, or `the default one, with no build tags` — so the fix is to add or drop
+  the flags that spec is written for.
+
+Also reachable by pointing `--dir` at a directory with no spec under it at all.
 
 ### Multiple injectors in scope
 
@@ -394,10 +439,20 @@ servo check: cmd/api/servo_gen.go is stale — run `servo generate`
 +++ cmd/api/servo_gen.go (fresh)
 -	server := api.New(db)
 +	server := api.New(db, cache)
+
+note: this is servo v3.2.1. If regenerating does not settle it, the machine that
+      committed the file was running a different version — compare `servo version`, and
+      pin one for everybody with `go get -tool github.com/okian/servo/v3/cmd/servo`.
 ```
 
 The committed file doesn't match a fresh generation, with a `+`/`-` diff. Run `servo generate` and
 commit the result.
+
+The trailing note is on every stale report, because "stale" has one other cause the diff cannot
+distinguish: two machines on two servo versions produce a real difference in a file neither of them
+edited. If `check` fails in CI but passes locally, that is the usual reason — compare the two
+`servo version`s and pin one with `go get -tool`, which is what the `tool` directive in `go.mod` is
+for.
 
 ```
 servo check: cmd/api/servo_gen.go does not exist — run `servo generate`
@@ -406,8 +461,9 @@ servo check: cmd/api/servo_gen.go does not exist — run `servo generate`
 The file was never generated, or was deleted. Same fix, plus commit it — see
 [`doctor`](cli.md#doctor).
 
-If `check` fails in CI but passes locally, the usual cause is two different servo versions. Pin it in
-your `go:generate` directive.
+For a [variant](cli.md#build-variants), both messages name the flags that would actually produce
+that file — ``run `servo generate --tags=prod` `` — since a bare `servo generate` would regenerate
+the default variant and leave the missing one missing.
 
 ### `doctor`
 
@@ -416,7 +472,18 @@ servo doctor: problems found
 ```
 
 Printed after the report when any line was `[FAIL]`. Read the report — each line names its own
-problem. `[WARN]` lines never cause this.
+problem. `[WARN]` and `[INFO]` lines never cause this: `WARN` is a check that could not reach a
+verdict (no git, no repo), and `INFO` is the variant inventory, which reports rather than judges.
+
+```
+servo doctor:
+  [FAIL] servo.prod_gen.go is generated from a spec that no longer exists — delete it, or
+         restore the spec file it came from
+```
+
+The one `doctor` check nothing else makes. A generated file whose spec was deleted still compiles
+into whichever build satisfies its constraint, and nothing will ever regenerate it, so it drifts
+from the moment the spec went away.
 
 ### `explain` and `why`
 
@@ -432,9 +499,9 @@ problem. `[WARN]` lines never cause this.
 
 | Message | Cause |
 | --- | --- |
-| `servo: unknown command "X"` | Typo, or a flag placed before the command name |
+| `servo: unknown command "X"` | Typo, or a flag placed before the command name. The full command list is printed underneath it, and again by `servo help` |
 | `servo graph: unknown --format "X" (want text\|json\|dot\|mermaid)` | Unsupported format |
-| `servo init: <path> already exists` | `init` never overwrites |
+| `servo init: <path> already exists` | `init` never overwrites the spec file |
 | `servo new: unknown kind "X" (want component\|adapter\|mock-adapter)` | Typo in the scaffold kind |
 | `servo new mock-adapter: unknown tool "X" (want moq\|mockery\|gomock)` | Only those three are scaffolded |
 | `flag provided but not defined: -X` | Standard `flag` package error — check the flag belongs to that command |
@@ -455,6 +522,33 @@ so a receiver the body can reach is a nil dereference in production; write
 The two things [`servo-vet`](cli.md#servo-vet) reports, and the two mistakes the compiler cannot
 catch on its own. The generator makes both checks too; the analyzer catches them anywhere, in your
 editor, before generation runs at all — including in packages no injector has reached yet.
+
+The first fires for any marker: `Build`, `Root`, `Bind`, `Override`, `Scoped`, `Value`, `Include`,
+`Linger` or `Max`. `Include` is the one it earns its keep on, since a shared marker set lives in its
+own package, away from any spec file, which is where the tag is easiest to forget.
+
+### `-tags` is refused
+
+```
+$ servo-vet -tags=prod ./...
+servo-vet: -tags does not work here — it is go/analysis's own no-op flag, so this run would
+silently analyse only the default configuration.
+
+To check a tagged configuration, drive servo-vet through the go command, which does understand
+build flags:
+
+	go vet -tags=prod -vettool=$(which servo-vet) ./...
+```
+
+Exit code **2**, not 1 — this is the tool declining to run, `go vet`'s own convention, and the one
+place a servo binary exits with anything other than 0 or 1.
+
+`go/analysis` registers a `-tags` flag on every `singlechecker` binary and documents it as "no
+effect (deprecated)": the checker builds its own `packages.Config` with no build flags, so the run
+would exit 0 having analysed the default configuration while whoever typed it believes `prod` was
+covered. There is no hook to make it work — the config is internal to `x/tools` — so it is refused
+with the invocation that does work. The refusal reads `os.Args` directly, so it catches `-tags`,
+`--tags`, `-tags=prod` and `-tags prod` anywhere in the argument list.
 
 ## Runtime reports are not diagnostics
 

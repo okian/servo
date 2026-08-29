@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
 )
 
 // Diagnostic is one resolution failure. String renders it in
@@ -117,4 +118,19 @@ func sortedCandidates(cands []*graph.Provider) []*graph.Provider {
 	sorted := append([]*graph.Provider(nil), cands...)
 	sort.Slice(sorted, func(i, j int) bool { return graph.ComparePos(sorted[i].Pos, sorted[j].Pos) < 0 })
 	return sorted
+}
+
+// unusedValueDiagnostic reports a servo.Value nothing in the graph asks
+// for. Every declared value becomes a field on the generated Values
+// struct, so an unused one is a parameter every caller keeps supplying and
+// the app never reads.
+func (r *resolver) unusedValueDiagnostic(v load.ValueDecl) Diagnostic {
+	var b strings.Builder
+	fmt.Fprintf(&b, "servo: servo.Value[%s]() is declared, but nothing in the graph depends on %s\n", v.Key.String(), v.Key.String())
+	b.WriteString("\n  A declared value becomes a field on the generated Values struct, so this\n")
+	b.WriteString("  one would be supplied by every caller and read by nobody.\n\n")
+	b.WriteString("  Two ways out:\n")
+	fmt.Fprintf(&b, "    - take it as a constructor parameter somewhere the roots reach:\n      func New(v %s) *Thing\n", v.Key.String())
+	b.WriteString("    - delete the servo.Value declaration\n")
+	return Diagnostic{Pos: v.Pos, Message: b.String()}
 }

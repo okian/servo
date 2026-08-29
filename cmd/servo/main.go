@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/okian/servo/v3/internal/load"
 )
@@ -71,6 +72,22 @@ func main() {
 }
 
 func run(args []string) error {
+	// Checked before the command is extracted, not after: the extraction
+	// below deliberately leaves a leading flag with the default command, so
+	// a `cmd == "-h"` test after it can never fire — which is exactly how
+	// `servo -h` came to print `generate`'s four flags and exit 1, in the
+	// one place a new user looks for the other eleven commands.
+	//
+	// A bare `servo` still generates. That is the documented contract, and
+	// it is why only an explicit help request is intercepted here.
+	if len(args) > 0 && isHelpArg(args[0]) {
+		topic := ""
+		if len(args) > 1 && args[1] != "" && args[1][0] != '-' {
+			topic = args[1]
+		}
+		return writeUsage(os.Stdout, topic)
+	}
+
 	cmd := "generate"
 	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
 		cmd = args[0]
@@ -78,6 +95,10 @@ func run(args []string) error {
 	}
 
 	switch cmd {
+	case "version":
+		fmt.Printf("servo %s %s %s/%s\n", version(), runtime.Version(), runtime.GOOS, runtime.GOARCH)
+		return nil
+
 	case "generate":
 		fs := flag.NewFlagSet("generate", flag.ContinueOnError)
 		dir := fs.String("dir", ".", "directory to scan from; every injector found within it is generated")
@@ -181,6 +202,6 @@ func run(args []string) error {
 		return runNew(args[0], args[1:])
 
 	default:
-		return fmt.Errorf("servo: unknown command %q", cmd)
+		return fmt.Errorf("servo: unknown command %q\n\n%s\nrun `servo help` for flags and usage", cmd, commandList())
 	}
 }

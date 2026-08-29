@@ -12,7 +12,8 @@ The limitations fall into three groups, and the difference between them genuinel
 
 **Consequences of resolving at build time.** These follow from the core idea — working out the
 graph before the program runs. They won't change, because changing them would mean building a
-different kind of tool. Treat them as permanent.
+different kind of tool. Treat them as permanent. Where one has turned out to be narrower than this
+page once claimed, the entry says so outright rather than quietly shrinking.
 
 **Deliberate omissions.** These could be built. They haven't been, and there's a reason.
 
@@ -41,19 +42,46 @@ counter that immediately hits zero.
 *What to do instead, for the genuinely transient case:* write a factory type by hand and inject
 that, like any other dependency.
 
-### Nothing that only exists at runtime can be injected
+### A value from outside the graph is supplied once per app, never per call
 
-Each constructor parameter has to be another node in the graph, resolved by its type. That rules
-out anything that only comes into existence while the program runs: a `*testing.T`, a fixed clock
-for a test, a `t.TempDir()` path, or the `ctx` handed to the generated `New`. `context.Context` gets
-no special treatment, so a constructor asking for one has no provider by default.
+Each constructor parameter resolves to another node in the graph, by type. A value that only comes
+into existence while the program runs has no provider to be that node — a parsed flag set, a
+version string injected with `-ldflags`, a DSN assembled from the environment, a `*sql.DB` some
+harness already opened.
 
-This is the sharpest edge in the whole tool, and it's the reason mocking libraries need a small
-hand-written adapter — their constructors want a `*testing.T`, and the graph has no way to supply
-one. The README's Mocking section walks through the pattern for `moq`, `mockery`, and `gomock`.
+`servo.Value[T]()` covers that case, and this page used to say it was impossible. Declaring one
+makes the injector emit a `Values` struct and a `NewWith(ctx, Values{...})` alongside `New`, and T
+resolves from what the caller passed rather than from any provider — ahead of a provider that
+produces the same type, since declaring one is how you say "this comes from the caller".
 
-*What to do instead:* for the general case, nothing. Take the value as a struct field and set it
-after construction, or test that component directly instead of through the graph.
+What it does not cover is a value that differs per *call*. `Values` is filled in once, when the app
+is constructed, so anything that varies between two uses of the same graph has nowhere to go. The
+concrete case is a `*testing.T`, and it fails for a reason worth stating exactly: `servo.Value` is
+declared in the spec file, and both `New` and `NewTestApp` are generated from that one file. A mock
+constructor wanting a `*testing.T` is only in the graph on the override side, so on the production
+side nothing depends on the declared type and generation refuses it:
+
+```
+servo: servo.Value[*testing.T]() is declared, but nothing in the graph depends on *testing.T
+
+  A declared value becomes a field on the generated Values struct, so this
+  one would be supplied by every caller and read by nobody.
+
+  Two ways out:
+    ...
+```
+
+So mocking libraries still need a small hand-written adapter. The README's Mocking section walks
+through the pattern for `moq`, `mockery`, and `gomock`.
+
+`context.Context` is the related half-case. It still gets no special treatment, so a constructor
+asking for one has no provider by default; `servo.Value[context.Context]()` gives it one, but the
+value is whatever the caller hands `NewWith` — not the `ctx` the generated `New` was called with,
+and not a per-request context.
+
+*What to do instead:* declare the per-app values. For a per-call one, make it a method parameter,
+or a struct field set after construction, or test that component directly instead of through the
+graph.
 
 ### The graph can't change at run time
 
@@ -83,15 +111,20 @@ component servo wires. If yours do, gate them on a build tag of your own and use
 ### Your spec file is read, never run
 
 `servo generate` parses your `servo.Build(...)` call as text. It never executes it. Each argument
-has to be written out literally — `servo.Root[T]()`, `servo.Bind[I, C]()`, or
+has to be written out literally — `servo.Root[T]()`, `servo.Bind[I, C]()`, `servo.Value[T]()`, or
 `servo.Override[I, C]()`, one per line.
 
-You can't compute roots in a loop, hold them in a variable, spread a slice, or call a helper that
-returns markers. If you find yourself wanting to, that's the tool telling you it's a static
-description and not a program.
+You can't compute roots in a loop, hold them in a variable, or spread a slice. `servo.Include(fn)`
+is the one apparent exception, and it is read the same way everything else is: `fn` is *named*,
+never called, and `servo generate` reads the slice literal its body returns exactly as it reads
+`Build`'s own argument list. That is why the body has to be exactly `return []servo.Marker{...}` —
+a variable, a conditional, or an `append` is refused, because answering it would mean running the
+program the spec file deliberately isn't. Wiring can be shared between injectors; it still can't be
+computed.
 
 This is also why the file carries the `servoinject` build tag: it's excluded from your binary, and
-`servo.Build` panics if it ever actually runs — which would mean the tag went missing.
+`servo.Build` panics if it ever actually runs — which would mean the tag went missing. An included
+marker set must carry the tag for the same reason, and `servo generate` refuses one that doesn't.
 
 ### Normal Go tooling never checks your spec file
 
@@ -208,6 +241,11 @@ Identity in the graph is purely by type. Two constructors returning the same con
 two instances — they're an ambiguity, and generation fails. (A [scope](reference/scopes.md) is
 keyed at *runtime* by a value, which is a different thing: it gives you N instances of one type,
 but only one of them per key, and only reachable through an accessor.)
+
+`servo.Value[T]()` doesn't change this, because a supplied value is matched by type too. It gives
+you one node of type T, not a second one: declaring the same type twice is refused outright
+(`servo.Value[T]() declared twice`), and where a provider also produces T the value replaces it
+rather than joining it.
 
 A primary and a replica database. Two SQS clients on two AWS accounts. Two tenant connections. None
 of these can be expressed as two values of one type.

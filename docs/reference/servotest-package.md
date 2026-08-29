@@ -6,19 +6,21 @@ import "github.com/okian/servo/v3/servotest"
 
 **Who this is for:** anyone writing a test against a generated `App` or `TestApp`.
 
-Six small helpers, each addressing something that is awkward to check by hand: goroutine leaks,
-real init/stop ordering, the abandoned-node path, the eviction-racing-acquire boundary of a scope's
-linger window, and giving `gomock` a reporter inside a graph that has no `*testing.T` in it.
+Seven small helpers, each addressing something that is awkward to check by hand: goroutine leaks
+(two of them, for two different situations), real init/stop ordering, the abandoned-node path, the
+eviction-racing-acquire boundary of a scope's linger window, and giving `gomock` a reporter inside a
+graph that has no `*testing.T` in it.
 
 This is the only servo package with a third-party dependency —
-[`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak), used by `NoLeaks`. The core
+[`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak), used by both leak checks. The core
 (`cmd/servo`, the internals) depends on nothing beyond `golang.org/x/tools`.
 
 ## Index
 
 | Identifier | Kind | |
 | --- | --- | --- |
-| [`NoLeaks`](#noleaks) | func | Fail if any goroutine outlives the test |
+| [`NoLeaks`](#noleaks) | func | Fail if *any* goroutine is running when the test returns |
+| [`NoNewLeaks`](#nonewleaks) | func | Fail only on goroutines this test added to a baseline |
 | [`Linger`](#linger) | func | Shrinks every scope's linger window for one test |
 | [`Timeout`](#timeout) | func | Shrink `servo.DefaultStopBudget` for one test |
 | [`Recorder`](#recorder) | type | An app's init and shutdown reports, together |
@@ -33,8 +35,8 @@ This is the only servo package with a third-party dependency —
 func NoLeaks(t *testing.T)
 ```
 
-Fails `t` if any goroutine started during the test is still running when it returns. Use it as the
-first `defer` in the test:
+Fails `t` if **any** goroutine is running when the test returns, beyond the ones goleak's own
+default ignore list covers. Use it as the first `defer` in the test:
 
 ```go
 func TestApp(t *testing.T) {
@@ -43,13 +45,49 @@ func TestApp(t *testing.T) {
 }
 ```
 
-This is a meaningful check for a servo app specifically, because `Run` launches goroutines and
-`Shutdown` is supposed to end them. A leak here usually means either a `Runner` that ignores context
+**Note "any", not "any this test started."** goleak has no notion of when a goroutine appeared, so a
+goroutine left behind by an *earlier* test in the same binary is reported against whichever test
+calls `NoLeaks` next. An innocent test fails for its neighbour's leak, and the failure names the
+wrong one.
+
+That is the right check for a package whose tests all clean up after themselves — it also catches a
+leak *inherited* from a sibling, which is a real defect. It is the wrong check for a package that
+also has a test leaving a goroutine running on purpose, and servotest advertises exactly such a
+test: [`Timeout`](#timeout) exists to exercise the abandoned-node path, and an abandoned node is by
+definition one that never returns. Use [`NoNewLeaks`](#nonewleaks) there.
+
+The check is meaningful for a servo app specifically, because `Run` launches goroutines and
+`Shutdown` is supposed to end them. A leak usually means either a `Runner` that ignores context
 cancellation, or a node that was **abandoned** — its stop call blew its budget and its goroutine was
 left running by design. That second case is a real finding, not a false positive: the report will
 say `abandoned` and this is the assertion that stops it going unnoticed.
 
 Servo's own suite uses it; it's exported so generated-app tests can too.
+
+## `NoNewLeaks`
+
+```go
+func NoNewLeaks(t *testing.T) func()
+```
+
+Records the goroutines already running and returns the check for the ones this test adds on top of
+them. Two calls, not one:
+
+```go
+func TestApp(t *testing.T) {
+	defer servotest.NoNewLeaks(t)()
+	// ...
+}
+```
+
+**The call shape is what makes it correct.** The baseline has to be taken *before* the test body
+runs and the check *after*, so `NoNewLeaks` is called at the top and the function it returns is what
+gets deferred. `defer servotest.NoNewLeaks(t)` — no trailing parentheses — compiles and checks
+nothing; `go vet` reports it as an `unusedresult`, and so does the test that would otherwise leak.
+
+Reach for it in any package where another test parks a goroutine deliberately. Prefer
+[`NoLeaks`](#noleaks) where nothing does: a baseline hides an inherited leak, and an inherited leak
+is still a leak.
 
 ## `Timeout`
 

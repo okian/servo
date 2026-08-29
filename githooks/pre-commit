@@ -19,6 +19,13 @@ fi
 # A project with build variants needs one check per configuration, since
 # each variant has its own generated file and `check` only inspects the one
 # its flags select:
-#   go run github.com/okian/servo/v3/cmd/servo check --tags=prod
+#   go tool servo check --tags=prod
+#
+# `go tool`, not `go run <the generator's package>`: a consumer requires
+# servo for the marker package alone, so the generator's own dependencies
+# are not in their build list and `go run` fails on a missing go.sum entry.
+# The tool directive also pins the version, so this hook and CI cannot
+# disagree about what the generated file should contain. Add it once with:
+#   go get -tool github.com/okian/servo/v3/cmd/servo
 echo "pre-commit: servo check"
-go run github.com/okian/servo/v3/cmd/servo check
+go tool servo check

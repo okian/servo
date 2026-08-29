@@ -7,7 +7,7 @@ order every time — though only `generate` and `check` reach the last one.
 ```mermaid
 flowchart LR
     L["load<br/>one type-checked<br/>go/packages session"]
-    F["find spec<br/>roots, Bind,<br/>Override, Scoped"]
+    F["find spec<br/>roots, Bind, Override,<br/>Scoped, Value, Include"]
     S["scan<br/>every constructor-shaped<br/>function, classified"]
     R["resolve<br/>closure → precedence →<br/>cycles → levels"]
     E["emit<br/>one deterministic,<br/>gofmt-clean file"]

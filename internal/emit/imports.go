@@ -37,6 +37,20 @@ func (m *ImportManager) Reserve(names ...string) {
 	}
 }
 
+// Claim gives path first refusal on ident without registering the import
+// itself, so a package added later is aliased around it while the import
+// block still lists only what the file actually references.
+//
+// It exists because emitted code hard-codes errors.Join, time.Now and
+// sync.Once long before it knows whether this graph needs them. Reserve is
+// not a substitute: it blocks the identifier for everyone, so the very
+// Add these calls anticipate would be aliased too.
+func (m *ImportManager) Claim(path, ident string) {
+	if _, taken := m.byName[ident]; !taken {
+		m.byName[ident] = path
+	}
+}
+
 // Add registers path (whose default package identifier is pkgName) and
 // returns the identifier to use at call sites.
 func (m *ImportManager) Add(path, pkgName string) string {
@@ -68,7 +82,23 @@ func (m *ImportManager) aliasFor(path string) string {
 			return candidate
 		}
 	}
-	return sanitizeIdent(strings.Join(segments, "_"))
+	// Extending backward runs out on a single-segment path — "errors",
+	// reached when a user package took that identifier first and the
+	// stdlib import arrives second — and on one whose every prefix is
+	// already claimed. Falling through used to return the colliding
+	// identifier itself, so the generated file declared two imports under
+	// one name and did not compile. A numeric suffix says less than a
+	// path segment would, but there is no segment left to say it with.
+	joined := sanitizeIdent(strings.Join(segments, "_"))
+	if _, taken := m.byName[joined]; !taken {
+		return joined
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s%d", joined, i)
+		if _, taken := m.byName[candidate]; !taken {
+			return candidate
+		}
+	}
 }
 
 func sanitizeIdent(s string) string {

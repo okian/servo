@@ -439,7 +439,9 @@ func (e *roomKeyEntry) build() error {
 func (e *roomKeyEntry) stopRoomLog(ctx context.Context) []servo.NodeResult {
 	var results []servo.NodeResult
 	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.RoomLog", e.roomLog.Flush))
-	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.RoomLog", func(context.Context) error { e.roomLogCleanup(); return nil }))
+	if e.roomLogCleanup != nil {
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.RoomLog", func(context.Context) error { e.roomLogCleanup(); return nil }))
+	}
 	return results
 }
 

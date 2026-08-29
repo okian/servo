@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,8 +29,91 @@ func TestRunInitScaffoldsSpecFile(t *testing.T) {
 	if !strings.Contains(content, "package worker") {
 		t.Errorf("scaffold should detect the package name from the existing main.go, got:\n%s", content)
 	}
-	if !strings.Contains(content, "//go:generate go run github.com/okian/servo/v3/cmd/servo generate") {
-		t.Errorf("scaffold missing go:generate directive:\n%s", content)
+	// The directive is deliberately NOT in this file: go generate honours
+	// build constraints, so one inside the servoinject file is invisible
+	// to `go generate ./...`, which then exits 0 having done nothing.
+	if strings.Contains(content, "go:generate") {
+		t.Errorf("the go:generate directive must not live in the tagged spec file, where go generate cannot see it:\n%s", content)
+	}
+
+	gen, err := os.ReadFile(filepath.Join(dir, "servo_generate.go"))
+	if err != nil {
+		t.Fatalf("reading the scaffolded directive file: %v", err)
+	}
+	directive := string(gen)
+	if strings.Contains(directive, "//go:build") {
+		t.Errorf("the directive file must carry no build constraint at all:\n%s", directive)
+	}
+	for _, want := range []string{"package worker", "//go:generate go tool servo generate"} {
+		if !strings.Contains(directive, want) {
+			t.Errorf("directive file missing %q:\n%s", want, directive)
+		}
+	}
+}
+
+// TestRunInitScaffoldedWorkflowIsReachableByGoGenerate is the end-to-end
+// half: it builds the module the scaffold describes and confirms `go
+// generate ./...` actually reaches the directive. The unit assertions
+// above cannot catch a directive that is present, correct, and never run.
+func TestRunInitScaffoldedWorkflowIsReachableByGoGenerate(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", `module example.com/initflow
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+root+`
+`)
+	mustWriteFile(t, dir, "pkg/pkg.go", `package pkg
+
+type T struct{}
+
+func New() *T { return &T{} }
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", `package main
+
+func main() {}
+`)
+	appDir := filepath.Join(dir, "cmd", "app")
+	if err := runInit(appDir, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	mustWriteFile(t, dir, "cmd/app/servo_spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/initflow/pkg"
+	"github.com/okian/servo/v3/servo"
+)
+
+func wire() {
+	servo.Build(
+		servo.Root[*pkg.T](),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+
+	// The go command has to be able to find the tool the directive names,
+	// which is the second half of the same failure: without it, `go run
+	// <the generator's package>` fails on a missing go.sum entry, because a
+	// consumer requires servo for the marker package alone.
+	get := exec.Command("go", "get", "-tool", "github.com/okian/servo/v3/cmd/servo")
+	get.Dir = dir
+	if out, err := get.CombinedOutput(); err != nil {
+		t.Skipf("go get -tool needs the module proxy or a warm cache; skipping: %v\n%s", err, out)
+	}
+
+	gen := exec.Command("go", "generate", "./...")
+	gen.Dir = dir
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("go generate ./...: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(appDir, "servo_gen.go")); err != nil {
+		t.Fatalf("`go generate ./...` produced no servo_gen.go — the scaffolded directive was not reached: %v", err)
 	}
 }
 
@@ -152,11 +236,18 @@ func TestRunInitScaffoldsAVariantSpec(t *testing.T) {
 	}
 	for _, want := range []string{
 		"//go:build servoinject && prod",
-		"servo generate --tags=prod",
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("scaffolded spec missing %q:\n%s", want, body)
 		}
+	}
+
+	gen, err := os.ReadFile(filepath.Join(dir, "servo_generate.go"))
+	if err != nil {
+		t.Fatalf("reading the scaffolded directive file: %v", err)
+	}
+	if !strings.Contains(string(gen), "servo generate --tags=prod") {
+		t.Errorf("the directive should carry the variant's tags:\n%s", gen)
 	}
 
 	// The default name is untouched, so the two coexist.

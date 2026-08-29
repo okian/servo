@@ -48,7 +48,7 @@ flowchart TD
     C["Construct<br/>constructors, in dependency order, sequentially"]
     I["Init<br/>level by level; concurrent within a level"]
     OK{"all Init<br/>returned nil?"}
-    RB["Roll back<br/>Shutdown(ctx), joined with the failing error"]
+    RB["Roll back<br/>Shutdown on a context the signal cannot cancel;<br/>its report joins the failing error only when not clean"]
     RUN["Run<br/>every Runner in one errgroup"]
     S["Shutdown<br/>reverse order: Drain, Flush, Stop, cleanup"]
     B{"returned inside<br/>the stop budget?"}
@@ -69,7 +69,8 @@ here is a framework callback — it is all plain code in a file you can open and
 
 Constructors are called sequentially, in dependency order. Every dependency is fully constructed
 before anything that needs it, and each node is constructed exactly once no matter how many
-consumers it has.
+consumers it has. Any [supplied value](spec.md#value) is copied out of `Values` first, ahead of
+every constructor, since something has to be able to depend on it.
 
 **If a constructor returns an error**, `New` stops there, undoes what it already built, and returns
 that error. The rollback calls the stop path of every node constructed before the failure, in
@@ -106,11 +107,70 @@ declared order, so don't assert an exact sequence for nodes that share a level.
 construction, because every node exists by now — and returns:
 
 ```go
+report := a.Shutdown(context.WithoutCancel(ctx))
+if report.Clean() {
+	return nil, err
+}
 return nil, errors.Join(err, report)
 ```
 
-So the returned error carries both the failure and everything that happened while unwinding. `New`
-returns a nil `*App`: there is no partially initialised app to inspect.
+**A clean rollback returns the bare error.** `Report` satisfies `error` by value, so it is never nil
+and `errors.Join` never skips it — and a clean report's `Error()` is the empty string, which
+`errors.Join` still separates with a newline. Joining unconditionally appended a blank line to every
+ordinary startup failure, and that trailing newline survives into any log field or `%w` wrapping
+built from it. When the unwind *does* have something to say, the returned error carries both.
+
+Either way `New` returns a nil `*App`: there is no partially initialised app to inspect.
+
+## Stopping what was never initialised
+
+**`Drain`, `Flush` and `Stop` can be called on a component whose `Init` never ran.** This is the
+contract most easily missed, and the one that turns an ordinary startup failure into a panic during
+the unwind.
+
+Both rollback paths reach nodes that were only ever constructed:
+
+- **A constructor failure** stops every node built *before* it. None of them has been `Init`ed at
+  all — the `Init` phase has not started.
+- **An `Init` failure** calls the app's own `Shutdown`, which walks the **whole** graph. That
+  includes the node that just failed, and every node at a level *above* the failure, whose `Init`
+  was never reached. `Shutdown` cannot be narrowed to "the ones that succeeded" without the runtime
+  bookkeeping the generated code deliberately doesn't carry.
+
+So a teardown method must tolerate the state its constructor left, not the state `Init` would have
+produced:
+
+```go
+// Wrong. Reached during rollback with pool still nil, and the panic
+// happens inside servo.RunStop's goroutine, mid-unwind.
+func (d *DB) Stop(ctx context.Context) error { return d.pool.Close() }
+
+// Right.
+func (d *DB) Stop(ctx context.Context) error {
+	if d.pool == nil {
+		return nil
+	}
+	return d.pool.Close()
+}
+```
+
+The general rule: whatever `Init` acquires, the matching teardown has to check for. A nil pool, a
+nil client, a zero-value channel — a constructor that leaves them unset is ordinary Go, and the
+rollback is exactly the path that exercises it. [`RunStop` recovers the
+panic](#the-stop-budget) if you get this wrong, so the process survives and the node is reported as
+failed, but the real startup error then arrives with a stack trace stapled to it.
+
+**Both rollback paths run on `context.WithoutCancel(ctx)`.** They used to pass `New`'s own `ctx`
+straight down, and every `main` in this documentation hands `New` the `signal.NotifyContext`
+context. A SIGTERM arriving mid-startup — a rolling deploy, a pre-empted crash-loop restart —
+therefore cancelled it, aborted an `Init`, and then the unwind was handed a context that was already
+done. `servo.RunStop` derives its budget from it, so `Done` was closed before the `select` ran and
+every node was reported abandoned without its `Drain`, `Flush` or `Stop` getting a chance to do
+anything: the real startup error buried under a wall of `abandoned: context canceled`.
+
+Stripping the cancellation is the same rule this page states for a hand-written `main`'s
+[`Shutdown`](#run), and the one [scoped teardown](scopes.md) already followed. Nothing can hang as a
+result — `RunStop` still caps every phase at its own budget.
 
 ## Run
 
@@ -173,7 +233,7 @@ before the database it queries. For each node, in this order:
 1. `Drain(ctx)` — stop accepting new work and let in-flight work finish
 2. `Flush(ctx)` — push buffered state somewhere durable
 3. `Stop(ctx)` — release the resource
-4. the constructor's cleanup `func()`, if it returned one
+4. the constructor's cleanup `func()`, if it returned a non-nil one
 
 Only the phases that node actually implements are emitted. **Each phase gets its own budget**, so a
 node implementing all three can take up to three budgets in the worst case.
@@ -183,7 +243,9 @@ inside your own component, where the knowledge of what counts as in-flight actua
 
 **Every node's stop path is idempotent**, guarded by a `sync.Once`, because the same path is
 reachable from both construction rollback and `Shutdown`. Calling `Shutdown` twice returns the same
-results without touching your components again.
+results without touching your components again. It is also why these methods have to tolerate a
+node that was never `Init`ed: see [Stopping what was never
+initialised](#stopping-what-was-never-initialised).
 
 `Shutdown` never returns an error — it returns a [`servo.Report`](servo-package.md#report), which
 is a per-node account of what happened. It also satisfies `error`, so it composes with
@@ -211,11 +273,20 @@ refuses to stop cannot hold a whole scope's eviction open.
 | --- | --- | --- |
 | Returned `nil` in time | `StatusOK` | Stopped cleanly |
 | Returned an error in time | `StatusFailed` | Tried to stop and failed; the error is on the result |
+| Panicked | `StatusFailed` | The panic is recovered; the value and the stack become the error |
 | Didn't return in time | `StatusAbandoned` | The context deadline is the error; the goroutine is left running |
 
 Abandoned means exactly what it says: the process moves on and the goroutine may still be alive.
 Servo takes the position that reporting an abandoned node honestly beats hanging forever, and it
 never claims a clean stop it didn't earn.
+
+**A panic in a stop phase is recovered and reported, not propagated.** The phase call runs in
+servo's goroutine, not yours, so no `recover` in your `main` could ever reach it: unrecovered, one
+panicking `Stop` kills the process mid-teardown, leaving every node behind it running and no
+`Report` to say which. `servo.RunStop` turns it into one `StatusFailed` node carrying the panic
+value and the stack, and the rest of the unwind continues. This is what keeps a `Stop` that assumes
+`Init` ran — see [Stopping what was never initialised](#stopping-what-was-never-initialised) — from
+taking the process down during a rollback.
 
 Per-node results are merged with **abandoned outranking failed outranking OK**, and every phase's
 error joined, so one node with a clean `Drain` and a timed-out `Stop` is reported once, as
@@ -273,6 +344,12 @@ func New(cfg Config) (*Client, func(), error)
 
 It is called **last** in that node's stop sequence, after `Drain`/`Flush`/`Stop`, under its own
 budget like any other phase, and it takes no context and returns no error.
+
+**A nil cleanup func is skipped, not called.** Returning `nil` from a path that has nothing to undo
+is ordinary Go, and `(T, func(), error)` is a documented provider shape, so the generated stop
+method guards the call — `if a.dbCleanup != nil { … }`. Unguarded, that nil call panicked inside
+`servo.RunStop`'s own goroutine. Skipping the phase rather than recording an `OK` result for it
+leaves the merged `NodeResult` identical either way, so nothing downstream can tell the difference.
 
 ### Why this exists when `Finalizer` does
 

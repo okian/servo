@@ -92,7 +92,10 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 		err := a.relay.Init(ctx)
 		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servobasic/relay.Relay", Duration: time.Since(start)})
 		if err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}

@@ -11,8 +11,8 @@ and reviewable like any other file. What follows is exactly what it contains.
 
 | File | When | Contains |
 | --- | --- | --- |
-| `servo_gen.go` | Always | `App`, `New`, the full method set, and one registry per declared scope |
-| `servo_gen_test.go` | Only when the spec declares at least one `servo.Override` | `TestApp`, `NewTestApp`, and the same method set |
+| `servo_gen.go` | Always | `App`, `New`, the full method set, one registry per declared scope, and `Values`/`NewWith` when the spec declares a [`servo.Value`](spec.md#value) |
+| `servo_gen_test.go` | Only when the spec declares at least one `servo.Override` | `TestApp`, `NewTestApp`, the same method set, and `TestValues`/`NewTestAppWith` under the same condition |
 
 Both land in the **same directory as the spec file**, in that directory's package — which is why
 the spec file belongs next to the `main.go` that will call `New`.
@@ -64,6 +64,14 @@ was chosen, and the position is **relative to the module root** so the file is b
 checkouts. This block is the reason a reviewer can see the effect of a signature change in the diff:
 a new dependency shows up here, not just in a call site.
 
+A [supplied value](spec.md#value) is listed first, at `[L0]`, with the `servo.Value[…]()` call site
+in place of a provider:
+
+```go
+//	[L0] example.com/app/conf.Flags
+//	      supplied by the caller  cmd/api/spec.go:13:3
+```
+
 An app with a [scope](scopes.md) gets a second block per scope, below the node list — its policy,
 the accessors that expose it, what one instance holds (`[Sn]` is the level *within* that scope),
 and the singletons it borrows from the app:
@@ -105,7 +113,7 @@ One field per node, in construction order, plus bookkeeping only where it's need
 
 | Field | Emitted when |
 | --- | --- |
-| `<name>` | Always — the component itself |
+| `<name>` | Always — the component itself, or, for a [supplied value](spec.md#value), the value copied out of `Values` |
 | `<name>Cleanup func()` | The constructor returned a cleanup func |
 | `<name>StopOnce sync.Once` | The node has something to stop (`Drain`, `Flush`, `Stop`, or a cleanup func) |
 | `<name>StopResult servo.NodeResult` | Same condition — memoises the result so the stop path is idempotent |
@@ -167,8 +175,51 @@ Constructs every node in dependency order, then runs the `Init` phase. Returns a
 or `nil` and an error. Never a partially initialised app. Full semantics, including the two distinct
 rollback paths, in [Lifecycle](lifecycle.md#construct).
 
-The `ctx` is used for `Init` and for any rollback — pass the one that carries your signal handling,
-so a Ctrl-C during a slow startup unwinds instead of hanging.
+The `ctx` is used for `Init`; the rollback paths strip its cancellation, so a signal arriving during
+a slow startup unwinds properly instead of abandoning every node at once. Pass the context that
+carries your signal handling.
+
+### `Values` and `NewWith`
+
+Emitted only when the spec declares at least one [`servo.Value`](spec.md#value). A graph that
+declares none emits the file it always did, byte for byte.
+
+```go
+// Values carries the values servo.Value declares: the ones the caller
+// supplies rather than any provider builds.
+type Values struct {
+	Flags conf.Flags
+}
+
+// New builds the app with the zero value of every servo.Value.
+// Prefer NewWith: the zero value is a real value for a struct of
+// options and a nil pointer for anything else, so this is right only when
+// the zero value is what you meant.
+func New(ctx context.Context) (*App, error) {
+	return NewWith(ctx, Values{})
+}
+
+func NewWith(ctx context.Context, v Values) (*App, error) { … }
+```
+
+**`NewWith` is the one to call.** It carries the real body — everything `New` does above, plus an
+assignment per supplied value at the very top of construction, before any constructor runs. A
+supplied value is one per app, held for the life of the process, exactly like a constructed
+singleton.
+
+**`New` still exists, and delegates with a zero `Values{}`.** That is deliberate: the alternative —
+dropping `New` from a graph that declares a value — would make the presence of a marker change the
+generated package's public API, which is the one thing the method set is supposed to pin down. It
+cannot do better than the zero value and its doc comment says so; for a struct of options that is
+often exactly right, and for a `*sql.DB` it is nil.
+
+**Field names are exported and allocated separately** from `App`'s. They come from the type's own
+name (`conf.Flags` → `Flags`), in a namespace of their own, because `Values` is a struct you write a
+literal for rather than an internal container. Like `App`'s field names they are not a stable API:
+rename the type and the field follows.
+
+In the [test variant](#the-test-variant) the three names are `TestValues`, `NewTestAppWith` and
+`NewTestApp`, for the same reason `TestApp` exists — both files land in the same package.
 
 ### `Run`
 
@@ -216,8 +267,16 @@ actually built.
 
 It is display-only. Type strings are labels, not lookup keys, and there is no path from a
 `GraphNode` back to the instance it describes. Useful for a `/debug/graph` endpoint, a startup log
-line, or asserting graph shape in a test. It serialises to the same JSON schema
-`servo graph --format=json` produces at build time — the two paths populate the identical struct.
+line, or asserting graph shape in a test.
+
+**It serialises byte-for-byte the way `servo graph --format=json` does**, and that is a checked
+property rather than an aspiration: the two paths populate the identical `servo.Graph` struct, both
+write `nil` (JSON `null`) for an empty `deps`, and both write positions relative to the module root.
+A consumer written against one works against the other — which was the point of the claim, and is
+now true of the bytes as well as the schema.
+
+A [supplied value](spec.md#value) appears here too, first and at `Level: 0`, with `Binding:
+"supplied"` and the `servo.Value[…]()` call site as its `Pos`.
 
 Scoped nodes appear here too, after the singletons, each carrying its scope's key in `Scope` and
 its level *within that scope* in `Level`. The scopes themselves are listed in `Graph.Scopes`, with
@@ -280,6 +339,15 @@ wrapper. It has to be. Overriding an interface can resolve a completely differen
 which means different fields, different capabilities, and a different set of stop methods; the two
 graphs cannot share one struct definition.
 
+Every generated name is prefixed the same way, for the same reason: a spec that also declares a
+[`servo.Value`](spec.md#value) gets `TestValues` and `NewTestAppWith` beside `NewTestApp`, and the
+scope registries and accessors get a `test` prefix.
+
+That distinctness has one consequence worth planning for. The two graphs are resolved separately, so
+a `servo.Value` that only the production graph depends on is *unused* in the override graph — and an
+unused value is a diagnostic. If overriding an interface removes the only consumer of a supplied
+value, either the mock has to take it too or the value has to go.
+
 Because it lives in a `_test.go` file, it exists only under `go test`. A typical test:
 
 ```go
@@ -312,9 +380,11 @@ never to one consumer.
 ## What is stable
 
 **Stable, and safe to write code against:** the method set above, its signatures, and the semantics
-of each. The JSON schema of `servo.Graph`. The types in the
-[`servo` package](servo-package.md).
+of each — including that `New(ctx)` exists and keeps that signature whether or not the spec declares
+a `servo.Value`, and that `NewWith`/`Values` are the names used when it does. The JSON schema of
+`servo.Graph`. The types in the [`servo` package](servo-package.md).
 
-**Not stable:** field names, the exact statements emitted, the header comment's formatting, variable
-names inside `New`. Treat the file's *contents* as an implementation detail of your own package — you
-commit it, you review it, you don't depend on its internals, and you never edit it.
+**Not stable:** `App` field names, `Values` field names, the exact statements emitted, the header
+comment's formatting, variable names inside `New`. Treat the file's *contents* as an implementation
+detail of your own package — you commit it, you review it, you don't depend on its internals, and
+you never edit it.

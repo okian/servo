@@ -7,10 +7,11 @@ import "github.com/okian/servo/v3/servo"
 **Who this is for:** anyone reading a generated file's calls into the runtime, or handling a
 `Report` in their own code.
 
-This package is two unrelated halves. The **markers** (`Build`, `Root`, `Bind`, `Override`) are read
-as syntax by `servo generate` and panic if they ever execute. The **runtime** — around 430 lines —
-is what generated code actually calls at run time. It imports nothing outside the standard library,
-and neither it nor any generated output imports `reflect`.
+This package is two unrelated halves. The **markers** (`Build`, `Root`, `Bind`, `Override`,
+`Scoped`, `Value`, `Include`, and the two scope options) are read as syntax by `servo generate` and
+panic if they ever execute. The **runtime** — around 430 lines — is what generated code actually
+calls at run time. It imports nothing outside the standard library, and neither it nor any generated
+output imports `reflect`.
 
 Your components never import this package. Capability interfaces are satisfied structurally, by
 having the method.
@@ -24,6 +25,8 @@ having the method.
 | [`Bind`](#bind) | func | Binds an interface to a concrete type (marker) |
 | [`Override`](#override) | func | Test-only binding (marker) |
 | [`Scoped`](#scoped) | func | Declares a keyed, refcounted instance (marker) |
+| [`Value`](#value) | func | Declares a type the caller supplies (marker) |
+| [`Include`](#include) | func | Splices another function's marker list in (marker) |
 | [`Linger`](#linger-and-max), [`Max`](#linger-and-max) | funcs | Scope policy (markers) |
 | [`Marker`](#marker) | type | The markers' opaque return type |
 | [`ScopeOption`](#scopeoption) | type | `Linger`/`Max`'s opaque return type |
@@ -44,7 +47,7 @@ having the method.
 
 ## Markers
 
-All four exist to be read, not run. Each one panics if executed, which is what a missing
+All of them exist to be read, not run. Each one panics if executed, which is what a missing
 `servoinject` build tag or a skipped generation looks like at run time — a loud failure instead of a
 nil app. Full semantics are on [Spec file and markers](spec.md).
 
@@ -96,6 +99,38 @@ method. Panics if it ever runs.
 
 Full treatment: [Scoped instances](scopes.md).
 
+### `Value`
+
+```go
+func Value[T any]() Marker
+```
+
+Declares that `T` is supplied by the caller rather than built by a provider. It beats any provider
+that also produces `T` — declaring one is how you say "this comes from the caller", which is only
+meaningful if it wins — and a declared `T` nothing in the graph depends on is a generate-time
+diagnostic rather than a struct field every caller keeps supplying and the app never reads.
+
+Declaring at least one changes the generated API additively: the injector keeps `New(ctx)` and gains
+`type Values struct{…}` and `func NewWith(ctx context.Context, v Values) (*App, error)`. See
+[Generated API](generated-api.md#values-and-newwith), and [Spec file and
+markers](spec.md#value) for the full contract.
+
+### `Include`
+
+```go
+func Include(func() []Marker) Marker
+```
+
+Splices the marker list returned by the named function into this `Build` call, so a set of
+declarations shared by several injectors is written once. The function is **named, never called**:
+its body is read as syntax exactly as `Build`'s own argument list is, which is why it must be
+exactly `return []servo.Marker{ …marker calls… }` and why the file it lives in needs the
+`servoinject` build tag the same way a spec file does.
+
+It may name a function in another package, includes may nest, a cycle is a diagnostic, and a
+`Bind`/`Override` written locally in the spec file supersedes an included one for the same
+interface. Full contract: [Spec file and markers](spec.md#include).
+
 ### `Linger` and `Max`
 
 ```go
@@ -120,8 +155,9 @@ effect on already-generated code.
 type Marker struct{}
 ```
 
-The opaque return type of `Root`, `Bind`, `Override` and `Scoped`. Carries no data; it exists so `Build`'s
-argument list type-checks.
+The opaque return type of every `Build` marker — `Root`, `Bind`, `Override`, `Scoped`, `Value` and
+`Include`. Carries no data; it exists so `Build`'s argument list type-checks, and so an included
+function has a slice element type to return.
 
 ### `ScopeOption`
 
@@ -159,6 +195,25 @@ What each one is for, and when to write one:
 | `Finalizer` | Release the resource: close the pool, disconnect, unsubscribe. | You hold something the OS or a remote service is also tracking. |
 | `Healther` | "This process is not broken." Restart me if it fails. | A dependency can fail in a way that a restart would fix. |
 | `Readier` | "Send me traffic." Take me out of the load balancer if it fails. | You can be alive but temporarily unable to serve — warming a cache, waiting on a leader election. |
+
+**`Drain`, `Flush` and `Stop` must tolerate a component that was constructed but never `Init`ed.**
+This is the one contract here that is easy to miss and expensive to get wrong. Both rollback paths
+inside `New` reach the stop methods of nodes whose `Init` never ran — see
+[Lifecycle](lifecycle.md#stopping-what-was-never-initialised) — so a `Stop` that assumes `Init`
+succeeded panics during the unwind of an unrelated failure:
+
+```go
+// Wrong: nil pool if Init never ran.
+func (d *DB) Stop(ctx context.Context) error { return d.pool.Close() }
+
+// Right.
+func (d *DB) Stop(ctx context.Context) error {
+	if d.pool == nil {
+		return nil
+	}
+	return d.pool.Close()
+}
+```
 
 Three distinctions decide most of the questions people have here:
 
@@ -207,8 +262,10 @@ clean report it returns the empty string.
 traverse into them normally.
 
 `Report` satisfies `error` **by value**, which composes nicely with `errors.Join` — the generated
-`New` uses exactly that to combine an `Init` failure with the shutdown it triggered. It also means
-one trap worth naming:
+`New` uses exactly that to combine an `Init` failure with the shutdown it triggered, *when that
+shutdown had something to say*. When the rollback comes out clean it returns the bare error instead,
+because joining a clean report appends its empty `Error()` as a trailing newline. It also means one
+trap worth naming:
 
 ```go
 // Always non-nil, even on a completely clean shutdown.
@@ -358,11 +415,25 @@ returns:
 
 - `StatusOK` if `fn` returned nil in time
 - `StatusFailed`, with the error, if it returned an error in time
+- `StatusFailed`, with the panic value and the stack, if it panicked
 - `StatusAbandoned`, with the context's error, if it didn't return
 
 The result channel is buffered, so a goroutine that outlives its budget can still send without
 leaking — but it does keep running. That is the honest trade: servo reports an abandoned node rather
 than blocking shutdown forever on a component that won't stop.
+
+**A panic in `fn` is recovered**, and reported as one failed node:
+
+```
+*api.Server: failed: servo: *api.Server panicked during stop: send on closed channel
+goroutine 42 [running]:
+…
+```
+
+It has to be. The goroutine is servo's, not the caller's, so no `recover` in your `main` can reach a
+panic here: unrecovered, one panicking `Stop` kills the process mid-unwind, leaving every node
+behind it running and no `Report` to say which. Turning it into a `StatusFailed` result lets the
+rest of the teardown finish and names the culprit.
 
 Generated code calls this once per phase per node. You'd call it directly only when writing your own
 teardown around a graph.
@@ -389,17 +460,17 @@ type GraphNode struct {
 ```
 
 The resolved graph as plain data, returned by the generated `App.Graph()` and produced by
-`servo graph --format=json` — the same struct populated by both paths, so the build-time and run-time
-views can't drift.
+`servo graph --format=json` — the same struct populated by both paths, down to `nil` versus `[]` and
+the form of every position, so the build-time and run-time views can't drift.
 
 | Field | Contents |
 | --- | --- |
 | `Type` | Full type string, the node's identity |
-| `Level` | `1 + max(level of deps)`; the unit of `Init` concurrency |
-| `Deps` | Direct dependencies, as type strings |
+| `Level` | `1 + max(level of deps)`; the unit of `Init` concurrency. `0` for a [supplied value](#value), which the app has before it builds anything |
+| `Deps` | Direct dependencies, as type strings. `nil`, not `[]`, when there are none — the generated `App.Graph()` emits a Go literal, and `servo graph --format=json` matches it |
 | `Capabilities` | Detected capability names, in a fixed order: `Initializer`, `Runner`, `Drainer`, `Flusher`, `Finalizer`, `Healther`, `Readier` |
-| `Binding` | `explicit bind`, `sole candidate`, or `sole implementation` |
-| `Pos` | The provider's declaration site. Module-relative in generated code, absolute in CLI output |
+| `Binding` | `explicit bind`, `sole candidate`, `sole implementation`, or `supplied` for a `servo.Value` |
+| `Pos` | The provider's declaration site — or, for a supplied value, the `servo.Value[…]()` call site. Relative to the module root in both producers, so two checkouts at different absolute paths agree |
 | `Scope` | The key type of the scope this node belongs to, or empty for a singleton |
 
 Display-only: type strings are labels, never lookup keys, and there is no path from a `GraphNode`

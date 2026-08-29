@@ -35,3 +35,66 @@ func Bind[I, C any]() Marker {
 func Override[I, C any]() Marker {
 	panic("servo: Override executed at runtime — run `servo generate`")
 }
+
+// Value declares that T is supplied by the caller rather than built from a
+// provider — a parsed flag set, a version string injected at link time, a
+// *sql.DB opened by a test harness, a fixed clock.
+//
+// Everything else in the graph is resolved by finding the one function
+// that produces it. A value that only exists once the process is already
+// running has no such function, and the alternative servo used to leave
+// open — a package-level var in main, read back by a small provider beside
+// it — is the global-lookup pattern this version exists to remove.
+//
+// Declaring one changes the generated API additively. The injector keeps
+// New(ctx), and gains:
+//
+//	type Values struct{ Flags config.Flags }
+//	func NewWith(ctx context.Context, v Values) (*App, error)
+//
+// NewWith is the one to call. New still exists so the generated method set
+// is the documented one either way, but it can only pass the zero value of
+// every declared type — which is a real value for a struct of options and
+// a nil pointer for a *sql.DB, so reach for it only when the zero value is
+// the value you meant.
+//
+// T is matched by type, exactly as a constructor parameter is, and beats
+// any provider that also produces it: the spec file said so. A T nothing
+// in the graph depends on is a generate-time diagnostic rather than an
+// unused struct field.
+func Value[T any]() Marker {
+	panic("servo: Value executed at runtime — run `servo generate`")
+}
+
+// Include splices another function's markers into this Build call, so a
+// set of Bind/Override/Scoped declarations shared by several injectors is
+// written once:
+//
+//	// wiring/wiring.go, //go:build servoinject
+//	func Shared() []servo.Marker {
+//	    return []servo.Marker{
+//	        servo.Bind[store.Store, *postgres.DB](),
+//	        servo.Scoped[*chat.Room, chat.Rooms](servo.Linger(time.Minute)),
+//	    }
+//	}
+//
+//	// cmd/api/spec.go
+//	servo.Build(
+//	    servo.Include(wiring.Shared),
+//	    servo.Root[*api.Server](),
+//	)
+//
+// The argument names the function; it is never called. `servo generate`
+// reads the referenced declaration's returned slice literal as syntax, the
+// same way it reads Build's own argument list, and the file it lives in
+// must carry the servoinject build tag for the same reason a spec file
+// does. An included function may itself Include another; a cycle is a
+// diagnostic, not a hang.
+//
+// Markers an Include brings in are ordered before the ones written after
+// it, so a Bind in the spec file still overrides a shared one — the local
+// file has the last word, which is the only ordering that makes a shared
+// set worth having.
+func Include(func() []Marker) Marker {
+	panic("servo: Include executed at runtime — run `servo generate`")
+}

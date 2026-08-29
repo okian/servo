@@ -27,16 +27,16 @@ sections:
         blurb: Every command, every flag, what it prints, and what it exits with.
         description: >-
           Complete reference for the servo CLI — generate, check, graph,
-          explain, why, list, init, doctor, migrate, new — plus servo-vet,
-          the go build flags servo accepts, and per-configuration build
-          variants.
+          explain, why, list, init, doctor, migrate, new, version, help —
+          plus servo-vet, the go build flags servo accepts, and
+          per-configuration build variants.
       - title: Spec file and markers
         url: /reference/spec.html
-        blurb: Build, Root, Bind, Override, Scoped, and the build tag that keeps them out of your binary.
+        blurb: Build, Root, Bind, Override, Scoped, Value, Include, and the build tag that keeps them out of your binary.
         description: >-
           Reference for servo's spec file: the servoinject build tag, spec
-          discovery, and the Build/Root/Bind/Override/Scoped markers, with
-          Linger and Max.
+          discovery, and the Build/Root/Bind/Override/Scoped/Value/Include
+          markers, with Linger and Max.
       - title: Resolution rules
         url: /reference/resolution.html
         blurb: What counts as a constructor, how a dependency is matched, and how order is derived.
@@ -78,8 +78,8 @@ sections:
         blurb: The App type, every method on it, and how its fields get their names.
         description: >-
           Reference for the code servo generates: the App and TestApp types,
-          New, Run, Shutdown, Health, Ready, Graph and Report, and the naming
-          rules behind every field.
+          New, NewWith, Run, Shutdown, Health, Ready, Graph and Report, and the
+          naming rules behind every field.
 
   - title: Go packages
     summary: Every exported identifier in the two packages you can import.
@@ -88,13 +88,15 @@ sections:
         url: /reference/servo-package.html
         blurb: The markers, the capability interfaces, and the ~430-line runtime.
         description: >-
-          Complete API reference for the servo package — markers, capability
-          interfaces, Report, NodeResult, NodeStatus, Graph, GraphScope,
-          StartupReport, RunStop, MergeNodeResults, DefaultStopBudget, and the
-          scope surface: Scoped, Linger, Max, ScopeStats and the scope errors.
+          Complete API reference for the servo package — markers, including
+          Value and Include, capability interfaces, Report, NodeResult,
+          NodeStatus, Graph, GraphScope, StartupReport, RunStop,
+          MergeNodeResults, DefaultStopBudget, and the scope surface: Scoped,
+          Linger, Max, ScopeStats and the scope errors.
       - title: servotest package
         url: /reference/servotest-package.html
         blurb: Leak checks, order assertions, shrunken stop budgets, and a mock reporter.
         description: >-
-          Complete API reference for the servotest package — NoLeaks, Timeout,
-          Linger, Recorder, AssertInitOrder, AssertStopOrder and PanicReporter.
+          Complete API reference for the servotest package — NoLeaks,
+          NoNewLeaks, Timeout, Linger, Recorder, AssertInitOrder,
+          AssertStopOrder and PanicReporter.

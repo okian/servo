@@ -16,6 +16,12 @@
 //	[L3] *example.com/servoorders/internal/observability.Logger
 //	      deps: *example.com/servoorders/internal/observability.Config
 //	      capabilities: none | binding: sole candidate | internal/observability/logging.go:35:6
+//	[L2] *example.com/servoorders/internal/broker/notifier.Config
+//	      deps: *example.com/servoorders/internal/config.Env
+//	      capabilities: none | binding: sole candidate | internal/broker/notifier/notifier.go:30:6
+//	[L4] *example.com/servoorders/internal/broker/notifier.Notifier
+//	      deps: *example.com/servoorders/internal/broker/notifier.Config, *example.com/servoorders/internal/observability.Logger
+//	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | internal/broker/notifier/notifier.go:50:6
 //	[L2] *example.com/servoorders/internal/transport/grpcapi.Config
 //	      deps: *example.com/servoorders/internal/config.Env
 //	      capabilities: none | binding: sole candidate | internal/transport/grpcapi/server.go:52:6
@@ -58,12 +64,6 @@
 //	[L5] *example.com/servoorders/internal/transport/grpcapi.Server
 //	      deps: *example.com/servoorders/internal/transport/grpcapi.Config, *example.com/servoorders/internal/service.OrderService, *example.com/servoorders/internal/service.AuthService, *example.com/servoorders/internal/auth.Issuer, *example.com/servoorders/internal/observability.Metrics, *example.com/servoorders/internal/observability.Tracer, *example.com/servoorders/internal/resilience.RateLimiter, example.com/servoorders/internal/session.Sessions, *example.com/servoorders/internal/observability.Logger
 //	      capabilities: Runner, Finalizer, Readier | binding: sole candidate | internal/transport/grpcapi/server.go:56:6
-//	[L2] *example.com/servoorders/internal/broker/notifier.Config
-//	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/broker/notifier/notifier.go:30:6
-//	[L4] *example.com/servoorders/internal/broker/notifier.Notifier
-//	      deps: *example.com/servoorders/internal/broker/notifier.Config, *example.com/servoorders/internal/observability.Logger
-//	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | internal/broker/notifier/notifier.go:50:6
 //
 // scope example.com/servoorders/internal/session.UserID
 //
@@ -103,6 +103,10 @@ type TestApp struct {
 	sessionConfig           *session.Config
 	observabilityConfig     *observability.Config
 	logger                  *observability.Logger
+	notifierConfig          *notifier.Config
+	notifier                *notifier.Notifier
+	notifierStopOnce        sync.Once
+	notifierStopResult      servo.NodeResult
 	grpcapiConfig           *grpcapi.Config
 	orderRepositoryForServo *mocks.OrderRepositoryForServo
 	orderCacheForServo      *mocks.OrderCacheForServo
@@ -121,10 +125,6 @@ type TestApp struct {
 	server                  *grpcapi.Server
 	serverStopOnce          sync.Once
 	serverStopResult        servo.NodeResult
-	notifierConfig          *notifier.Config
-	notifier                *notifier.Notifier
-	notifierStopOnce        sync.Once
-	notifierStopResult      servo.NodeResult
 	userIDScope             *testUserIDScope
 	sessions                testSessionsAccessor
 	userIDScopeStopOnce     sync.Once
@@ -667,8 +667,18 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	logger := observability.NewLogger(observabilityConfig)
 	a.logger = logger
 
+	notifierConfig, err := notifier.NewConfig(env)
+	if err != nil {
+		return nil, err
+	}
+	a.notifierConfig = notifierConfig
+
+	notifier := notifier.New(notifierConfig, logger)
+	a.notifier = notifier
+
 	grpcapiConfig, err := grpcapi.NewConfig(env)
 	if err != nil {
+		_ = a.stopNotifier(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.grpcapiConfig = grpcapiConfig
@@ -690,6 +700,7 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 
 	authConfig, err := auth.NewConfig(env)
 	if err != nil {
+		_ = a.stopNotifier(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.authConfig = authConfig
@@ -705,13 +716,15 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 
 	tracer, err := observability.NewTracer(observabilityConfig)
 	if err != nil {
+		_ = a.stopNotifier(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.tracer = tracer
 
 	resilienceConfig, err := resilience.NewConfig(env)
 	if err != nil {
-		_ = a.stopTracer(ctx)
+		_ = a.stopTracer(context.WithoutCancel(ctx))
+		_ = a.stopNotifier(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.resilienceConfig = resilienceConfig
@@ -722,18 +735,17 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	server := grpcapi.New(grpcapiConfig, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions, logger)
 	a.server = server
 
-	notifierConfig, err := notifier.NewConfig(env)
-	if err != nil {
-		_ = a.stopServer(ctx)
-		_ = a.stopTracer(ctx)
-		return nil, err
-	}
-	a.notifierConfig = notifierConfig
-
-	notifier := notifier.New(notifierConfig, logger)
-	a.notifier = notifier
-
 	return a, nil
+}
+
+func (a *TestApp) stopNotifier(ctx context.Context) servo.NodeResult {
+	a.notifierStopOnce.Do(func() {
+		var results []servo.NodeResult
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Drain))
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Stop))
+		a.notifierStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/broker/notifier.Notifier", results...)
+	})
+	return a.notifierStopResult
 }
 
 func (a *TestApp) stopTracer(ctx context.Context) servo.NodeResult {
@@ -752,16 +764,6 @@ func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
 		a.serverStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/transport/grpcapi.Server", results...)
 	})
 	return a.serverStopResult
-}
-
-func (a *TestApp) stopNotifier(ctx context.Context) servo.NodeResult {
-	a.notifierStopOnce.Do(func() {
-		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Drain))
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Stop))
-		a.notifierStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/broker/notifier.Notifier", results...)
-	})
-	return a.notifierStopResult
 }
 
 func (a *TestApp) stopUserIDScope(ctx context.Context) servo.NodeResult {
@@ -806,8 +808,8 @@ func (a *TestApp) stopUserIDScope(ctx context.Context) servo.NodeResult {
 
 func (a *TestApp) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return a.server.Run(gctx) })
 	g.Go(func() error { return a.notifier.Run(gctx) })
+	g.Go(func() error { return a.server.Run(gctx) })
 	return g.Wait()
 }
 
@@ -826,10 +828,10 @@ func (a *TestApp) Shutdown(ctx context.Context) servo.Report {
 	}()
 
 	var nodes []servo.NodeResult
-	nodes = append(nodes, a.stopNotifier(ctx))
 	nodes = append(nodes, a.stopServer(ctx))
 	nodes = append(nodes, a.stopUserIDScope(ctx))
 	nodes = append(nodes, a.stopTracer(ctx))
+	nodes = append(nodes, a.stopNotifier(ctx))
 	return servo.Report{Nodes: nodes}
 }
 
@@ -854,6 +856,8 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/session/session.go:66:6"},
 		{Type: "*example.com/servoorders/internal/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:21:6"},
 		{Type: "*example.com/servoorders/internal/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/internal/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:35:6"},
+		{Type: "*example.com/servoorders/internal/broker/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/broker/notifier/notifier.go:30:6"},
+		{Type: "*example.com/servoorders/internal/broker/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/internal/broker/notifier.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Pos: "internal/broker/notifier/notifier.go:50:6"},
 		{Type: "*example.com/servoorders/internal/transport/grpcapi.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/grpcapi/server.go:52:6"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:24:6"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderCacheForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:44:6"},
@@ -868,8 +872,6 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/resilience.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:29:6"},
 		{Type: "*example.com/servoorders/internal/resilience.RateLimiter", Level: 3, Deps: []string{"*example.com/servoorders/internal/resilience.Config", "*example.com/servoorders/internal/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:33:6"},
 		{Type: "*example.com/servoorders/internal/transport/grpcapi.Server", Level: 5, Deps: []string{"*example.com/servoorders/internal/transport/grpcapi.Config", "*example.com/servoorders/internal/service.OrderService", "*example.com/servoorders/internal/service.AuthService", "*example.com/servoorders/internal/auth.Issuer", "*example.com/servoorders/internal/observability.Metrics", "*example.com/servoorders/internal/observability.Tracer", "*example.com/servoorders/internal/resilience.RateLimiter", "example.com/servoorders/internal/session.Sessions", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer", "Readier"}, Binding: "sole candidate", Pos: "internal/transport/grpcapi/server.go:56:6"},
-		{Type: "*example.com/servoorders/internal/broker/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/broker/notifier/notifier.go:30:6"},
-		{Type: "*example.com/servoorders/internal/broker/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/internal/broker/notifier.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Pos: "internal/broker/notifier/notifier.go:50:6"},
 		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:70:6", Scope: "example.com/servoorders/internal/session.UserID"},
 	}, Scopes: []servo.GraphScope{
 		{Key: "example.com/servoorders/internal/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/internal/session.Sessions"}, Members: []string{"*example.com/servoorders/internal/session.Session"}, Borrows: []string{"*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}},

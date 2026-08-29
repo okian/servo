@@ -97,7 +97,12 @@ func scopeAwareDeps(n *resolve.Node) []*resolve.Node {
 			if dep.ScopeRoot != nil && dep.ScopeRoot.Node != nil {
 				out = append(out, dep.ScopeRoot.Node)
 			}
-		case resolve.NodeProvider:
+		case resolve.NodeProvider, resolve.NodeSupplied:
+			// A supplied value is a real edge — the consumer depends on it
+			// exactly as it would on a constructed one — so `why` has to
+			// traverse it or report a node it can plainly see as
+			// unreachable. NodeScopeKey is still skipped: it has no
+			// provider and no declaration site to lead anywhere.
 			out = append(out, dep)
 		}
 	}

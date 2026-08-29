@@ -25,7 +25,114 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
 
 ## [Unreleased]
 
+**On the versioning rules above.** Three changes here touch behaviour that the rules
+call breaking if it was documented, and none of it was. `servo.RunStop` now recovers
+a panic in a stop phase: its doc comment never said what happened to one, and what
+happened was that the process died from a goroutine no caller could reach.
+`servotest.NoLeaks` keeps its signature and its behaviour exactly; only its doc
+changed, because the doc described a check goleak does not perform. And `servo -h`,
+which used to exit 1 printing `generate`'s flags, now prints usage and exits 0 —
+`-h` is not something a `servo check` CI step can depend on. Everything else added
+here is additive: new markers, a new package, a new subcommand, a new test helper.
+A graph that declares neither `servo.Value` nor `servo.Include` emits a file that
+differs only by the rollback fixes below.
+
 ### Added
+- **`servo.Value[T]()`: a value the caller supplies, instead of a global read back
+  through a provider.** Everything else in the graph is resolved by finding the one
+  function that produces it. A value that only exists once the process is running —
+  a parsed flag set, a version string injected at link time, a `*sql.DB` opened by a
+  test harness — has no such function, and the workaround servo left open was a
+  package-level `var` in `main` read back by a small unexported provider beside it.
+  That is the global-lookup pattern v3 exists to remove, reintroduced by the one gap
+  in the model.
+
+  A spec declaring one gets `type Values struct{ ... }` and
+  `func NewWith(ctx context.Context, v Values) (*App, error)` alongside an unchanged
+  `New(ctx)`, which delegates with the zero value and says so in its own doc comment.
+  A `servo.Value` beats any provider that also produces the type — declaring one is
+  how you say "this comes from the caller", which is only meaningful if it wins — and
+  a declared value nothing depends on is a diagnostic rather than a struct field
+  every caller keeps supplying and the app never reads. Supplied values appear in
+  `App.Graph()`, `servo graph`, `servo explain` and `servo why` at level 0, bound
+  as `supplied`.
+
+  Internally it is a fourth `NodeKind` that never enters `Resolved.Order`, the same
+  trick the two scope kinds use — which is why a graph declaring no value emits a
+  byte-identical file.
+
+  `docs/limitations.md` had this filed under *consequences of resolving at build
+  time*, a category it introduces as permanent. That was never sound: wire resolves
+  at build time, emits plain Go, uses no reflection, and has injector parameters. The
+  entry now says what is actually still impossible — a per-call or per-test value
+  inside the graph, since a supplied value is one per app.
+
+- **`servo.Include(fn)`: one marker set, several injectors.** A module with three
+  binaries had three specs, and everything below the transport was written out three
+  times. `examples/tutorial` was the proof: `diff cmd/orders/spec.go
+  cmd/ordersgin/spec.go` was two lines. Each spec made eleven marker calls, and ten
+  of them — four `Bind`, four `Override`, a `Scoped` with its `Linger`/`Max` policy,
+  and a shared `Root` — were identical in all three, copy-pasted with their comments.
+  Adding a fifth `Bind` or changing `Max` was a three-file edit nothing checked, which
+  is the same multi-place edit `comparison.md` uses to argue against hand-written
+  wiring.
+
+  `servo.Include` names a `func() []servo.Marker` and splices its list in where the
+  call sits. The function is never run: its body is read as syntax exactly as
+  `Build`'s own argument list is, which is why the shape is narrow and checked —
+  one `return`, one slice literal, marker calls. It may live in another package, and
+  that file needs the `servoinject` constraint for the same reason a spec file does;
+  both halves are refused with their own message. Includes may nest, and a cycle
+  reports the path that closed it. A `Bind` or `Override` written in the spec file
+  supersedes an included one for the same interface, which is the only ordering that
+  makes a shared set worth having; two local ones for the same interface remain the
+  ambiguity they always were.
+
+  `examples/tutorial` now carries `internal/wiring/wiring.go`, and its three specs
+  are nineteen lines each instead of fifty-three — each making two marker calls, the
+  `Include` and its own transport's `Root`.
+
+- **`servo version`, and `servo help`.** Ten documented subcommands and no path to
+  them from the tool: a bare `servo` generates (the documented default), `servo help`
+  was an unknown command, an unknown command printed no alternatives, and `servo -h`
+  printed `generate`'s four flags. `help`, `-h` and `--help` now print the command
+  list and the shared build flags, and an unknown command prints the list too.
+
+  `servo version` matters more than it does for most tools, because servo writes
+  files you commit and gates them with `servo check`: two machines on two versions
+  produce a diff in a file neither of them edited, which reads exactly like a
+  forgotten regenerate. `check`'s stale report now names the running version and the
+  `go get -tool` line that pins one for everybody.
+
+- **`github.com/okian/servo/v3/servovet`.** `var Analyzer` lived in
+  `cmd/servo-vet`, so nothing could import it — while five places in the docs promised
+  the two checks reach your editor, and `cli.md` named golangci-lint's plugin system
+  as the mechanism. That system imports the analyzer package and registers the
+  analyzer, which a `var` in `package main` cannot support. The analyzer moved to its
+  own package; `cmd/servo-vet` is now the singlechecker binary wrapping it. It also
+  flags untagged `servo.Value` and `servo.Include` calls, `Include` being the one most
+  likely to be written outside a spec file.
+
+- **`servotest.NoNewLeaks`.** `NoLeaks` calls `goleak.VerifyNone` with no options, and
+  goleak has no notion of when a goroutine appeared — so a goroutine left behind by an
+  earlier test is reported against whichever test calls `NoLeaks` next. Its godoc and
+  the reference both claimed it checked "any goroutine started during the test". The
+  combination that triggers it is one servotest advertises: `Timeout` exists to
+  exercise the abandoned-node path, and an abandoned node is by definition one that
+  never returns. `examples/basic` passes today only because the deliberately-leaking
+  test is last in its file and the one test after it is the only one in the package
+  without a `NoLeaks` call.
+
+  `NoLeaks` keeps its signature and its behaviour, and its doc now says what it
+  actually checks. `NoNewLeaks` takes the baseline first and returns the check —
+  `defer servotest.NoNewLeaks(t)()` — which is the call shape that makes a baseline
+  possible at all.
+
+- A CI job that builds the documentation site. It is five hand-written Jekyll
+  layouts, a Liquid-templated search index and a hand-formatted stylesheet published
+  straight to Pages from `docs/`, and nothing in front of a pull request looked at
+  any of it.
+
 - **Build flags, and one generated file per build configuration.** The seven commands that load
   packages (`generate`, `check`, `graph`, `explain`, `why`, `list`, `doctor`) now accept `--tags`,
   `--mod`, `--modfile` and `--overlay`, with the same names, syntax and meaning as `go build`.
@@ -71,6 +178,61 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   case-insensitive filesystem).
 
 ### Changed
+- **Every rollback runs on a context the signal that triggered it cannot cancel.**
+  Both paths inside the generated `New` passed `New`'s own `ctx` down —
+  `_ = a.stopX(ctx)` for a construction failure, `a.Shutdown(ctx)` for an Init
+  failure — and every `main` in the docs and the examples hands `New` the
+  `signal.NotifyContext` context. So a SIGTERM arriving mid-startup, which is a
+  rolling deploy or a pre-empted crash-loop restart, cancelled it, aborted an Init,
+  and then the unwind was handed a context that was already done. `servo.RunStop`
+  derives its budget from it, so `Done` was closed before the `select` ran and every
+  node was reported abandoned without its `Drain`, `Flush` or `Stop` getting a
+  chance to do anything — the real startup error buried under a wall of
+  `abandoned: context canceled`.
+
+  The rollback now uses `context.WithoutCancel(ctx)`. This is the rule the project
+  already stated in two other places: `lifecycle.md` says handing a cancelled context
+  to shutdown would abandon every node instantly, and scoped teardown already
+  stripped the cancellation for exactly that reason. `RunStop` still caps each phase,
+  so nothing here can hang.
+
+- **An Init failure whose rollback came out clean returns the bare error.** `Report`
+  satisfies `error` by value, so it is never nil and `errors.Join` never skips it —
+  and a clean report's `Error()` is the empty string, which `errors.Join` still
+  separates with a newline. Every ordinary startup failure therefore returned
+  `"connection refused\n"`. `errors.Is` and `errors.As` were unaffected; what broke
+  was every log field and every `%w` wrapping built from it.
+
+- **`servo.RunStop` recovers a panic in a stop phase.** It ran every `Drain`, `Flush`,
+  `Stop` and cleanup in a goroutine with no recover — servo's goroutine, not the
+  caller's, so no `recover` in `main` could reach it. One panicking `Stop` killed the
+  process mid-unwind, leaving every node behind it running and no `Report` to say
+  which. It is now reported as one failed node, with the panic value and the stack,
+  and the rest of the teardown continues.
+
+- **`servo init` scaffolds a workflow that runs.** The `//go:generate` directive was
+  written into the spec file, which carries `//go:build servoinject` — and `go
+  generate` honours build constraints, so `go generate ./...` exited 0, printed
+  nothing, and generated nothing. Adding the tag then hit the second half: a consumer
+  requires servo for the marker package alone, so the generator's own dependencies are
+  not in their build list and `go run github.com/okian/servo/v3/cmd/servo` fails on a
+  missing `go.sum` entry. Nothing in the repository ran that path — every workflow
+  step invokes `go run ./cmd/servo` from the root module, where the dependencies are
+  present.
+
+  `init` now writes an untagged `servo_generate.go` holding only the directive, as
+  `//go:generate go tool servo generate`, and prints the one-time `go get -tool
+  github.com/okian/servo/v3/cmd/servo` that makes it work and pins the version.
+  `githooks/pre-commit` uses the same form.
+
+- **`servo graph --format=json` and the generated `App.Graph()` now serialise
+  identically**, which is what both their doc comments already claimed. They differed
+  twice: the CLI wrote a non-nil empty `deps` (`[]`) beside a nil `capabilities`
+  (`null`) while the generated literal wrote `nil` for both, so the CLI output was not
+  even self-consistent and a consumer iterating `node.deps` worked against one
+  producer and failed against the other; and the CLI emitted absolute machine-local
+  paths where emission deliberately relativises against the module root.
+
 - **Every `main` bounds its own shutdown.** All ten commands called
   `app.Shutdown(context.Background())`. The fresh context is right — the context above it is
   already cancelled, and that cancellation is what started the shutdown — but a bare
@@ -127,6 +289,84 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   so an existing link still lands on the page it meant.
 
 ### Fixed
+- **Four more identifier collisions that made `servo generate` exit 0 and the output
+  fail to compile** — the same family as the `Result`, `StopFoo`, `StartupReport` and
+  `A`/`Ctx`/`Err` fixes below. Found by enumerating the derived-name templates in the
+  emitters and diffing that set against what the allocator actually reserves, then
+  compiling a real module for each; all four now have a fixture in
+  `cmd/servo/generate_check_test.go`, which builds and compiles, because a compile
+  error is the only honest witness.
+  - A provider returning `(T, func())` derives a `<field>Cleanup` field from its
+    node's variable name, and only the variable was reserved. A component named `Foo`
+    with a cleanup, beside one named `FooCleanup`, declared the field twice.
+  - New's locals share a scope with the package identifiers its own body qualifies
+    calls with, and the allocator did not know those identifiers were spoken for. A
+    component named `Servo` took the local `servo`, and every `servo.StartupNode` the
+    Init phase writes after it resolved against that local. The same shape applied to
+    `errors`, `time`, `sync`, `fmt`, `atomic`, `errgroup`, `context`, `os`, `signal`
+    and `syscall`.
+  - The import manager could not alias a single-segment path, so a user package named
+    `errors` reached first while qualifying a type took the identifier, and the stdlib
+    import that arrived second was rendered under the same name beside it.
+  - The shadow guard compared later nodes' *result type* packages, but the call it
+    protects is qualified by the provider *function's* package. The two coincide only
+    for the idiomatic `package foo; func New() *foo.Foo`, which is exactly what the
+    existing regression test covers — so every factory or facade package, and the
+    ordinary `func New(cfg Config) (*sql.DB, error)` shape, went unguarded.
+
+- **A constructor returning a nil cleanup func crashed the process during `Shutdown`.**
+  `(T, func())` is a documented provider shape and returning `nil` when there is
+  nothing to clean up is ordinary Go, but the emitted wrapper called it
+  unconditionally — inside `RunStop`'s own goroutine, where no `recover` in `main`
+  could reach the panic. Both the App-level and the scope-entry teardown now skip a
+  nil cleanup; the merged `NodeResult` is identical either way.
+
+- **The variant-overlap refusal printed a paste-in fix that was not a build tag.** Its
+  `%[1]s` resolved to the generated *file* name where it meant `servoinject`, so it
+  told the reader to write `//go:build servo.prod_gen.go && !prod` — which would
+  silently exclude the spec file from every build. Because an explicit argument index
+  also suppresses `fmt`'s `%!(EXTRA ...)` marker, nothing showed that the build tag
+  it was handed went unused.
+
+- **README undercounted `examples/diagnostics`.** It said seven fixtures; there are
+  eight, and that example's own README says so. The missing one is `noscopekey/`.
+  The workflow comment beside the build step said seven too. All eight have had a
+  test in `cmd/servo` the whole time.
+
+- **README's Layout block omitted three example modules that exist** —
+  `examples/diagnostics/`, `examples/variants/` and `examples/migrate/` — while
+  `ARCHITECTURE.md` points at that block as the authoritative file list, and README
+  links to two of the three from elsewhere in the same file.
+
+- **`examples/migrate/README.md` quoted line numbers four off from reality.** The
+  fixture gained a comment block and the transcript was not re-pasted. It is the one
+  example with no generated file, so `servo check` has nothing to compare there and
+  no workflow step runs `servo migrate` at all; a test now holds the README against
+  the real output.
+
+- **`docs/reference/cli.md` described `servo-vet -tags` as a silent no-op.** It is
+  refused, with exit code 2 — a change the [Unreleased] *Added* section above records,
+  landing in the same commit as the paragraph that contradicts it.
+
+- **`cli.md`'s `doctor` section was missing a line prefix and two checks.** It said
+  every line is `[OK  ]`, `[FAIL]` or `[WARN]`; `doctor` also emits `[INFO]` for the
+  variant inventory, printed outside the report closure so it never affects the exit
+  code — which matters to anyone parsing the output in CI. The orphaned-generated-file
+  `FAIL` and the inventory itself were absent from the table.
+
+- **`diagnostics.md` and `spec.md` quoted a "missing runtime package" message servo no
+  longer prints.** The real one names the build configuration and calls out the
+  build-tag case, which is the half a reader searching for their actual error string
+  would not have found.
+
+- **The lifecycle contract that `Drain`, `Flush` and `Stop` may run on a component
+  that was constructed but never `Init`ed** is now written down. Construction rollback
+  stops every earlier node, none of which has reached Init; Init-failure rollback
+  calls `Shutdown` over the whole graph, including levels above the failure. So the
+  most obvious `Finalizer` there is — `return d.pool.Close()` — nil-dereferences on
+  the rollback path, and nothing in `lifecycle.md`, `generated-api.md` or the
+  capability doc comments said so.
+
 - **The landing page's diagnostic was a mock-up, and overcounted.** It claimed three types
   implement `store.Store` and listed `examples/basic/memory` as one of them. Deleting the
   `servo.Bind` line from `examples/basic` and running `servo generate` reports **two** —

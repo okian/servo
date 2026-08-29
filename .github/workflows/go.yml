@@ -100,7 +100,7 @@ jobs:
 
       # examples/diagnostics is deliberately unresolvable, so it has no
       # generated file and nothing to run `servo check` against — only that
-      # it's otherwise ordinary, valid Go. The seven diagnostics it's meant
+      # it's otherwise ordinary, valid Go. The eight diagnostics it's meant
       # to produce are pinned by TestExampleDiagnostic* in cmd/servo,
       # covered by the root Test step above.
       - name: Build examples/diagnostics
@@ -197,6 +197,48 @@ jobs:
           echo "--- examples/variants (--tags=prod) ---"
           (cd examples/variants && golangci-lint run --timeout=5m --build-tags=prod ./...) || fail=1
           exit $fail
+
+  # The site is five hand-written Jekyll layouts, a Liquid-templated search
+  # index and a hand-formatted stylesheet, published straight to Pages from
+  # docs/. Nothing else here builds it, so a broken layout or a Liquid typo
+  # used to reach the published site with no pull-request check in front of
+  # it. This job only builds — Pages still does the publishing.
+  docs:
+    name: Docs site builds
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+
+      # github-pages pins the exact gem set Pages itself runs, so a build
+      # that passes here is the build that happens on publish.
+      - name: Install Jekyll
+        run: gem install bundler github-pages
+
+      - name: Build
+        run: |
+          cd docs
+          github-pages build --source . --destination ../_site
+
+      # A page whose front matter or layout is wrong still "builds" — it
+      # just comes out empty or unwrapped. Assert the pages that must exist
+      # do, and that the search index is valid JSON, which a Liquid error
+      # inside it would silently break.
+      - name: Check the output
+        run: |
+          set -euo pipefail
+          for page in index.html preface.html comparison.html limitations.html \
+                      reference/index.html reference/cli.html \
+                      tutorial/01-architecture-overview.html \
+                      tutorial/21-alternatives-and-further-reading.html; do
+            test -s "_site/$page" || { echo "::error::_site/$page missing or empty"; exit 1; }
+          done
+          python3 -c "import json,sys; json.load(open('_site/search.json'))"
 
   # 200 consecutive green runs is the gate on scopes. It takes ~8 minutes
   # and belongs nowhere near a pull request, but it is not decoration: the
