@@ -34,17 +34,18 @@ layout: default
   <section class="band">
     <div class="band__inner">
       <p class="section-eyebrow">The whole idea</p>
-      <h2 class="section-title">You write constructors. Servo writes the file that calls them.</h2>
+      <h2 class="section-title">The constructors are the same either way. Your <code>main</code> is not.</h2>
       <p class="section-lede">
-        Nothing imports servo. A component joins the lifecycle by <strong>having a
-        method</strong>, not by registering for one — detection is structural, and it
-        happens at generation time. Each package declares the settings it needs and
-        nobody else's. Construction order comes from the parameter types;
-        <strong>shutdown order is that, reversed</strong>.
+        Everything on the left is ordinary Go you would write with or without servo —
+        nothing imports servo, and a component joins the lifecycle by <strong>having a
+        method</strong> rather than registering for one. What changes is the wiring:
+        construction in dependency order, rollback when one fails, every
+        <code>Run</code> supervised, shutdown in reverse. That is the code on the right,
+        and it is the code you stop maintaining.
       </p>
       <div class="split">
         <figure>
-          <figcaption>What you write</figcaption>
+          <figcaption>What you write — unchanged by servo</figcaption>
 {% highlight go %}
 // config/config.go — reads the environment
 // once; every package parses its own slice
@@ -82,10 +83,28 @@ func (s *Server) Stop(context.Context) error
 servo.Build(
     servo.Root[*api.Server](),
 )
+
+// cmd/app/main.go — the whole of it
+func main() {
+    ctx, stop := signal.NotifyContext(
+        context.Background(), os.Interrupt, syscall.SIGTERM)
+    defer stop()
+
+    app, err := New(ctx)
+    if err != nil {
+        log.Fatal(err)
+    }
+    if err := app.Run(ctx); err != nil {
+        log.Print(err)
+    }
+    if r := app.Shutdown(context.Background()); !r.Clean() {
+        log.Print(r)
+    }
+}
 {% endhighlight %}
         </figure>
         <figure>
-          <figcaption>What servo generates</figcaption>
+          <figcaption>What you would hand-write in <code>main</code></figcaption>
 {% highlight go %}
 func New(ctx context.Context) (*App, error) {
     a := &App{}
