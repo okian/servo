@@ -37,19 +37,29 @@ layout: default
       <h2 class="section-title">You write constructors. Servo writes the file that calls them.</h2>
       <p class="section-lede">
         Nothing imports servo. A component joins the lifecycle by <strong>having a
-        method</strong>, not by registering for one — detection is structural, and
-        it happens at generation time.
+        method</strong>, not by registering for one — detection is structural, and it
+        happens at generation time. Construction order comes from the parameter types;
+        <strong>shutdown order is that, reversed</strong>.
       </p>
       <div class="split">
         <figure>
           <figcaption>What you write</figcaption>
 {% highlight go %}
-// three ordinary constructors
-func New(cfg *Config) (*postgres.DB, error)
-func New(db *postgres.DB) *OrderService
-func New(s *OrderService) *Server
+// postgres/postgres.go
+func New(cfg *Config) (*Store, error)
+func (s *Store) Init(context.Context) error
+func (s *Store) Stop(context.Context) error
 
-// one spec file, never compiled into the binary
+// service/service.go
+func New(store *postgres.Store) *Orders
+
+// api/api.go
+func New(o *service.Orders) *Server
+func (s *Server) Run(context.Context) error
+func (s *Server) Stop(context.Context) error
+
+// cmd/app/spec.go — build-tagged, never
+// compiled into the binary
 servo.Build(
     servo.Root[*api.Server](),
 )
@@ -61,20 +71,32 @@ servo.Build(
 func New(ctx context.Context) (*App, error) {
     a := &App{}
 
-    cfg, err := postgres.NewConfig(config.NewEnv())
+    cfg, err := postgres.NewConfig(env)
     if err != nil {
         return nil, err
     }
 
-    db, err := postgres.New(cfg)
+    store, err := postgres.New(cfg)
     if err != nil {
         return nil, err
     }
+    a.store = store
 
-    orders := orders.New(db)
+    orders := service.New(store)
     a.server = api.New(orders)
+
+    // Init runs before anything serves. A
+    // failure here rolls back what was built.
+    if err := a.store.Init(ctx); err != nil {
+        return nil, errors.Join(err, a.Shutdown(ctx))
+    }
     return a, nil
 }
+
+// Run supervises every Runner; Shutdown stops
+// in reverse — server first, store last.
+func (a *App) Run(ctx context.Context) error
+func (a *App) Shutdown(ctx context.Context) servo.Report
 {% endhighlight %}
         </figure>
       </div>
@@ -115,6 +137,42 @@ func New(ctx context.Context) (*App, error) {
     </div>
   </section>
 
+  <section class="band" id="reference">
+    <div class="band__inner">
+      <p class="section-eyebrow">The reference</p>
+      <h2 class="section-title">Every command, every marker, every rule</h2>
+      <p class="section-lede">
+        The tutorial teaches servo by building something with it. The reference
+        answers one question at a time — what this flag does, what this method
+        guarantees, why that function wasn't picked up as a provider. Written
+        against the source, and complete rather than illustrative.
+      </p>
+
+      <div class="toc-parts">
+        {%- for section in site.data.reference.sections %}
+        <div class="part">
+          <div class="part__head">
+            <h3 class="part__title">{{ section.title }}</h3>
+            <span class="part__summary">{{ section.summary }}</span>
+          </div>
+          <ol>
+            {%- for p in section.pages %}
+            <li>
+              <a class="chapter chapter--plain" href="{{ p.url | relative_url }}">
+                <span>
+                  <span class="chapter__title">{{ p.title }}</span>
+                  <span class="chapter__blurb">{{ p.blurb }}</span>
+                </span>
+              </a>
+            </li>
+            {%- endfor %}
+          </ol>
+        </div>
+        {%- endfor %}
+      </div>
+    </div>
+  </section>
+
   <section class="band" id="tutorial">
     <div class="band__inner">
       <p class="section-eyebrow">The tutorial</p>
@@ -144,42 +202,6 @@ func New(ctx context.Context) (*App, error) {
                 <span>
                   <span class="chapter__title">{{ ch.title }}</span>
                   <span class="chapter__blurb">{{ ch.blurb }}</span>
-                </span>
-              </a>
-            </li>
-            {%- endfor %}
-          </ol>
-        </div>
-        {%- endfor %}
-      </div>
-    </div>
-  </section>
-
-  <section class="band" id="reference">
-    <div class="band__inner">
-      <p class="section-eyebrow">The reference</p>
-      <h2 class="section-title">Every command, every marker, every rule</h2>
-      <p class="section-lede">
-        The tutorial teaches servo by building something with it. The reference
-        answers one question at a time — what this flag does, what this method
-        guarantees, why that function wasn't picked up as a provider. Written
-        against the source, and complete rather than illustrative.
-      </p>
-
-      <div class="toc-parts">
-        {%- for section in site.data.reference.sections %}
-        <div class="part">
-          <div class="part__head">
-            <h3 class="part__title">{{ section.title }}</h3>
-            <span class="part__summary">{{ section.summary }}</span>
-          </div>
-          <ol>
-            {%- for p in section.pages %}
-            <li>
-              <a class="chapter chapter--plain" href="{{ p.url | relative_url }}">
-                <span>
-                  <span class="chapter__title">{{ p.title }}</span>
-                  <span class="chapter__blurb">{{ p.blurb }}</span>
                 </span>
               </a>
             </li>

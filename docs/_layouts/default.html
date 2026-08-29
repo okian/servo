@@ -83,8 +83,8 @@
 
     <nav class="site-nav" aria-label="Documentation">
       <a href="{{ '/preface.html' | relative_url }}"{% if page.url == '/preface.html' %} class="is-current" aria-current="page"{% endif %}>Preface</a>
-      <a href="{{ '/tutorial/' | relative_url }}"{% if page.url contains '/tutorial/' %} class="is-current" aria-current="page"{% endif %}>Tutorial</a>
       <a href="{{ '/reference/' | relative_url }}"{% if page.url contains '/reference/' %} class="is-current" aria-current="page"{% endif %}>Reference</a>
+      <a href="{{ '/tutorial/' | relative_url }}"{% if page.url contains '/tutorial/' %} class="is-current" aria-current="page"{% endif %}>Tutorial</a>
       <a href="{{ '/comparison.html' | relative_url }}"{% if page.url == '/comparison.html' %} class="is-current" aria-current="page"{% endif %}>Compare</a>
       <a href="{{ '/limitations.html' | relative_url }}"{% if page.url == '/limitations.html' %} class="is-current" aria-current="page"{% endif %}>Limitations</a>
     </nav>

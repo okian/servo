@@ -61,6 +61,26 @@ sections:
           window and Max cap, per-instance lifecycle, and the four scope
           diagnostics.
 
+  - title: Transports
+    summary: >-
+      The tutorial's API layer, implemented twice more. Nothing below the
+      transport changes, which is the point.
+    pages:
+      - title: Gin as the transport
+        url: /reference/transport-gin.html
+        blurb: The same API in Gin — route groups instead of per-handler wrappers.
+        description: >-
+          The tutorial's API layer implemented with Gin: route groups for
+          authentication, binding-tag validation, why gin.New rather than
+          gin.Default, and the one spec-file line that selects it.
+      - title: gRPC as the transport
+        url: /reference/transport-grpc.html
+        blurb: The same API over gRPC, sharing a single port with REST.
+        description: >-
+          The tutorial's API layer over gRPC: the proto contract, serving
+          gRPC and REST on one port, why only the REST half carries the HTTP
+          middleware, and authentication as a unary interceptor.
+
   - title: The generated application
     summary: The code servo writes, and what it does when it runs.
     pages:

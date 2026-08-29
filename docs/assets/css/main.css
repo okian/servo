@@ -725,8 +725,14 @@ pre code { background: none; border: none; padding: 0; font-size: inherit; }
 
 /* --------------------------------------------------------- page shell ---- */
 
+/* Preface, comparison and limitations render no sidebar, so the narrow
+   editorial measure buys nothing here — it only pushes wide content (the
+   comparison table especially) into a column half the width of the page.
+   These pages get the landing page's measure instead. .prose caps itself
+   at --measure, so it has to be released as well as widened. */
 .page-shell { max-width: 60rem; margin: 0 auto; padding: 0 1.75rem; }
-.page-shell .content { max-width: var(--measure); margin: 0 auto; width: 100%; }
+.page-shell .content { max-width: var(--measure-wide); margin: 0 auto; width: 100%; }
+.page-shell .prose { max-width: none; }
 
 /* ---------------------------------------------------------- responsive ---- */
 

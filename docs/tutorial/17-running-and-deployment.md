@@ -7,10 +7,10 @@ the service itself — with one command. It closes with a full reference for eve
 variable the service reads, and the two real infrastructure problems most likely to show up the
 first time you actually try this: a full disk, and a runtime image with no shell to debug from.
 
-Everything here uses `cmd/orders`, the `net/http` transport. The Gin and gRPC binaries from
-[chapter 10](10-api-layer.md#pick-one-transport) are built and run identically — `make run-gin`,
-`make run-grpc`, or swap the path in the `Dockerfile`'s `go build` line — and read the same
-environment variables.
+Everything here uses `cmd/orders`, the `net/http` transport. The
+[Gin](../reference/transport-gin.md) and [gRPC](../reference/transport-grpc.md) binaries are built
+and run identically — `make run-gin`, `make run-grpc`, or swap the path in the `Dockerfile`'s
+`go build` line — and read the same environment variables.
 
 ## The Dockerfile
 

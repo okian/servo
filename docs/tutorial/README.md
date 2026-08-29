@@ -95,7 +95,7 @@ you — nothing here is assembled by hand.
 | 7 | [Messaging layer](07-messaging-layer.md) | NATS, publish/subscribe, delivery guarantees |
 | 8 | [Service layer](08-service-layer.md) | Business logic, orchestration, domain errors |
 | 9 | [Authentication](09-authentication.md) | JWT issue/verify, password hashing, middleware |
-| 10 | [API layer](10-api-layer.md) | Routing, DTOs, error mapping — in net/http, Gin, or gRPC |
+| 10 | [API layer](10-api-layer.md) | Routing, DTOs, validation, error mapping |
 | 11 | [Wiring with servo](11-wiring-with-servo.md) | The spec file, capabilities, `servo generate` |
 | 12 | [Scoped instances](12-scoped-instances.md) | One session per user, instead of one per process |
 | 13 | [Observability](13-observability.md) | Structured logs, metrics, tracing, health checks |
