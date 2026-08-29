@@ -144,6 +144,15 @@ func TestScopedRejections(t *testing.T) {
 			wantMsg: "first type argument must be the concrete scoped type",
 		},
 		{
+			// The likeliest slip of all: writing the scoped type the way
+			// it reads in prose. Acquire reports failure by returning a
+			// nil instance beside the error, and a value type has no nil
+			// to return, so the pointer is not a style preference.
+			name:    "impl is a value type rather than a pointer",
+			build:   "servo.Scoped[chat.Room, chat.Rooms]()",
+			wantMsg: "first type argument must be a pointer",
+		},
+		{
 			name:    "empty accessor interface",
 			build:   "servo.Scoped[*chat.Room, any]()",
 			wantMsg: "declares no methods",
@@ -366,6 +375,18 @@ func TestScopeOptionArityAndKind(t *testing.T) {
 		{"linger with no argument", "servo.Scoped[*chat.Room, chat.Rooms](noArgs())", "must be servo.Linger(...) or servo.Max(...) calls"},
 		{"max from a variable", "servo.Scoped[*chat.Room, chat.Rooms](servo.Max(varInt))", "must be a constant expression"},
 		{"linger from a variable", "servo.Scoped[*chat.Room, chat.Rooms](servo.Linger(varDur))", "must be a constant expression"},
+		// The spec file is loaded even when it does not type-check —
+		// an injector legitimately has errors before its first generate —
+		// so an option left with the wrong number of arguments reaches
+		// the parser, which must name the option rather than index into
+		// an argument list that is not there.
+		{"linger with an empty argument list", "servo.Scoped[*chat.Room, chat.Rooms](servo.Linger())", "servo.Linger expects exactly one argument"},
+		{"max with two arguments", "servo.Scoped[*chat.Room, chat.Rooms](servo.Max(1, 2))", "servo.Max expects exactly one argument"},
+		// Constant, so constantValue is satisfied, but not a whole number:
+		// the option's value is read out as an int64, which a fractional
+		// constant has no representation as.
+		{"linger from a fractional constant", "servo.Scoped[*chat.Room, chat.Rooms](servo.Linger(1.5))", "must be a constant time.Duration"},
+		{"max from a fractional constant", "servo.Scoped[*chat.Room, chat.Rooms](servo.Max(1.5))", "must be a constant integer"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := scopeModule(t, "example.com/optarity", `

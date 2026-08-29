@@ -300,6 +300,29 @@ type BadAcquireError interface {
 type BadStatsParams interface {
 	Stats(n int) int
 }
+
+// Absent has no constructor anywhere, so whatever asks for it cannot
+// resolve.
+type Absent struct{}
+
+// Orphan is declared scoped, but its constructor needs Absent — so the
+// scope's own root node never gets built, and everything after the first
+// resolution pass has to cope with a ScopeRoot whose Node is nil.
+type Orphan struct{}
+func NewOrphan(k RoomKey, a *Absent) *Orphan { return &Orphan{} }
+func (_ *Orphan) ScopeKey(ctx context.Context) (RoomKey, error) { return "", nil }
+type Orphans interface {
+	Acquire(ctx context.Context) (*Orphan, func(), error)
+}
+
+// LateFailure resolves perfectly well itself; it is its extractor that
+// asks for Absent, which is the second, later way a scope can fail.
+type LateFailure struct{}
+func NewLateFailure(k RoomKey) *LateFailure { return &LateFailure{} }
+func (_ *LateFailure) ScopeKey(ctx context.Context, a *Absent) (RoomKey, error) { return "", nil }
+type LateFailures interface {
+	Acquire(ctx context.Context) (*LateFailure, func(), error)
+}
 `
 
 func checkScopeFixture(t *testing.T) (*types.Package, *token.FileSet, []*packages.Package, []*graph.Provider) {
@@ -1164,5 +1187,161 @@ func TestTransitivelyScopedRootHasNoAccessorToName(t *testing.T) {
 	}
 	if !strings.Contains(msg, "that scope's accessor interface") {
 		t.Fatalf("diagnostic should fall back to a generic phrase for a node no accessor exposes:\n%s", msg)
+	}
+}
+
+// TestSuppliedValueInsideAScopeIsBorrowed covers the one place
+// servo.Value and scopes meet: *Logger is declared as a value and is
+// reached from inside the RoomKey scope's sub-graph, by RoomLog. Nothing
+// constructs a supplied value, so it cannot vary with the key — it has to
+// be borrowed exactly as the singleton logger it replaced was, and one
+// value has to reach the singleton root and every scope entry as the same
+// node. Pulled into the scope's Order instead, the generator would try to
+// build one per entry out of a constructor that does not exist.
+func TestSuppliedValueInsideAScopeIsBorrowed(t *testing.T) {
+	pkg, fset, pkgs, all := checkScopeFixture(t)
+	in := scopeInput(t, pkg, fset, pkgs, all,
+		[]load.RootDecl{rootDecl(pkg, "Server")},
+		[]load.ScopeDecl{scopeDecl(pkg, "Room", "Rooms")})
+	in.Spec.Values = []load.ValueDecl{valueDecl(pkg, "Logger", 11)}
+
+	resolved, diags := Resolve(in)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics:\n%s", diagText(diags))
+	}
+	if len(resolved.Supplied) != 1 {
+		t.Fatalf("resolved.Supplied has %d entries, want 1", len(resolved.Supplied))
+	}
+	logger := resolved.Supplied[0]
+	if logger.Scope != nil {
+		t.Errorf("the supplied *Logger was claimed by %s; a value the caller hands over once is a borrow, not a scope member", logger.Scope.Name)
+	}
+	if len(resolved.Scopes) != 1 {
+		t.Fatalf("got %d scopes, want 1", len(resolved.Scopes))
+	}
+	scope := resolved.Scopes[0]
+	for _, n := range scope.Order {
+		if n == logger {
+			t.Fatalf("the supplied *Logger is in the scope's Order, so the generator would construct one per entry: %v", scope.Order)
+		}
+	}
+	roomLog := resolved.ByKey[ptrKey(pkg, "RoomLog")]
+	if roomLog == nil {
+		t.Fatal("*RoomLog was not resolved at all")
+	}
+	if got := depByKey(roomLog, ptrKey(pkg, "Logger")); got != logger {
+		t.Errorf("the scope member's *Logger dependency is not the declared value's node; one servo.Value must be one node, shared by the singleton root and every entry")
+	}
+	if got := depByKey(resolved.Roots[0], ptrKey(pkg, "Logger")); got != logger {
+		t.Errorf("the singleton root's *Logger dependency is not the declared value's node either")
+	}
+	for _, n := range resolved.Order {
+		if n.Key == ptrKey(pkg, "Logger") {
+			t.Errorf("NewLogger was scheduled for construction even though *Logger is supplied; Order = %v", resolved.Order)
+		}
+	}
+}
+
+// TestScopeRootThatCannotResolveIsReportedOnce: Orphan's constructor needs
+// *Absent, which nothing provides, so the scope's root never becomes a
+// node. Everything the resolver does afterwards — the extractor pass,
+// membership, the accessor check — walks that same ScopeRoot, and what the
+// user has to be handed is the missing provider, once, rather than
+// whatever dereferencing the nil root produces.
+func TestScopeRootThatCannotResolveIsReportedOnce(t *testing.T) {
+	pkg, fset, pkgs, all := checkScopeFixture(t)
+	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
+		[]load.RootDecl{rootDecl(pkg, "Server")},
+		[]load.ScopeDecl{scopeDecl(pkg, "Room", "Rooms"), scopeDecl(pkg, "Orphan", "Orphans")}))
+
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1:\n%s", len(diags), diagText(diags))
+	}
+	msg := diags[0].String()
+	if !strings.Contains(msg, "no provider for *example.com/scoped.Absent") {
+		t.Errorf("message = %q, want it to name the dependency nothing provides", msg)
+	}
+	if !strings.Contains(msg, "needed by *example.com/scoped.Orphan") {
+		t.Errorf("message = %q, want the chain to name the scoped type that asked for it", msg)
+	}
+}
+
+// TestExtractorDependencyThatCannotResolveIsReported is the same failure
+// one pass later: LateFailure itself resolves, and it is the ScopeKey
+// extractor's own parameter that has no provider. That is resolved in a
+// separate loop from the scope's roots, so it needs its own case — and the
+// message has to land on the extractor, which is the declaration the user
+// would have to change, not on the servo.Scoped line.
+func TestExtractorDependencyThatCannotResolveIsReported(t *testing.T) {
+	pkg, fset, pkgs, all := checkScopeFixture(t)
+	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
+		[]load.RootDecl{rootDecl(pkg, "Server")},
+		[]load.ScopeDecl{scopeDecl(pkg, "Room", "Rooms"), scopeDecl(pkg, "LateFailure", "LateFailures")}))
+
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1:\n%s", len(diags), diagText(diags))
+	}
+	if diags[0].Pos.Filename != "scoped.go" {
+		t.Errorf("diagnostic position = %v, want the extractor's own declaration in scoped.go rather than the spec file", diags[0].Pos)
+	}
+	msg := diags[0].String()
+	if !strings.Contains(msg, "no provider for *example.com/scoped.Absent") {
+		t.Errorf("message = %q, want it to name the extractor parameter nothing provides", msg)
+	}
+	if strings.Contains(msg, "needed by") {
+		t.Errorf("message = %q, want no 'needed by' line: an extractor parameter is resolved from the extractor itself, with no consumer chain above it", msg)
+	}
+}
+
+// TestNonInterfaceAccessorTypeIsLeftToLoad: load rejects a servo.Scoped
+// whose second type argument is not an interface, and does it with the
+// message that shows the interface to write. The accessor check here
+// therefore has nothing to add for such a declaration — it must walk past
+// without asserting its way into a panic, and without emitting a second,
+// worse-worded diagnostic that would only compete with load's.
+func TestNonInterfaceAccessorTypeIsLeftToLoad(t *testing.T) {
+	pkg, fset, pkgs, all := checkScopeFixture(t)
+	decl := scopeDecl(pkg, "Room", "Rooms")
+	// Logger is a struct. Only a Spec built by hand can look like this;
+	// load never produces one.
+	decl.Iface, decl.IfaceType = namedKey(pkg, "Logger"), namedType(pkg, "Logger")
+
+	resolved, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
+		[]load.RootDecl{rootDecl(pkg, "Logger")}, []load.ScopeDecl{decl}))
+	if len(diags) > 0 {
+		t.Fatalf("resolve reported an accessor problem load already reports better:\n%s", diagText(diags))
+	}
+	if len(resolved.Scopes) != 1 || len(resolved.Scopes[0].Order) == 0 {
+		t.Fatalf("the rest of the scope should still have resolved, got %v", resolved.Scopes)
+	}
+}
+
+// TestNodePosPrefersTheProviderOverTheScope pins the fallback order of the
+// position every scope diagnostic is anchored at. A scoped node has both a
+// constructor and a scope, and the constructor is the line the user would
+// edit, so it has to win. The synthetic nodes a scope introduces have no
+// constructor at all, and their scope's servo.Scoped line is the nearest
+// declaration there is. A node with neither yields the zero position
+// rather than a nil dereference.
+func TestNodePosPrefersTheProviderOverTheScope(t *testing.T) {
+	_, all := checkFixture(t)
+	provider := findProvider(t, all, "NewLogger")
+	scope := &Scope{Name: "scope example.com/scoped.RoomKey", Pos: token.Position{Filename: "spec.go", Line: 10}}
+
+	for _, tc := range []struct {
+		name string
+		node *Node
+		want token.Position
+	}{
+		{"scoped provider node", &Node{Provider: provider, Scope: scope}, provider.Pos},
+		{"scope key node", &Node{Kind: NodeScopeKey, Scope: scope}, scope.Pos},
+		{"scope accessor node", &Node{Kind: NodeScopeAccessor, Scope: scope}, scope.Pos},
+		{"supplied value", &Node{Kind: NodeSupplied}, token.Position{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := nodePos(tc.node); got != tc.want {
+				t.Errorf("nodePos = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

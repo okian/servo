@@ -279,6 +279,65 @@ func TestRunInitWarnsAboutAnUnexcludedSibling(t *testing.T) {
 	}
 }
 
+// TestRunInitStaysQuietWhenTheSiblingAlreadyExcludesTheNewTags is the case
+// the warning must not fire on, and the reason it is worth a test of its
+// own: a default spec already gated `servoinject && !prod` is invisible
+// under --tags=prod, so the two variants can never compile together.
+// Warning here anyway would train people to scroll past the message in the
+// one case where it is telling them something true.
+func TestRunInitStaysQuietWhenTheSiblingAlreadyExcludesTheNewTags(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "servo_spec.go", "//go:build servoinject && !prod\n\npackage main\n")
+
+	out := captureStdout(t, func() {
+		if err := runInit(dir, []string{"prod"}); err != nil {
+			t.Fatalf("init --tags=prod: %v", err)
+		}
+	})
+	if strings.Contains(out, "also visible with") {
+		t.Errorf("a sibling that already excludes prod drew an overlap warning:\n%s", out)
+	}
+	// Proof the scan actually looked at the sibling rather than skipping
+	// the directory outright: the run really did scaffold the variant.
+	if !strings.Contains(out, "servo_spec_prod.go") {
+		t.Errorf("init --tags=prod did not scaffold the variant at all:\n%s", out)
+	}
+}
+
+// TestWarnAboutUnexcludedSiblingsSkipsAFileItCannotParse: the scan reads
+// every .go file in the directory, including one being edited in another
+// window. A file that does not parse has to be stepped over rather than
+// end the scan, or a real overlapping sibling stays unreported behind it.
+// os.ReadDir returns entries sorted by name, so the broken file has to
+// sort first for this to prove anything.
+func TestWarnAboutUnexcludedSiblingsSkipsAFileItCannotParse(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "aaa_broken.go", "not valid go source {{{")
+	mustWriteFile(t, dir, "servo_spec.go", "//go:build servoinject\n\npackage main\n")
+
+	out := captureStdout(t, func() {
+		warnAboutUnexcludedSiblings(dir, filepath.Join(dir, "servo_spec_prod.go"), []string{"prod"})
+	})
+	if !strings.Contains(out, "servo_spec.go is also visible with --tags=prod") {
+		t.Errorf("the scan stopped at the unparseable file instead of stepping over it, got:\n%s", out)
+	}
+}
+
+// TestWarnAboutUnexcludedSiblingsOnAnUnreadableDirectory: the warning is
+// advice printed after the spec file has already been written, so a
+// directory it cannot read must leave the scaffold successful and silent
+// rather than turn it into a failure.
+func TestWarnAboutUnexcludedSiblingsOnAnUnreadableDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	out := captureStdout(t, func() {
+		warnAboutUnexcludedSiblings(missing, filepath.Join(missing, "servo_spec_prod.go"), []string{"prod"})
+	})
+	if out != "" {
+		t.Errorf("expected no output for a directory that cannot be read, got:\n%s", out)
+	}
+}
+
 // TestRunInitRejectsAnUnusableVariantTag confirms the same validation the
 // other commands apply reaches init, so a bad tag is caught before a spec
 // file is written around it.

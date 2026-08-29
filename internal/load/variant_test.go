@@ -2,8 +2,11 @@ package load
 
 import (
 	"go/build/constraint"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
 )
 
 func TestGeneratedConstraint(t *testing.T) {
@@ -327,6 +330,90 @@ func TestConstraintsOverlap(t *testing.T) {
 			}
 			if got := ConstraintsOverlap(a, b); got != c.want {
 				t.Errorf("ConstraintsOverlap(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// TestSpecConstraintsInIncludesTheSpecsThisConfigurationExcluded is the
+// property the function exists for. Asking "does any spec own this
+// generated file?" from the visible specs alone gets the answer wrong
+// exactly when it matters: under -tags=prod the default spec is excluded
+// from the build, so servo_gen.go — which that spec owns — would be
+// reported as an orphan on every tagged run.
+//
+// The package is assembled by hand rather than loaded, because the point
+// is which of GoFiles/IgnoredFiles the scan reads, and a real load can
+// only ever demonstrate one configuration at a time.
+func TestSpecConstraintsInIncludesTheSpecsThisConfigurationExcluded(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, src string) string {
+		mustWriteFile(t, dir, rel, src)
+		return filepath.Join(dir, rel)
+	}
+	visibleSpec := write("spec_default.go", "//go:build servoinject && !prod\n\npackage main\n")
+	excludedSpec := write("spec_prod.go", "//go:build servoinject && prod\n\npackage main\n")
+	// Servo's own output. It mentions the build tag, but negated, so it
+	// requires the tag to be *absent* — reading it back as a spec would
+	// make every generated file look like it owned itself.
+	generated := write("servo_gen.go", "//go:build !servoinject\n\npackage main\n")
+	plain := write("main.go", "package main\n\nfunc main() {}\n")
+	// A non-Go source excluded by a constraint, and a path that no longer
+	// exists: neither is evidence of a spec, and neither may abort the
+	// scan and lose the excluded spec that follows it.
+	asm := write("stub_prod.s", "// +build prod\n")
+	deleted := filepath.Join(dir, "gone.go")
+
+	pkg := &packages.Package{
+		GoFiles: []string{visibleSpec, generated, plain},
+		// excludedSpec twice: one spec file must contribute one
+		// constraint however many times its path reaches the scan.
+		IgnoredFiles: []string{excludedSpec, asm, deleted, excludedSpec},
+	}
+
+	var got []string
+	for _, expr := range SpecConstraintsIn(pkg) {
+		got = append(got, expr.String())
+	}
+	want := []string{"servoinject && !prod", "servoinject && prod"}
+	if strings.Join(got, " | ") != strings.Join(want, " | ") {
+		t.Errorf("SpecConstraintsIn = %v, want %v", got, want)
+	}
+}
+
+// TestConstraintSatisfiedBy covers the question its caller actually asks:
+// given the tag set a generated file's name encodes, is there a spec whose
+// own constraint holds there — that is, did some spec in this package
+// really produce that file. The build tag is part of the configuration a
+// spec is read in, so it is passed explicitly rather than assumed.
+func TestConstraintSatisfiedBy(t *testing.T) {
+	cases := []struct {
+		name string
+		expr string
+		tags []string
+		want bool
+	}{
+		{"the prod spec owns the prod variant", "servoinject && prod", []string{"servoinject", "prod"}, true},
+		{"the prod spec does not own the default file", "servoinject && prod", []string{"servoinject"}, false},
+		{"the default spec owns the default file", "servoinject && !prod", []string{"servoinject"}, true},
+		{"the default spec does not own the prod variant", "servoinject && !prod", []string{"servoinject", "prod"}, false},
+		// An ungated default spec claims every variant, which is exactly
+		// the overlap `servo doctor` reports: it is what `servo init`
+		// scaffolds, generated a second time under a tag.
+		{"an ungated spec owns everything", "servoinject", []string{"servoinject", "prod"}, true},
+		// Nothing is set at all, not even the build tag: no spec is
+		// readable in that configuration, so none owns anything.
+		{"no tags at all satisfies no spec", "servoinject && prod", nil, false},
+		{"a disjunction is satisfied by either side", "servoinject && (prod || dev)", []string{"servoinject", "dev"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			expr, err := ParseConstraint("//go:build " + c.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := ConstraintSatisfiedBy(expr, c.tags); got != c.want {
+				t.Errorf("ConstraintSatisfiedBy(%q, %v) = %v, want %v", c.expr, c.tags, got, c.want)
 			}
 		})
 	}
