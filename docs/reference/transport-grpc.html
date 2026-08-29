@@ -1,0 +1,35 @@
+---
+layout: null
+sitemap: false
+---
+{%- comment -%}
+  This page moved to docs/tutorial/: it rebuilds the tutorial's own chapter
+  10 in another framework, against the tutorial's own module, which is a
+  chapter's job rather than a lookup surface's. The stub keeps the old
+  reference URL resolving.
+
+  Hand-written rather than jekyll-redirect-from, because that plugin wants
+  redirect_from in the destination's front matter and the chapters are
+  deliberately front-matter-free, so they keep rendering correctly in
+  GitHub's own file browser. layout: null for the same reason search.json
+  uses it — the reference scope in _config.yml would otherwise wrap this in
+  the reference shell.
+{%- endcomment -%}
+{%- assign moved_to = '/tutorial/12-grpc-transport.html' -%}
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Moved · {{ site.title }}</title>
+    <link rel="canonical" href="{{ moved_to | absolute_url }}">
+    <meta http-equiv="refresh" content="0; url={{ moved_to | relative_url }}">
+    <meta name="robots" content="noindex">
+  </head>
+  <body>
+    <p>
+      This page is now
+      <a href="{{ moved_to | relative_url }}">chapter 12, gRPC as the transport</a>,
+      in the tutorial.
+    </p>
+  </body>
+</html>

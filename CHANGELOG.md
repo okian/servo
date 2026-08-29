@@ -77,7 +77,9 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   `docs/reference/transport-grpc.md` are now `docs/tutorial/11-gin-transport.md` and
   `docs/tutorial/12-grpc-transport.md`, sitting directly after the API layer they re-implement.
   Chapters 11 through 19 shift to 13 through 21; the tutorial is 21 chapters. Both new chapters
-  are optional — chapter 13 follows on from chapter 10 whether or not you read them.
+  are optional — chapter 13 follows on from chapter 10 whether or not you read them. The old
+  `/reference/transport-gin.html` and `/reference/transport-grpc.html` URLs redirect to them,
+  so an existing link still lands on the page it meant.
 
 ### Fixed
 - **A build constraint below the package clause was treated as a build constraint.** `go/build`
