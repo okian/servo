@@ -23,19 +23,19 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
-## [Unreleased]
+## [3.3.0] - 2026-08-30
 
-**On the versioning rules above.** Three changes here touch behaviour that the rules
-call breaking if it was documented, and none of it was. `servo.RunStop` now recovers
-a panic in a stop phase: its doc comment never said what happened to one, and what
-happened was that the process died from a goroutine no caller could reach.
-`servotest.NoLeaks` keeps its signature and its behaviour exactly; only its doc
-changed, because the doc described a check goleak does not perform. And `servo -h`,
-which used to exit 1 printing `generate`'s flags, now prints usage and exits 0 —
-`-h` is not something a `servo check` CI step can depend on. Everything else added
-here is additive: new markers, a new package, a new subcommand, a new test helper.
-A graph that declares neither `servo.Value` nor `servo.Include` emits a file that
-differs only by the rollback fixes below.
+**Why MINOR, and not PATCH or a new major.** This release adds two markers, a package, two
+subcommands and a test helper, so it is more than a patch; nothing it changes is breaking under the
+rules above, so it is not a major. Three changes come closest, and none of them lands — they touch
+behaviour those rules call breaking *if it was documented*, and none of it was. `servo.RunStop` now
+recovers a panic in a stop phase: its doc comment never said what happened to one, and what happened
+was that the process died from a goroutine no caller could reach. `servotest.NoLeaks` keeps its
+signature and its behaviour exactly; only its doc changed, because the doc described a check goleak
+does not perform. And `servo -h`, which used to exit 1 printing `generate`'s flags, now prints usage
+and exits 0 — `-h` is not something a `servo check` CI step can depend on. A graph that declares
+neither `servo.Value` nor `servo.Include` emits a file that differs only by the rollback fixes
+below.
 
 ### Added
 - **`servo.Value[T]()`: a value the caller supplies, instead of a global read back
