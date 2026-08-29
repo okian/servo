@@ -89,4 +89,4 @@ Docker image.
 
 ## License
 
-Contributions are accepted under the project's [MIT license](LICENSE.md).
+Contributions are accepted under the project's [MIT license](LICENSE).

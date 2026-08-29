@@ -4,7 +4,7 @@
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/14271/badge)](https://www.bestpractices.dev/projects/14271)
 [![codecov](https://codecov.io/gh/okian/servo/branch/master/graph/badge.svg)](https://codecov.io/gh/okian/servo)
 [![Go version](https://img.shields.io/github/go-mod/go-version/okian/servo)](go.mod)
-[![License: MIT](https://img.shields.io/github/license/okian/servo)](LICENSE.md)
+[![License: MIT](https://img.shields.io/github/license/okian/servo)](LICENSE)
 [![Go Reference](https://pkg.go.dev/badge/github.com/okian/servo/v3.svg)](https://pkg.go.dev/github.com/okian/servo/v3)
 [![Docs](https://img.shields.io/badge/docs-okian.github.io%2Fservo-00ADD8)](https://okian.github.io/servo/)
 
