@@ -186,10 +186,16 @@ jobs:
       - name: Lint every module
         run: |
           fail=0
-          for dir in . examples/basic examples/mocking examples/scoped examples/diagnostics examples/tutorial; do
+          for dir in . examples/basic examples/mocking examples/scoped examples/diagnostics examples/variants examples/tutorial; do
             echo "--- $dir ---"
             (cd "$dir" && golangci-lint run --timeout=5m ./...) || fail=1
           done
+          # examples/variants again under the tag that selects its other
+          # spec: files behind a build constraint are invisible to the
+          # default run, and app_prod_test.go carried an unchecked error
+          # for exactly that reason.
+          echo "--- examples/variants (--tags=prod) ---"
+          (cd examples/variants && golangci-lint run --timeout=5m --build-tags=prod ./...) || fail=1
           exit $fail
 
   # 200 consecutive green runs is the gate on scopes. It takes ~8 minutes

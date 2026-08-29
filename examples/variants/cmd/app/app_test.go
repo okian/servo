@@ -16,7 +16,7 @@ func TestDefaultVariantWiresMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer app.Shutdown(context.Background())
+	defer func() { _ = app.Shutdown(context.Background()) }()
 
 	types := nodeTypes(app)
 	if !containsSuffix(types, "memory.Mem") {
