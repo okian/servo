@@ -262,20 +262,42 @@ A constructor may return a cleanup function alongside its value:
 func New(cfg Config) (*Client, func(), error)
 ```
 
-It's for teardown that isn't naturally a method — closing something the constructor opened, undoing
-a global registration, removing a temp directory. It is called **last** in that node's stop
-sequence, after `Drain`/`Flush`/`Stop`, under its own budget like any other phase, and it takes no
-context and returns no error.
+It is called **last** in that node's stop sequence, after `Drain`/`Flush`/`Stop`, under its own
+budget like any other phase, and it takes no context and returns no error.
 
-If your teardown wants a context or has a meaningful error, write a `Stop(ctx) error` method
-instead.
+### Why this exists when `Finalizer` does
 
-One trap worth naming: never route a mock's verification call (gomock's `ctrl.Finish`) through the
-cleanup func. It runs inside `RunStop`'s goroutine during shutdown, and an unmet expectation panics
-there — in a goroutine nothing can recover, crashing the test binary with no indication of which
-test was running. Call it directly from the test with a plain `defer`; the README's
-[Mocking section](https://github.com/okian/servo/blob/master/README.md#gouberorgmock-gomock) has
-the full explanation.
+The obvious question, since `Stop(ctx) error` looks strictly better — it takes a context, so it can
+respect a deadline, and returns an error, so a failure lands in the
+[`Report`](servo-package.md#report) instead of vanishing. A cleanup func can do neither.
+
+It exists for teardown that is not about the value at all. A method only has the receiver; a
+closure captures whatever the constructor had. If setup created something the returned value never
+holds a reference to — a temp directory known only by its path, a global default that was swapped,
+a registration keyed by a local variable — the closure can undo it and a method cannot, short of
+widening the struct with a field that exists only to be torn down:
+
+```go
+func NewStore() (*Store, func(), error) {
+	dir, err := os.MkdirTemp("", "store")
+	if err != nil {
+		return nil, nil, err
+	}
+	s, err := open(dir)
+	if err != nil {
+		os.RemoveAll(dir)
+		return nil, nil, err
+	}
+	// *Store never learns about dir, and does not need to.
+	return s, func() { os.RemoveAll(dir) }, nil
+}
+```
+
+One thing not to expect from it: it does not let you return a type from another module to avoid
+writing a method. `func New() (*os.File, func(), error)` resolves only if exactly one function in
+scope produces `*os.File`, and seven in the standard library do — so `servo generate` reports the
+ambiguity rather than picking one. In practice a foreign value gets wrapped in a type you own,
+which is where `Stop` becomes available again, and better.
 
 ## What this looks like generated
 

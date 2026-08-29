@@ -146,7 +146,36 @@ type Readier     interface{ Ready(ctx context.Context) error }
 
 Detected with `types.Implements` at generation time, never with a runtime type assertion. Declare
 these method signatures on your component and it joins the corresponding phase; declare none and no
-lifecycle code is emitted for it. When each is called, in what order, and under what budget:
+lifecycle code is emitted for it. There is no base type to embed and nothing to register.
+
+What each one is for, and when to write one:
+
+| Interface | It means | Write one when |
+| --- | --- | --- |
+| `Initializer` | Acquire what construction could not: dial the connection, open the file, run the migration. Failure aborts startup and rolls back everything already built. | Your constructor can produce the value but cannot yet *use* it. Keep the constructor pure and put the I/O here. |
+| `Runner` | A loop that owns the process's time: an HTTP server, a queue consumer, a ticker. Returns when its context is cancelled. | Your component does work nobody calls it for. |
+| `Drainer` | Stop accepting new work; let what is in flight finish. | Requests, messages or jobs can be mid-flight when shutdown starts, and cutting them off would lose them. |
+| `Flusher` | Push buffered state somewhere durable. | You hold data in memory that would be lost on exit — a write buffer, a metrics batch, a spool. |
+| `Finalizer` | Release the resource: close the pool, disconnect, unsubscribe. | You hold something the OS or a remote service is also tracking. |
+| `Healther` | "This process is not broken." Restart me if it fails. | A dependency can fail in a way that a restart would fix. |
+| `Readier` | "Send me traffic." Take me out of the load balancer if it fails. | You can be alive but temporarily unable to serve — warming a cache, waiting on a leader election. |
+
+Three distinctions decide most of the questions people have here:
+
+- **`Drain` vs `Stop`.** `Drain` waits for work to finish; `Stop` releases the resource. A server
+  implements both: `Drain` stops accepting connections and waits for open ones, then `Stop` closes
+  the listener. If you only have one of the two behaviours, only write that one.
+- **`Health` vs `Ready`.** Neither is called by servo — you call `app.Health(ctx)` or
+  `app.Ready(ctx)` yourself, typically from a handler. The distinction is the Kubernetes one, and
+  conflating them means a slow cache warm-up gets your pod killed rather than briefly removed from
+  the load balancer.
+- **A method vs a cleanup `func()`.** Prefer `Stop`: it takes a context and returns an error, and a
+  cleanup func does neither. Reach for the closure only when teardown is not about the value —
+  removing a temp directory the value never knew about, undoing a global. See
+  [the cleanup func](lifecycle.md#why-this-exists-when-finalizer-does).
+
+Every one of these is optional and independent. Implement three and exactly those three are called.
+When each runs, in what order, and under what budget:
 [Lifecycle](lifecycle.md#the-seven-capabilities).
 
 ## Reports
