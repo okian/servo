@@ -96,8 +96,8 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   constructors, their `Config` types and their `config.Parse` calls are identical whether or not
   you use servo — showing them as "what servo generates" implied otherwise. The section is now
   three blocks: the project once, then its `main` written by hand and the same `main` with servo,
-  side by side. It no longer shows generated code at all, because the generated file is not what
-  the comparison is about — the hand-written `main` it replaces is.
+  side by side. Both blocks are only `main`, and neither shows generated code — the generated file
+  is not what the comparison is about, the hand-written `main` it replaces is.
 - **The Gin and gRPC transports are tutorial chapters again, not reference pages.** They walk
   through rebuilding one chapter's code in another framework, against the tutorial's own
   module — a tutorial's job, not a lookup surface's. `docs/reference/transport-gin.md` and
@@ -109,6 +109,18 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   so an existing link still lands on the page it meant.
 
 ### Fixed
+- **The landing page's diagnostic was a mock-up, and overcounted.** It claimed three types
+  implement `store.Store` and listed `examples/basic/memory` as one of them. Deleting the
+  `servo.Bind` line from `examples/basic` and running `servo generate` reports **two** —
+  `mockstore.Store` and `postgres.DB`. Nothing imports `memory`, so it is not in the package set
+  servo loads and can never be a candidate, however well it satisfies the interface. The block is
+  now that real output, and a comment beside it records the command that reproduces it.
+  `memory`'s own package doc claimed the opposite and now says what actually happens, which is a
+  resolution rule worth knowing: reachability from the injector decides candidacy, not
+  implementing the interface.
+- **The landing page showed `servo.Build(...)` at file scope**, which is not valid Go — the real
+  spec files wrap it in a function. The block is `main` alone now, and where the roots are
+  declared is said in prose instead.
 - **A build constraint below the package clause was treated as a build constraint.** `go/build`
   only reads the file header, so servo could call a spec file "correctly gated" while it compiled
   into the real binary. Servo now resolves constraints the way `go/build.shouldBuild` does: header

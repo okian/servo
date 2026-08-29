@@ -1,8 +1,11 @@
-// Package memory is a second store.Store implementation, existing so the
-// example demonstrates a genuinely ambiguous auto-bind: both this and
-// postgres.DB satisfy store.Store, so servo.Bind is required (see
-// cmd/basic/spec.go). Remove that Bind line to see the ambiguity
-// diagnostic servo reports instead.
+// Package memory implements store.Store, and nothing in this module imports
+// it. That is what it is here to show: servo resolves over the packages
+// actually reachable from the injector, so a type no import path leads to is
+// never a candidate, however well it satisfies the interface.
+//
+// Delete the servo.Bind line in cmd/basic/spec.go and servo reports two
+// candidates for store.Store — mockstore.Store and postgres.DB. This type is
+// not among them.
 package memory
 
 import "sync"

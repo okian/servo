@@ -42,6 +42,11 @@ layout: default
         wires it together: construction in dependency order, rollback when one fails,
         every <code>Run</code> supervised, shutdown in reverse.
       </p>
+      <p class="section-lede">
+        With servo that file is generated, from a build-tagged spec naming only the roots —
+        <code>servo.Root[*api.Server]()</code> — which never reaches your binary. Everything
+        else is read off the constructor signatures.
+      </p>
 
       <figure class="solo">
         <figcaption>The project — four packages, no servo anywhere</figcaption>
@@ -145,13 +150,6 @@ func main() {
         <figure>
           <figcaption>main.go — with servo</figcaption>
 {% highlight go %}
-// cmd/app/spec.go — build-tagged, so it never
-// reaches your binary
-servo.Build(
-    servo.Root[*api.Server](),
-)
-
-// cmd/app/main.go — the whole of it
 func main() {
     ctx, stop := signal.NotifyContext(
         context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -173,10 +171,10 @@ func main() {
       </div>
 
       <p class="section-lede" style="margin-top: 2rem;">
-        The left column grows with every component you add, and each addition edits code
-        that already works. The right column does not change at all — the order,
-        the rollback and the reverse shutdown are read out of the constructor signatures
-        above and regenerated.
+        Add a component and the left column grows in four places at once: a config, a
+        constructor call, another <code>Stop</code> in every error branch below it, and
+        another entry in the teardown list — all of it edits to code that already worked.
+        The right column does not change, because it never names a component.
       </p>
     </div>
   </section>
@@ -190,14 +188,24 @@ func main() {
         stack trace, in whichever environment ran the binary first. Servo reports
         them with a file and a line, like any other compile error.
       </p>
-      <div class="terminal">servo: no provider for store.Store
-  needed by *api.Server              api/api.go:15:6
-  root                               cmd/app/spec.go:17:3
+      {%- comment -%}
+        Real output, not a mock-up. Reproduce by deleting the
+        `servo.Bind[store.Store, *postgres.DB]()` line from
+        examples/basic/cmd/basic/spec.go and running
+        `go run ./cmd/servo generate --dir examples/basic/cmd/basic`.
+        The only edit is stripping the `example.com/servobasic/` module
+        prefix from the type names, which servo prints in full. Two
+        candidates, not three: examples/basic/memory also implements
+        store.Store, but nothing imports it, so it is not in the package
+        set servo loads and never appears as a candidate.
+      {%- endcomment -%}
+      <div class="terminal">api/api.go:15:6: servo: no provider for store.Store
+  needed by *api.Server  api/api.go:15:6
+  root                   cmd/basic/spec.go:17:3
 
-  3 types implement store.Store — add one of:
-      servo.Bind[store.Store, *memory.Store]()      memory/memory.go:15:6
-      servo.Bind[store.Store, *mockstore.Store]()   mockstore/mockstore.go:29:6
-      servo.Bind[store.Store, *postgres.DB]()       postgres/postgres.go:13:6</div>
+  2 types implement store.Store — add one of:
+      servo.Bind[store.Store, *mockstore.Store]()  mockstore/mockstore.go:29:6
+      servo.Bind[store.Store, *postgres.DB]()      postgres/postgres.go:13:6</div>
       <p class="section-lede">
         Ambiguity, dependency cycles and unreachable providers fail the same way.
         <a href="{{ '/limitations.html' | relative_url }}">Limitations</a> is honest
