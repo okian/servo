@@ -33,7 +33,10 @@ func TestBuildFlagsTagList(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			got := BuildFlags{Tags: c.tags}.TagList()
-			if !slices.Equal(got, c.want) && !(len(got) == 0 && len(c.want) == 0) {
+			// slices.Equal already treats a nil slice and an empty one as
+			// equal — it compares lengths first — so no separate
+			// empty-vs-nil case is needed here.
+			if !slices.Equal(got, c.want) {
 				t.Errorf("TagList(%q) = %v, want %v", c.tags, got, c.want)
 			}
 		})

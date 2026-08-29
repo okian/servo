@@ -138,8 +138,8 @@ func TestRunInitFailsWhenDirNotWritable(t *testing.T) {
 
 // TestRunInitScaffoldsAVariantSpec: the scaffold is where the one mistake
 // the variant model allows is cheapest to prevent, so `servo init
-// --tags=prod` must produce a spec already gated for prod, with a
-// go:generate line that regenerates that variant rather than the default.
+// --tags=prod` must produce a spec already gated for prod, carrying a
+// generate directive that rebuilds that variant rather than the default.
 func TestRunInitScaffoldsAVariantSpec(t *testing.T) {
 	dir := t.TempDir()
 	if err := runInit(dir, []string{"prod"}); err != nil {
