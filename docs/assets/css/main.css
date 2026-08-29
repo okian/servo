@@ -605,14 +605,36 @@ pre code { background: none; border: none; padding: 0; font-size: inherit; }
 .section-lede { max-width: var(--measure); color: var(--text-muted); margin: 0 0 1.1rem; }
 .section-lede strong { color: var(--text); font-weight: 600; }
 
-.split { display: grid; grid-template-columns: 1fr 1fr; gap: 2.25rem; margin-top: 2.25rem; }
+/* Two-column comparison. `align-items: start` matters: the default `stretch`
+   would equalise the columns, and the whole point of this one is that the two
+   sides are not the same length. The divider is a rule on the second column
+   rather than a separate element, so it lands exactly between them. */
+.split {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 2.25rem; margin-top: 1.5rem; align-items: start;
+}
+.split > figure:nth-child(2) { border-left: 1px solid var(--rule); padding-left: 2.25rem; }
 .split figure, .solo { margin: 0; }
-/* A single full-width figure above the two-column comparison: the code that
-   is the same on both sides, shown once instead of twice. */
+
+/* The shared premise above the comparison. Its caption rule runs the full
+   width to tie it to both columns, but the code sits at its natural measure —
+   the block is 54 characters wide and a full-bleed panel of mostly empty
+   background would read as a mistake rather than as restraint. */
 .solo { margin-top: 2.25rem; }
+.solo > .highlight, .solo > .highlighter-rouge { max-width: var(--measure); }
+
 .split figcaption, .solo figcaption {
   font-size: .68rem; text-transform: uppercase; letter-spacing: .14em;
-  color: var(--text-faint); margin-bottom: .6rem;
+  color: var(--text-faint); margin-bottom: .7rem;
+  display: flex; align-items: baseline; justify-content: space-between; gap: 1rem;
+  padding-bottom: .5rem; border-bottom: 1px solid var(--rule);
+}
+/* The line count is the comparison's actual finding, so it is set as data:
+   mono, and the one place tabular figures matter on this page. */
+.fig-count {
+  font-family: var(--font-mono); font-size: .7rem;
+  letter-spacing: 0; text-transform: none; font-variant-numeric: tabular-nums;
+  white-space: nowrap; flex: none;
 }
 
 /* landing table of contents — parts numbered in roman, chapters as a list */
@@ -768,7 +790,16 @@ pre code { background: none; border: none; padding: 0; font-size: inherit; }
     position: fixed; inset: 0; z-index: 14;
     background: color-mix(in srgb, var(--text) 30%, transparent);
   }
+  /* Stacked, so the divider has to turn with the axis: a left rule on a
+     full-width column would sit down its outer edge and read as a quote. */
   .split { grid-template-columns: 1fr; }
+  .split > figure:nth-child(2) {
+    border-left: 0; padding-left: 0;
+    border-top: 1px solid var(--rule); padding-top: 2.25rem;
+  }
+  /* The measure cap only exists to stop a wide empty panel; once the column
+     is narrow it would shrink the block below the width it already has. */
+  .solo > .highlight, .solo > .highlighter-rouge { max-width: none; }
   .hero { padding-block: 4rem 3rem; }
   .part__summary { display: none; }
   .pager { flex-direction: column; gap: 1.25rem; }

@@ -194,7 +194,7 @@ context.
 | `context.AfterFunc` is a `sync.Once`-guarded backstop | A caller who forgets `release()` still releases when their request ends — later than ideal, but not never |
 | A context with no `Done` channel is refused with `ErrNoLifetime` | `Background`, `TODO` and `WithoutCancel` never fire, so the backstop never runs and the count never reaches zero |
 | Reaching zero and removing the key are one step | See [the eviction race](#the-eviction-race) |
-| Teardown runs on a fresh `context.Background()` | Same reason the generated `main` calls `Shutdown(context.Background())`: the drain has to survive the cancellation that triggered it |
+| Teardown runs on a fresh `context.Background()` | Same reason `main` hands `Shutdown` a context of its own: the drain has to survive the cancellation that triggered it. No deadline, because a linger timer can fire it and there is no caller to take one from — `servo.RunStop` bounds each call at `servo.DefaultStopBudget` regardless |
 | An instance's context is `WithoutCancel` of `New`'s | An instance outlives the request that created it. Hanging its `Run` loop off an acquirer's context would kill it when that one caller disconnects, while the instance is still live and referenced. Values propagate; cancellation does not |
 
 ### The linger window

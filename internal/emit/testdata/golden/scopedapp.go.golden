@@ -467,10 +467,12 @@ func (e *roomKeyEntry) rollback() {
 	}
 }
 
-// teardown runs on a fresh context.Background(), for the same reason the
-// generated main calls Shutdown(context.Background()): the drain has to
-// survive the cancellation that triggered it. Drain comes first so a
-// streaming consumer unblocks before its context is pulled out from
+// teardown runs on a fresh context, for the same reason main hands
+// Shutdown one: the drain has to survive the cancellation that triggered
+// it. No deadline is set here because there is no caller to take one
+// from — a linger timer can fire this — and servo.RunStop bounds every
+// call below at servo.DefaultStopBudget either way. Drain comes first so
+// a streaming consumer unblocks before its context is pulled out from
 // under it; Flush comes after the Run goroutines have returned, so
 // anything Run buffered is flushed rather than discarded.
 func (e *roomKeyEntry) teardown() servo.NodeResult {

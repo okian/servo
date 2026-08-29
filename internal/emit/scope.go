@@ -675,10 +675,12 @@ func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
 	}
 	b.WriteString("}\n\n")
 
-	b.WriteString("// teardown runs on a fresh context.Background(), for the same reason the\n")
-	b.WriteString("// generated main calls Shutdown(context.Background()): the drain has to\n")
-	b.WriteString("// survive the cancellation that triggered it. Drain comes first so a\n")
-	b.WriteString("// streaming consumer unblocks before its context is pulled out from\n")
+	b.WriteString("// teardown runs on a fresh context, for the same reason main hands\n")
+	b.WriteString("// Shutdown one: the drain has to survive the cancellation that triggered\n")
+	b.WriteString("// it. No deadline is set here because there is no caller to take one\n")
+	b.WriteString("// from — a linger timer can fire this — and servo.RunStop bounds every\n")
+	b.WriteString("// call below at servo.DefaultStopBudget either way. Drain comes first so\n")
+	b.WriteString("// a streaming consumer unblocks before its context is pulled out from\n")
 	b.WriteString("// under it; Flush comes after the Run goroutines have returned, so\n")
 	b.WriteString("// anything Run buffered is flushed rather than discarded.\n")
 	fmt.Fprintf(b, "func (e *%s) teardown() %s.NodeResult {\n", se.EntryName, e.servoAlias)

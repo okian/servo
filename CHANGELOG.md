@@ -71,6 +71,24 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   case-insensitive filesystem).
 
 ### Changed
+- **Every `main` bounds its own shutdown.** All ten commands called
+  `app.Shutdown(context.Background())`. The fresh context is right — the context above it is
+  already cancelled, and that cancellation is what started the shutdown — but a bare
+  `context.Background()` puts no ceiling on the unwind. `servo.RunStop` caps each node at
+  `servo.DefaultStopBudget`, so nothing hangs, but nothing caps their sum either, and a container
+  runtime sends SIGKILL when its grace period expires regardless. Each `main` now derives a
+  `shutdownTimeout` context and hands that to `Shutdown` — and, in the tutorial's three commands,
+  to the admin listener as well, so both are stopped inside one budget. The README, the lifecycle
+  reference and the landing page show the same shape.
+
+  Tests keep `context.Background()` deliberately: `go test -timeout` already bounds them, and
+  `t.Context()` is cancelled during cleanup, which is exactly the cancellation a shutdown context
+  has to survive.
+- **The landing comparison is laid out as one premise and two branches.** The shared project sits
+  above a full-width caption rule with its code at its natural measure rather than stretched into a
+  panel of empty background; the two `main` files sit below it, separated by a vertical rule, with
+  tops aligned rather than stretched to equal height — they are not the same length, which is the
+  finding. Each caption carries that finding as data: 58 lines against 22.
 - **The tutorial is laid out as ports and adapters, under `internal/`.** Every package it builds
   moved from the module root into `examples/tutorial/internal/`, and each adapter now sits under
   the port it implements: `broker/natsbroker/` and `broker/notifier/`, `cache/redis/`,

@@ -131,6 +131,10 @@ your `main`'s job, so that the same code path handles both "a runner failed" and
 The canonical `main` is:
 
 ```go
+// servo.RunStop caps each node at servo.DefaultStopBudget, but nothing caps
+// their sum, so the whole teardown gets a deadline of its own.
+const shutdownTimeout = 30 * time.Second
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -142,7 +146,12 @@ func main() {
 	if err := app.Run(ctx); err != nil {
 		log.Print(err)
 	}
-	if r := app.Shutdown(context.Background()); !r.Clean() {
+	// Not ctx: it is already cancelled, and that cancellation is what started
+	// the shutdown. Not a bare context.Background() either, so the unwind
+	// cannot outlast the grace period it is running inside.
+	sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if r := app.Shutdown(sctx); !r.Clean() {
 		log.Print(r)
 	}
 }

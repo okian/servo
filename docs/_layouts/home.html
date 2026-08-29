@@ -49,7 +49,7 @@ layout: default
       </p>
 
       <figure class="solo">
-        <figcaption>The project — four packages, no servo anywhere</figcaption>
+        <figcaption>The project<span class="fig-count">4 packages · 0 import servo</span></figcaption>
 {% highlight go %}
 // config/config.go — reads the environment once;
 // every package parses its own slice of it off this
@@ -85,7 +85,7 @@ func (s *Server) Stop(context.Context) error
 
       <div class="split">
         <figure>
-          <figcaption>main.go — without servo</figcaption>
+          <figcaption>main.go — without servo<span class="fig-count">58 lines</span></figcaption>
 {% highlight go %}
 func main() {
     ctx, stop := signal.NotifyContext(
@@ -148,7 +148,7 @@ func main() {
 {% endhighlight %}
         </figure>
         <figure>
-          <figcaption>main.go — with servo</figcaption>
+          <figcaption>main.go — with servo<span class="fig-count">22 lines</span></figcaption>
 {% highlight go %}
 func main() {
     ctx, stop := signal.NotifyContext(
@@ -162,7 +162,13 @@ func main() {
     if err := app.Run(ctx); err != nil {
         log.Print(err)
     }
-    if r := app.Shutdown(context.Background()); !r.Clean() {
+
+    // Not ctx: it is already cancelled, and that
+    // is what started the shutdown.
+    sctx, cancel := context.WithTimeout(
+        context.Background(), 30*time.Second)
+    defer cancel()
+    if r := app.Shutdown(sctx); !r.Clean() {
         log.Print(r)
     }
 }
