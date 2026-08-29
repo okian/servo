@@ -64,6 +64,7 @@ import (
 	"fmt"
 
 	"example.com/servoorders/broker"
+	"example.com/servoorders/observability"
 	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
 	"github.com/nats-io/nats.go"
@@ -76,8 +77,18 @@ type Publisher struct {
 
 var _ broker.EventPublisher = (*Publisher)(nil)
 
-func New(cfg *config.Config) *Publisher {
-	return &Publisher{url: cfg.NATSURL}
+const envPrefix = "NATS_"
+
+type Config struct {
+	URL string `env:"URL,required"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(cfg *Config) *Publisher {
+	return &Publisher{url: cfg.URL}
 }
 ```
 
@@ -141,19 +152,34 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	"example.com/servoorders/broker"
 	"example.com/servoorders/config"
+	"example.com/servoorders/observability"
 	"github.com/nats-io/nats.go"
 )
 
-type Notifier struct {
-	url string
+// This package declares its own Config even though it wants the same
+// NATS_URL natsbroker does. Both ends of the messaging layer connect to
+// the same server, and each says so for itself rather than sharing a
+// struct to agree on it — see chapter 3.
+const envPrefix = "NATS_"
+
+type Config struct {
+	URL string `env:"URL,required"`
 }
 
-func New(cfg *config.Config) *Notifier {
-	return &Notifier{url: cfg.NATSURL}
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+type Notifier struct {
+	url string
+	log *observability.Logger
+}
+
+func New(cfg *Config, log *observability.Logger) *Notifier {
+	return &Notifier{url: cfg.URL, log: log}
 }
 ```
 
@@ -172,10 +198,10 @@ func (n *Notifier) Run(ctx context.Context) error {
 	sub, err := conn.Subscribe(broker.OrderPlacedSubject, func(msg *nats.Msg) {
 		var event broker.OrderPlacedEvent
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
-			slog.ErrorContext(ctx, "notifier: malformed event", "error", err)
+			n.log.ErrorContext(ctx, "notifier: malformed event", "error", err)
 			return
 		}
-		slog.InfoContext(ctx, "order placed",
+		n.log.InfoContext(ctx, "order placed",
 			"order_id", event.OrderID, "user_id", event.UserID, "item", event.Item)
 	})
 	if err != nil {
@@ -208,7 +234,7 @@ and publish them, marking each sent only after a confirmed publish. That gets yo
 delivery — at the cost of a background poller, and the possibility that a consumer sees the same
 event twice, which any real at-least-once consumer has to be built to tolerate (idempotent
 processing, keyed by `OrderID`). We're not building an outbox in this tutorial — see
-[chapter 19](19-alternatives-and-further-reading.md#the-outbox-pattern) for what it would take —
+[chapter 20](20-alternatives-and-further-reading.md#the-outbox-pattern) for what it would take —
 because the failure mode being visible and understood is more valuable here than the machinery to
 eliminate it.
 

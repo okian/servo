@@ -9,7 +9,6 @@ package session
 
 import (
 	"context"
-	"log/slog"
 	"sync"
 	"uuid"
 
@@ -89,7 +88,7 @@ func (*Session) ScopeKey(ctx context.Context) (UserID, error) {
 }
 
 func (s *Session) Init(context.Context) error {
-	slog.Debug("session: opened", "user", string(s.id))
+	s.log.Debug("session: opened", "user", string(s.id))
 	return nil
 }
 
@@ -132,7 +131,7 @@ func (s *Session) Flush(context.Context) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	slog.Info("session: closed", "user", string(s.id), "views", s.views, "recent", len(s.recent))
+	s.log.Info("session: closed", "user", string(s.id), "views", s.views, "recent", len(s.recent))
 	return nil
 }
 

@@ -285,7 +285,7 @@ components:
             The only status this tutorial ever assigns — there's no order
             lifecycle beyond creation here (no fulfillment, cancellation,
             etc.). A real system would grow this into a proper state
-            machine; see docs/tutorial/19-alternatives-and-further-reading.md.
+            machine; see docs/tutorial/20-alternatives-and-further-reading.md.
         created_at:
           type: string
           format: date-time

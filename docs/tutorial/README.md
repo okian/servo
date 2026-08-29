@@ -104,7 +104,8 @@ you — nothing here is assembled by hand.
 | 16 | [CI/CD](16-cicd.md) | GitHub Actions: lint, test, build, `servo check` |
 | 17 | [Running and deployment](17-running-and-deployment.md) | Docker Compose, Dockerfile, env reference |
 | 18 | [Troubleshooting](18-troubleshooting.md) | Every diagnostic from every chapter, organized by symptom |
-| 19 | [Alternatives and further reading](19-alternatives-and-further-reading.md) | Other valid choices at every layer |
+| 19 | [Transport choices](19-transport-choices.md) | The same service layer behind Gin, and behind gRPC on one port with REST |
+| 20 | [Alternatives and further reading](20-alternatives-and-further-reading.md) | Other valid choices at every layer |
 
 Read them in order the first time through — each one assumes the code from the previous chapters
 already exists. After that, they stand alone well enough to use as reference.

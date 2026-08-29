@@ -67,8 +67,18 @@ var (
 	_ repository.UserRepository  = (*Store)(nil)
 )
 
-func New(cfg *config.Config) (*Store, error) {
-	pool, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
+const envPrefix = "POSTGRES_"
+
+type Config struct {
+	DSN string `env:"DSN,required"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(cfg *Config) (*Store, error) {
+	pool, err := pgxpool.New(context.Background(), cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
@@ -201,7 +211,7 @@ everything visible in one file, nothing to look up in someone else's documentati
 what it does. (A tool like [`golang-migrate`](https://github.com/golang-migrate/migrate) or
 [`goose`](https://github.com/pressly/goose) is genuinely the better choice once a team has more
 than a handful of migrations, or needs to roll one back in production — see
-[chapter 19](19-alternatives-and-further-reading.md#migrations) for when to make that switch.)
+[chapter 20](20-alternatives-and-further-reading.md#migrations) for when to make that switch.)
 
 Create `migrations/migrations.go`:
 
@@ -367,7 +377,7 @@ func testStore(t *testing.T) *Store {
 		t.Skip("TEST_POSTGRES_DSN not set; see docs/tutorial/05-repository-layer.md")
 	}
 
-	s, err := New(&config.Config{PostgresDSN: dsn})
+	s, err := New(&Config{DSN: dsn})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

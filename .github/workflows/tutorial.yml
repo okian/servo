@@ -71,12 +71,15 @@ jobs:
         run: go test ./...
 
       # The reference check every consumer of servo should run in CI:
-      # verifies cmd/orders/servo_gen.go still matches what `servo
+      # verifies every injector's servo_gen.go still matches what `servo
       # generate` would produce right now, so a constructor signature
       # change without a re-run of `servo generate` fails the build
-      # instead of shipping a stale generated file. Run from the repo
-      # root, same as go.yml does for examples/basic and
-      # examples/mocking, since cmd/servo is a root-module binary.
+      # instead of shipping a stale generated file. There are three —
+      # cmd/orders, cmd/ordersgin and cmd/ordersgrpc, one per transport
+      # (docs/tutorial/19-transport-choices.md) — and `check` covers all
+      # of them in one pass. Run from the repo root, same as go.yml does
+      # for examples/basic and examples/mocking, since cmd/servo is a
+      # root-module binary.
       - name: servo check
         working-directory: .
         run: go run ./cmd/servo check --dir examples/tutorial

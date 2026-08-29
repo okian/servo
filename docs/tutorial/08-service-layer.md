@@ -23,6 +23,7 @@ import (
 	"uuid"
 
 	"example.com/servoorders/broker"
+	"example.com/servoorders/observability"
 	"example.com/servoorders/cache"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/repository"
@@ -32,12 +33,25 @@ type OrderService struct {
 	repo      repository.OrderRepository
 	cache     cache.OrderCache
 	publisher broker.EventPublisher
+	log       *observability.Logger
 }
 
-func New(repo repository.OrderRepository, c cache.OrderCache, publisher broker.EventPublisher) *OrderService {
-	return &OrderService{repo: repo, cache: c, publisher: publisher}
+func New(
+	repo repository.OrderRepository,
+	c cache.OrderCache,
+	publisher broker.EventPublisher,
+	log *observability.Logger,
+) *OrderService {
+	return &OrderService{repo: repo, cache: c, publisher: publisher, log: log}
 }
 ```
+
+`*observability.Logger` is built in [chapter 13](13-observability.md) and threaded through here
+because everything that logs takes one, rather than reaching for the package-level `slog`
+functions. That is a deliberate choice with a real argument behind it — see
+[Why the logger is a node](13-observability.md#why-the-logger-is-a-node-and-not-a-call-at-the-top-of-main)
+— and it is why this constructor has a parameter it does not appear to use until the error paths
+below.
 
 Notice what `New` takes: three interfaces, not three concrete types. `OrderService` has never
 heard of `postgres`, `redis`, or `natsbroker`, and never will — everything it needs to know about
@@ -75,10 +89,10 @@ at what it's actually saying:
 
 ```go
 	if err := s.cache.Set(ctx, order); err != nil {
-		slog.ErrorContext(ctx, "service: cache set failed after order create", "order_id", order.ID, "error", err)
+		s.log.ErrorContext(ctx, "service: cache set failed after order create", "order_id", order.ID, "error", err)
 	}
 	if err := s.publisher.PublishOrderPlaced(ctx, order); err != nil {
-		slog.ErrorContext(ctx, "service: publish OrderPlaced failed", "order_id", order.ID, "error", err)
+		s.log.ErrorContext(ctx, "service: publish OrderPlaced failed", "order_id", order.ID, "error", err)
 	}
 	return order, nil
 }
@@ -100,7 +114,7 @@ func (s *OrderService) GetOrder(ctx context.Context, requesterID, orderID uuid.U
 	if cached, err := s.cache.Get(ctx, orderID); err == nil {
 		return authorize(cached, requesterID)
 	} else if !errors.Is(err, cache.ErrMiss) {
-		slog.ErrorContext(ctx, "service: cache read failed, falling back to repository", "order_id", orderID, "error", err)
+		s.log.ErrorContext(ctx, "service: cache read failed, falling back to repository", "order_id", orderID, "error", err)
 	}
 
 	order, err := s.repo.Get(ctx, orderID)
@@ -112,7 +126,7 @@ func (s *OrderService) GetOrder(ctx context.Context, requesterID, orderID uuid.U
 	}
 
 	if err := s.cache.Set(ctx, order); err != nil {
-		slog.ErrorContext(ctx, "service: cache repopulate failed", "order_id", orderID, "error", err)
+		s.log.ErrorContext(ctx, "service: cache repopulate failed", "order_id", orderID, "error", err)
 	}
 	return order, nil
 }
@@ -302,7 +316,7 @@ looking like something you'd actually want in production.
 
 ## Do's and don'ts
 
-- **Do** keep `slog.ErrorContext` (or any logging) out of the *validation* path — an invalid
+- **Do** keep `s.log.ErrorContext` (or any logging) out of the *validation* path — an invalid
   request from a client isn't a service-side failure worth logging as an error; it's the caller's
   input being wrong, which is exactly what returning `domain.ErrValidation` already communicates.
 - **Do** let the service layer be the only place that decides what's "best-effort" versus

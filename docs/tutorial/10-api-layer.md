@@ -5,6 +5,13 @@ process. This chapter wires it to real HTTP: routes, request and response shapes
 middleware that runs on every request. By the end, `curl` will be able to log in, create an order,
 and read it back — for real, against everything built in chapters 5 through 9.
 
+This chapter uses the standard library's `net/http`, which needs no dependency and is enough for
+everything here. That is a choice, not a requirement:
+[chapter 19](19-transport-choices.md) implements the identical API in Gin, and again in gRPC
+sharing a single port with REST, without changing anything below the transport. Read this chapter
+first either way — the shapes, the error mapping and the middleware reasoning are the same in all
+three, and that chapter assumes them.
+
 ## Define the request and response shapes first
 
 The API's JSON shapes are their own thing, separate from `domain.Order` — a domain type can gain a
@@ -125,11 +132,11 @@ The other two middlewares apply to every request, so they wrap the whole handler
 route at a time:
 
 ```go
-func recoverMiddleware(next http.Handler) http.Handler {
+func recoverMiddleware(log *observability.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.ErrorContext(r.Context(), "api: panic recovered", "panic", rec, "path", r.URL.Path)
+				log.ErrorContext(r.Context(), "api: panic recovered", "panic", rec, "path", r.URL.Path)
 				writeError(w, http.StatusInternalServerError, "internal server error")
 			}
 		}()
@@ -137,11 +144,11 @@ func recoverMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func loggingMiddleware(next http.Handler) http.Handler {
+func loggingMiddleware(log *observability.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		slog.InfoContext(r.Context(), "request",
+		log.InfoContext(r.Context(), "request",
 			"method", r.Method, "path", r.URL.Path, "status", sw.status)
 	})
 }
@@ -353,7 +360,20 @@ type Server struct {
 	auth   *service.AuthService
 }
 
-func New(cfg *config.Config, orders *service.OrderService, authSvc *service.AuthService, issuer *auth.Issuer) *Server {
+// HTTPAddr and AdminAddr take no prefix: both are spelled that way in
+// every deployment already. AdminAddr belongs to this package because it
+// is the same concern — serving HTTP — even though main binds that
+// listener rather than the graph; see chapter 13.
+type Config struct {
+	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
+	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, "")
+}
+
+func New(cfg *Config, orders *service.OrderService, authSvc *service.AuthService, issuer *auth.Issuer) *Server {
 	s := &Server{orders: orders, auth: authSvc}
 
 	mux := http.NewServeMux()
@@ -373,7 +393,7 @@ func New(cfg *config.Config, orders *service.OrderService, authSvc *service.Auth
 `"POST /auth/login"` — method and pattern in one string — is Go 1.22+'s stdlib
 `http.ServeMux`. It's enough for four routes with no path-parameter conflicts, so there's no
 third-party router to introduce or explain; see
-[chapter 19](19-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
+[chapter 20](20-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
 
 ## Run and Stop — and a bug worth hitting on purpose
 
@@ -479,18 +499,35 @@ constructor trick; it's just outside what dependency injection is for. The strai
 is to wire these two routes by hand, in `main.go`, on a *separate* listener from `api.Server`'s own
 — which also means health checks never compete with real traffic for the same connection pool:
 
+It goes in its own package, `admin/`, rather than in `main.go`. That looks like over-engineering
+for two routes until [chapter 19](19-transport-choices.md), where the same service is built with
+three different transports: three copies of a security boundary is three chances to get one wrong.
+
 ```go
-// cmd/orders/main.go
-func newAdminServer(addr string, app interface {
+// admin/admin.go
+package admin
+
+// Checker is the part of a generated servo App this package needs. Taking
+// an interface rather than *App is what lets one implementation serve
+// every injector, each of which generates its own App type.
+type Checker interface {
 	Health(context.Context) servo.Report
 	Ready(context.Context) servo.Report
-}) *http.Server {
+}
+
+func New(addr string, app Checker, metrics http.Handler) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", reportHandler(app.Health))
 	mux.HandleFunc("GET /readyz", reportHandler(app.Ready))
+	mux.Handle("GET /metrics", metrics)
 	return &http.Server{Addr: addr, Handler: mux}
 }
 ```
+
+The `metrics` handler is [chapter 13](13-observability.md)'s; it is on this listener for exactly
+the same reason the health routes are. Everything served here describes the service's internals —
+`/healthz` names every component in the graph along with its status — which is why the deployment
+binds this listener to the cluster network and never to the internet.
 
 `reportHandler` renders a `servo.Report` as JSON — but not by encoding it directly.
 `servo.NodeStatus` has a `String()` method, but `encoding/json` only ever calls
@@ -498,12 +535,12 @@ func newAdminServer(addr string, app interface {
 prints `"Status":0` instead of `"Status":"ok"`. Re-rendering it into a small local type fixes that:
 
 ```go
-type healthResponse struct {
+type response struct {
 	Clean bool         `json:"clean"`
-	Nodes []healthNode `json:"nodes"`
+	Nodes []node `json:"nodes"`
 }
 
-type healthNode struct {
+type node struct {
 	Name   string `json:"name"`
 	Status string `json:"status"`
 	Error  string `json:"error,omitempty"`
@@ -513,9 +550,9 @@ func reportHandler(check func(context.Context) servo.Report) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		report := check(r.Context())
 
-		resp := healthResponse{Clean: report.Clean()}
+		resp := response{Clean: report.Clean()}
 		for _, n := range report.Nodes {
-			node := healthNode{Name: n.Name, Status: n.Status.String()}
+			node := node{Name: n.Name, Status: n.Status.String()}
 			if n.Err != nil {
 				node.Error = n.Err.Error()
 			}
@@ -581,11 +618,11 @@ That's not a bug to fix; it's what "no component needs a separately-meaningful r
 honestly looks like. [Chapter 11](11-wiring-with-servo.md) covers every capability this graph
 actually uses, side by side.
 
-## Write it down: openapi.yaml
+## Write it down: openapi/openapi.yaml
 
 Everything above was verified by hand, with `curl`, one endpoint at a time. That's enough to prove
 it works; it isn't enough for someone integrating against this API to discover what it promises
-without reading the handler source. `openapi.yaml`, at the module root, writes the same contract
+without reading the handler source. `openapi/openapi.yaml` writes the same contract
 down in a form tooling can consume — client generators, `Try it out`-style documentation viewers,
 contract-testing tools. One operation out of the full spec, `GET /orders/{id}`, shown here
 (trimmed of its own trailing `content:`/`schema:` blocks and the shared `429` every operation in
@@ -652,9 +689,9 @@ worth documenting beyond "GET it, read the status code." Validate the spec itsel
 validate any other generated artifact, rather than trusting it by inspection:
 
 ```
-$ npx @redocly/cli lint openapi.yaml
+$ npx @redocly/cli lint openapi/openapi.yaml
 ...
-openapi.yaml: validated in 17ms
+openapi/openapi.yaml: validated in 17ms
 
 Woohoo! Your API description is valid. 🎉
 You have 2 warnings.

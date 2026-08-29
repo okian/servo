@@ -33,7 +33,7 @@ type Server struct {
 // Config carries the two listen addresses. AdminAddr is here rather than
 // in its own package because it belongs to the same concern — serving
 // HTTP — even though the admin listener itself is wired in main rather
-// than through the graph; see newAdminServer.
+// than through the graph; see admin.New.
 //
 // No prefix: HTTP_ADDR and ADMIN_ADDR are spelled that way in every
 // deployment already.
@@ -107,7 +107,7 @@ func (s *Server) Handler() http.Handler {
 // binary (or a normal one and a NewTestApp one) never collide trying to
 // register the same metric name twice. main.go reaches for this directly
 // (app.server.MetricsHandler()) since /metrics lives on the admin server,
-// not this one — see docs/tutorial/13-observability.md.
+// not this one — see package admin and docs/tutorial/13-observability.md.
 func (s *Server) MetricsHandler() http.Handler {
 	return s.metrics.Handler()
 }

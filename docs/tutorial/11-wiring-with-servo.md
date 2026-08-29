@@ -55,15 +55,15 @@ which makes exactly the same point.)
 $ go run github.com/okian/servo/v3/cmd/servo generate --dir .
 example.com/servoorders/cmd/orders: servo: 4 diagnostic(s):
 
-.../service/service.go:27:6: servo: no provider for example.com/servoorders/repository.OrderRepository
-  needed by *example.com/servoorders/service.OrderService  .../service/service.go:27:6
-  needed by *example.com/servoorders/api.Server            .../api/server.go:23:6
-  root                                                      .../cmd/orders/spec.go:13:3
+.../service/service.go:28:6: servo: no provider for example.com/servoorders/repository.OrderRepository
+  needed by *example.com/servoorders/service.OrderService  .../service/service.go:28:6
+  needed by *example.com/servoorders/api.Server            .../api/server.go:49:6
+  root                                                      .../cmd/orders/spec.go:23:3
 
   3 types implement example.com/servoorders/repository.OrderRepository — add one of:
       servo.Bind[example.com/servoorders/repository.OrderRepository, *example.com/servoorders/mocks.MockOrderRepository]()      .../mocks/repository_mock.go:34:6
       servo.Bind[example.com/servoorders/repository.OrderRepository, *example.com/servoorders/mocks.OrderRepositoryForServo]()      .../mocks/servo_adapters.go:24:6
-      servo.Bind[example.com/servoorders/repository.OrderRepository, *example.com/servoorders/postgres.Store]()      .../postgres/postgres.go:31:6
+      servo.Bind[example.com/servoorders/repository.OrderRepository, *example.com/servoorders/postgres.Store]()      .../postgres/postgres.go:41:6
 ```
 
 (Three more diagnostics follow, identical in shape, for `UserRepository`, `OrderCache`, and
@@ -87,36 +87,89 @@ $ go run github.com/okian/servo/v3/cmd/servo generate --dir .
 
 No output — success is silent, matching every other servo command. `cmd/orders/servo_gen.go` now
 exists, starting with a resolved-graph comment that's worth reading end to end before the code
-below it:
+below it.
+
+This is the committed file from `examples/tutorial`, which is the *finished* service, so a few
+entries come from chapters you haven't reached yet — `observability` (chapter 13), `resilience`
+(chapter 14), and the `session` scope at the bottom (chapter 12). Generate it yourself at this
+point and you'll get the same shape with those omitted:
 
 ```
-//	[L1] *example.com/servoorders/config.Config
+//	[L1] *example.com/servoorders/config.Env
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | config/config.go:39:6
-//	[L2] *example.com/servoorders/postgres.Store
-//	      deps: *example.com/servoorders/config.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | postgres/postgres.go:31:6
-//	[L2] *example.com/servoorders/redis.Cache
-//	      deps: *example.com/servoorders/config.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | redis/redis.go:30:6
-//	[L2] *example.com/servoorders/natsbroker.Publisher
-//	      deps: *example.com/servoorders/config.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | natsbroker/natsbroker.go:26:6
-//	[L3] *example.com/servoorders/service.OrderService
-//	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/redis.Cache, *example.com/servoorders/natsbroker.Publisher
-//	      capabilities: none | binding: sole candidate | service/service.go:27:6
-//	[L2] *example.com/servoorders/auth.Issuer
-//	      deps: *example.com/servoorders/config.Config
-//	      capabilities: none | binding: sole candidate | auth/auth.go:28:6
-//	[L3] *example.com/servoorders/service.AuthService
+//	      capabilities: none | binding: sole implementation | config/config.go:42:6
+//	[L2] *example.com/servoorders/session.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | session/session.go:66:6
+//	[L2] *example.com/servoorders/observability.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | observability/logging.go:21:6
+//	[L3] *example.com/servoorders/observability.Logger
+//	      deps: *example.com/servoorders/observability.Config
+//	      capabilities: none | binding: sole candidate | observability/logging.go:35:6
+//	[L2] *example.com/servoorders/api.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | api/server.go:45:6
+//	[L2] *example.com/servoorders/postgres.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | postgres/postgres.go:37:6
+//	[L3] *example.com/servoorders/postgres.Store
+//	      deps: *example.com/servoorders/postgres.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | postgres/postgres.go:41:6
+//	[L2] *example.com/servoorders/redis.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | redis/redis.go:36:6
+//	[L3] *example.com/servoorders/redis.Cache
+//	      deps: *example.com/servoorders/redis.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:40:6
+//	[L4] *example.com/servoorders/resilience.CircuitBreakerCache
+//	      deps: *example.com/servoorders/redis.Cache
+//	      capabilities: none | binding: explicit bind | resilience/breaker.go:38:6
+//	[L2] *example.com/servoorders/natsbroker.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | natsbroker/natsbroker.go:35:6
+//	[L3] *example.com/servoorders/natsbroker.Publisher
+//	      deps: *example.com/servoorders/natsbroker.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | natsbroker/natsbroker.go:46:6
+//	[L5] *example.com/servoorders/service.OrderService
+//	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/resilience.CircuitBreakerCache, *example.com/servoorders/natsbroker.Publisher, *example.com/servoorders/observability.Logger
+//	      capabilities: none | binding: sole candidate | service/service.go:28:6
+//	[L2] *example.com/servoorders/auth.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | auth/auth.go:35:6
+//	[L3] *example.com/servoorders/auth.Issuer
+//	      deps: *example.com/servoorders/auth.Config
+//	      capabilities: none | binding: sole candidate | auth/auth.go:39:6
+//	[L4] *example.com/servoorders/service.AuthService
 //	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/auth.Issuer
 //	      capabilities: none | binding: sole candidate | service/auth_service.go:18:6
-//	[L4] *example.com/servoorders/api.Server
-//	      deps: *example.com/servoorders/config.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:23:6
-//	[L2] *example.com/servoorders/notifier.Notifier
-//	      deps: *example.com/servoorders/config.Config
-//	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:23:6
+//	[L1] *example.com/servoorders/observability.Metrics
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | observability/metrics.go:18:6
+//	[L3] *example.com/servoorders/observability.Tracer
+//	      deps: *example.com/servoorders/observability.Config
+//	      capabilities: Finalizer | binding: sole candidate | observability/tracing.go:29:6
+//	[L2] *example.com/servoorders/resilience.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:29:6
+//	[L3] *example.com/servoorders/resilience.RateLimiter
+//	      deps: *example.com/servoorders/resilience.Config, *example.com/servoorders/observability.Metrics
+//	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:33:6
+//	[L6] *example.com/servoorders/api.Server
+//	      deps: *example.com/servoorders/api.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions, *example.com/servoorders/observability.Logger
+//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:49:6
+//	[L2] *example.com/servoorders/notifier.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | notifier/notifier.go:28:6
+//	[L4] *example.com/servoorders/notifier.Notifier
+//	      deps: *example.com/servoorders/notifier.Config, *example.com/servoorders/observability.Logger
+//	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:37:6
+// scope example.com/servoorders/session.UserID
+//	linger: 5m0s | max: 50000
+//	accessor: example.com/servoorders/session.Sessions -> *example.com/servoorders/session.Session
+//	[S1] *example.com/servoorders/session.Session
+//	      capabilities: Initializer, Flusher, Finalizer
+//	borrows: *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
 ```
 
 ## Capabilities, side by side
@@ -126,7 +179,9 @@ ended up with, in one place, and *why* each is what it is:
 
 | Type | Capabilities | Why |
 |---|---|---|
-| `config.Config` | none | Pure data, validated once at construction |
+| `config.Env` | none | A snapshot of the environment, read once |
+| each package's `Config` | none | Pure data, parsed and validated at construction |
+| `observability.Logger` | none | Built from its own config; everything that logs depends on it |
 | `postgres.Store` | Initializer, Finalizer, Healther | Connects, disconnects, and can report a real health check |
 | `redis.Cache` | Initializer, Finalizer, Healther | Same shape as Store — connect/disconnect/health |
 | `natsbroker.Publisher` | Initializer, Finalizer, Healther | Same shape again |
@@ -147,18 +202,22 @@ component to implement every capability, or even any of them.
 func New(ctx context.Context) (*App, error) {
 	a := &App{}
 
-	config, err := config.New()
+	env := config.NewEnv()
+	a.env = env
+
+	postgresConfig, err := postgres.NewConfig(env)
 	if err != nil {
 		return nil, err
 	}
-	a.config = config
+	a.postgresConfig = postgresConfig
 
-	store, err := postgres.New(config)
+	store, err := postgres.New(postgresConfig)
 	if err != nil {
 		return nil, err
 	}
 	a.store = store
-	// ... cache, publisher, orderService, issuer, authService, server, notifier ...
+	// ... one NewConfig per package, then cache, publisher, logger,
+	// orderService, issuer, authService, server, notifier ...
 
 	{
 		var timingMu sync.Mutex
@@ -205,35 +264,80 @@ Silent, same as generate — `check` re-resolves and re-emits in memory, diffs a
 committed, and only prints something if they disagree.
 
 ```
-$ go run github.com/okian/servo/v3/cmd/servo graph --dir . --format=mermaid
+$ go run github.com/okian/servo/v3/cmd/servo graph --dir ./cmd/orders --format=mermaid
 graph BT
-  n0["*example.com/servoorders/config.Config"]:::level1
-  n1["*example.com/servoorders/postgres.Store"]:::level2
-  n2["*example.com/servoorders/redis.Cache"]:::level2
-  n3["*example.com/servoorders/natsbroker.Publisher"]:::level2
-  n4["*example.com/servoorders/service.OrderService"]:::level3
-  n5["*example.com/servoorders/auth.Issuer"]:::level2
-  n6["*example.com/servoorders/service.AuthService"]:::level3
-  n7["*example.com/servoorders/api.Server"]:::level4
-  n8["*example.com/servoorders/notifier.Notifier"]:::level2
+  n0["*example.com/servoorders/config.Env"]:::level1
+  n1["*example.com/servoorders/session.Config"]:::level2
+  n2["*example.com/servoorders/observability.Config"]:::level2
+  n3["*example.com/servoorders/observability.Logger"]:::level3
+  n4["*example.com/servoorders/api.Config"]:::level2
+  n5["*example.com/servoorders/postgres.Config"]:::level2
+  n6["*example.com/servoorders/postgres.Store"]:::level3
+  n7["*example.com/servoorders/redis.Config"]:::level2
+  n8["*example.com/servoorders/redis.Cache"]:::level3
+  n9["*example.com/servoorders/resilience.CircuitBreakerCache"]:::level4
+  n10["*example.com/servoorders/natsbroker.Config"]:::level2
+  n11["*example.com/servoorders/natsbroker.Publisher"]:::level3
+  n12["*example.com/servoorders/service.OrderService"]:::level5
+  n13["*example.com/servoorders/auth.Config"]:::level2
+  n14["*example.com/servoorders/auth.Issuer"]:::level3
+  n15["*example.com/servoorders/service.AuthService"]:::level4
+  n16["*example.com/servoorders/observability.Metrics"]:::level1
+  n17["*example.com/servoorders/observability.Tracer"]:::level3
+  n18["*example.com/servoorders/resilience.Config"]:::level2
+  n19["*example.com/servoorders/resilience.RateLimiter"]:::level3
+  n20["*example.com/servoorders/api.Server"]:::level6
+  n21["*example.com/servoorders/notifier.Config"]:::level2
+  n22["*example.com/servoorders/notifier.Notifier"]:::level4
+  subgraph scope0["scope example.com/servoorders/session.UserID — linger 5m0s, max 50000"]
+    k0["example.com/servoorders/session.UserID"]:::scopekey
+    n23["*example.com/servoorders/session.Session"]:::level1
+  end
   n1 --> n0
   n2 --> n0
-  n3 --> n0
-  n4 --> n1
-  n4 --> n2
-  n4 --> n3
+  n3 --> n2
+  n4 --> n0
   n5 --> n0
-  n6 --> n1
   n6 --> n5
   n7 --> n0
-  n7 --> n4
-  n7 --> n6
-  n7 --> n5
-  n8 --> n0
+  n8 --> n7
+  n9 --> n8
+  n10 --> n0
+  n11 --> n10
+  n12 --> n6
+  n12 --> n9
+  n12 --> n11
+  n12 --> n3
+  n13 --> n0
+  n14 --> n13
+  n15 --> n6
+  n15 --> n14
+  n17 --> n2
+  n18 --> n0
+  n19 --> n18
+  n19 --> n16
+  n20 --> n4
+  n20 --> n12
+  n20 --> n15
+  n20 --> n14
+  n20 --> n16
+  n20 --> n17
+  n20 --> n19
+  n20 --> k0
+  n20 --> n3
+  n21 --> n0
+  n22 --> n21
+  n22 --> n3
+  n23 --> k0
+  n23 --> n1
+  n23 --> n3
   classDef level1 fill:#bfdbfe;
   classDef level2 fill:#93c5fd;
   classDef level3 fill:#60a5fa;
   classDef level4 fill:#3b82f6;
+  classDef level5 fill:#2563eb;
+  classDef level6 fill:#1d4ed8;
+  classDef scopekey fill:#fef9c3,stroke-dasharray: 4 2;
 ```
 
 That's the complete, unedited output — the `classDef` lines are what give each level its own
@@ -242,39 +346,84 @@ name so it's actually readable at a glance:
 
 ```mermaid
 graph BT
-  n0["config.Config"]:::level1
-  n1["postgres.Store"]:::level2
-  n2["redis.Cache"]:::level2
-  n3["natsbroker.Publisher"]:::level2
-  n4["service.OrderService"]:::level3
-  n5["auth.Issuer"]:::level2
-  n6["service.AuthService"]:::level3
-  n7["api.Server"]:::level4
-  n8["notifier.Notifier"]:::level2
+  n0["config.Env"]:::level1
+  n1["session.Config"]:::level2
+  n2["observability.Config"]:::level2
+  n3["observability.Logger"]:::level3
+  n4["api.Config"]:::level2
+  n5["postgres.Config"]:::level2
+  n6["postgres.Store"]:::level3
+  n7["redis.Config"]:::level2
+  n8["redis.Cache"]:::level3
+  n9["resilience.CircuitBreakerCache"]:::level4
+  n10["natsbroker.Config"]:::level2
+  n11["natsbroker.Publisher"]:::level3
+  n12["service.OrderService"]:::level5
+  n13["auth.Config"]:::level2
+  n14["auth.Issuer"]:::level3
+  n15["service.AuthService"]:::level4
+  n16["observability.Metrics"]:::level1
+  n17["observability.Tracer"]:::level3
+  n18["resilience.Config"]:::level2
+  n19["resilience.RateLimiter"]:::level3
+  n20["api.Server"]:::level6
+  n21["notifier.Config"]:::level2
+  n22["notifier.Notifier"]:::level4
+  subgraph scope0["scope example.com/servoorders/session.UserID — linger 5m0s, max 50000"]
+    k0["session.UserID"]:::scopekey
+    n23["session.Session"]:::level1
+  end
   n1 --> n0
   n2 --> n0
-  n3 --> n0
-  n4 --> n1
-  n4 --> n2
-  n4 --> n3
+  n3 --> n2
+  n4 --> n0
   n5 --> n0
-  n6 --> n1
   n6 --> n5
   n7 --> n0
-  n7 --> n4
-  n7 --> n6
-  n7 --> n5
-  n8 --> n0
+  n8 --> n7
+  n9 --> n8
+  n10 --> n0
+  n11 --> n10
+  n12 --> n6
+  n12 --> n9
+  n12 --> n11
+  n12 --> n3
+  n13 --> n0
+  n14 --> n13
+  n15 --> n6
+  n15 --> n14
+  n17 --> n2
+  n18 --> n0
+  n19 --> n18
+  n19 --> n16
+  n20 --> n4
+  n20 --> n12
+  n20 --> n15
+  n20 --> n14
+  n20 --> n16
+  n20 --> n17
+  n20 --> n19
+  n20 --> k0
+  n20 --> n3
+  n21 --> n0
+  n22 --> n21
+  n22 --> n3
+  n23 --> k0
+  n23 --> n1
+  n23 --> n3
   classDef level1 fill:#bfdbfe;
   classDef level2 fill:#93c5fd;
   classDef level3 fill:#60a5fa;
   classDef level4 fill:#3b82f6;
+  classDef level5 fill:#2563eb;
+  classDef level6 fill:#1d4ed8;
+  classDef scopekey fill:#fef9c3,stroke-dasharray: 4 2;
 ```
 
 And a targeted question — why does `postgres.Store` exist at all, from the graph's perspective:
 
 ```
-$ go run github.com/okian/servo/v3/cmd/servo why --dir . postgres.Store
+$ go run github.com/okian/servo/v3/cmd/servo why --dir ./cmd/orders postgres.Store
 root  *example.com/servoorders/api.Server
   -> *example.com/servoorders/service.OrderService
   -> *example.com/servoorders/postgres.Store
@@ -335,7 +484,7 @@ than letting you find out by confusion:
   messaging independently — but it means `notifier` isn't one of the four interfaces `Override`
   touches. Calling `TestApp.Run(ctx)` would still try to reach real NATS. The test below never
   calls `Run` for exactly this reason.
-- **`config.Config` still requires every one of its required environment variables**, even the
+- **Every package's `Config` still requires its own required environment variables**, even the
   ones whose real values are about to go unused. `POSTGRES_DSN`, `REDIS_ADDR`, and `NATS_URL` are
   still validated as present — `Config` isn't behind an interface, so `Override` has nothing to
   substitute for it. `JWT_SECRET` is the one value that actually matters here, since

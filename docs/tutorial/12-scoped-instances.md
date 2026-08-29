@@ -68,21 +68,21 @@ being a codegen tool and starts being a framework.
 // session/session.go
 type Session struct {
 	id  UserID
-	cfg *config.Config
+	cfg *Config
 
 	mu     sync.Mutex
 	recent []uuid.UUID
 	views  int
 }
 
-func New(id UserID, cfg *config.Config) *Session {
+func New(id UserID, cfg *Config, log *observability.Logger) *Session {
 	return &Session{id: id, cfg: cfg}
 }
 ```
 
-An ordinary constructor. It takes the key like any other dependency, and `*config.Config` like any
+An ordinary constructor. It takes the key like any other dependency, and `*Config` like any
 other singleton — and that difference is the whole of what servo needs to know. `UserID` varies per
-user, so `*Session` is one per user. `*config.Config` doesn't, so it stays one shared instance and
+user, so `*Session` is one per user. `*Config` doesn't, so it stays one shared instance and
 is *not* rebuilt fifty thousand times.
 
 Nothing here is annotated. servo works it out from the dependency edges.
@@ -163,15 +163,15 @@ instead of allocating.
 
 Both arguments must be constants — the spec file is read, never executed. Anything about a scope
 that *should* be configurable therefore lives where every other setting does. Add one field to
-`config.Config` ([chapter 3](03-configuration.md)), which `session.New` reads:
+this package's own `Config` ([chapter 3](03-configuration.md)), which `session.New` reads:
 
 ```go
 // config/config.go
-// SessionRecent caps the per-user recently-viewed list. The linger
+// Recent caps the per-user recently-viewed list. The linger
 // window and instance cap for that scope are *not* here: both are
 // baked into the generated code from servo.Scoped's arguments, which
 // the spec file declares as constants.
-SessionRecent int `env:"SESSION_RECENT" envDefault:"10"`
+Recent int `env:"RECENT" envDefault:"10"`   // SESSION_RECENT, via envPrefix
 ```
 
 ## Consuming it
@@ -234,9 +234,9 @@ in `handlers.go` for direct `s.sessions.RecordView(...)` / `s.sessions.Recent()`
 ```
 example.com/servoorders/cmd/orders: servo: 1 diagnostic(s):
 
-api/server.go:32:6: servo: *example.com/servoorders/session.Session is scoped, but *example.com/servoorders/api.Server is a singleton that depends on it
-  needed by *example.com/servoorders/api.Server  api/server.go:32:6
-  root                                           cmd/orders/spec.go:24:3
+api/server.go:49:6: servo: *example.com/servoorders/session.Session is scoped, but *example.com/servoorders/api.Server is a singleton that depends on it
+  needed by *example.com/servoorders/api.Server  api/server.go:49:6
+  root                                           cmd/orders/spec.go:23:3
 
   A singleton is constructed once and held for the life of the process, so it
   would capture whichever *example.com/servoorders/session.Session happened to be built first and hand that same
@@ -264,37 +264,37 @@ in [chapter 18](18-troubleshooting.md) and in the
 ## What came out
 
 ```
-$ servo graph --dir examples/tutorial
+$ servo graph --dir examples/tutorial/cmd/orders
 ...
 ══ example.com/servoorders/session.UserID ══
   linger: 5m0s   max: 50000
   accessors: example.com/servoorders/session.Sessions
-  borrows:   *example.com/servoorders/config.Config
+  borrows:   *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
 ── Scope level 1 ──
   *example.com/servoorders/session.Session
-      deps: example.com/servoorders/session.UserID, *example.com/servoorders/config.Config
+      deps: example.com/servoorders/session.UserID, *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
       capabilities: Initializer, Flusher, Finalizer
       binding: sole candidate
-      pos: session/session.go:59:6
+      pos: session/session.go:70:6
 ```
 
 Read the last three lines of the scope header carefully, because they're the whole model:
 
 - **`accessors`** — what consumers depend on.
-- **`borrows`** — `*config.Config` is reached *through* the scope but isn't part of it. One
-  instance, shared by every session. Not fifty thousand configs.
+- **`borrows`** — `*session.Config` and the logger are reached *through* the scope but aren't part
+  of it. One of each, shared by every session. Not fifty thousand loggers.
 - The member list is what one instance holds.
 
 `servo explain` says the same thing per node:
 
 ```
-$ servo explain session.Session
+$ servo explain --dir examples/tutorial/cmd/orders session.Session
 *example.com/servoorders/session.Session
-  provider:     session.New (session/session.go:59:6)
+  provider:     session.New (session/session.go:70:6)
   binding:      sole candidate
   lifetime:     scoped — one per example.com/servoorders/session.UserID, linger 5m0s, max 50000
   level:        1
-  depends on:   example.com/servoorders/session.UserID, *example.com/servoorders/config.Config
+  depends on:   example.com/servoorders/session.UserID, *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
   depended on:  (acquired via example.com/servoorders/session.Sessions)
   capabilities: Initializer, Flusher, Finalizer
 ```
@@ -418,7 +418,7 @@ thirty lines, keyed off the very same `ScopeKey` method:
 
 ```go
 type fakeSessions struct {
-	cfg *config.Config
+	cfg *Config
 	mu  sync.Mutex
 	by  map[session.UserID]*session.Session
 }

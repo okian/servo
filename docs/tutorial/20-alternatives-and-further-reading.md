@@ -1,4 +1,4 @@
-# 19. Alternatives and further reading
+# 20. Alternatives and further reading
 
 Every earlier chapter picked one option at each layer and ran with it, because a tutorial that
 paused to weigh every alternative in depth at the point it arose would never finish building
@@ -192,7 +192,7 @@ same `otlptracehttp` exporter this codebase already uses would send the exact sa
 other self-hosted, TLS-optional OTLP collector — Grafana Tempo, for instance — by changing
 `OTLPEndpoint` alone. A hosted vendor like Honeycomb or Datadog needs a bit more:
 `observability.NewTracer` currently calls `otlptracehttp.WithInsecure()` unconditionally, and
-`config.Config` has no field for an API-key header, both of which a real hosted backend requires
+no package declares a field for an API-key header, both of which a real hosted backend requires
 (TLS, plus per-vendor authentication). Neither is a deep change — `otlptracehttp.WithHeaders(...)`
 and making `WithInsecure()` conditional are both small, additive edits — but it's not the "change
 one string, done" story a self-hosted collector gets. That portability gap being small and
@@ -262,7 +262,7 @@ changes several things this tutorial's local setup doesn't have to consider:
   flags this exact gap in the tutorial's local setup).
 - **The rate limiter's meaning changes with `replicas`.** `resilience.RateLimiter`'s shared,
   in-process token bucket (see "Per-client rate limiting" above) means the *effective* service-wide
-  limit becomes `RateLimitRPS × replicas`, not `RateLimitRPS` — three replicas at the default `50`
+  limit becomes `RateLimitRPS × replicas`, not `RPS` — three replicas at the default `50`
   really allow `150` requests per second in aggregate, each replica independently enforcing its own
   slice. That may be exactly what you want (limit protects each *instance*, and you scale replicas
   to scale the aggregate limit) or may not be (you actually wanted one global ceiling) — worth
@@ -279,7 +279,7 @@ chapters 10 and 13 already built for exactly this reason.
 
 ## Order lifecycle as a state machine
 
-`domain.OrderStatusPending` is the only status this tutorial ever assigns — `openapi.yaml` says so
+`domain.OrderStatusPending` is the only status this tutorial ever assigns — the OpenAPI spec says so
 directly in its own schema description. A real order-management system needs more:
 `pending → paid → shipped → delivered`, with `cancelled` or `refunded` branching off at various
 points, and — critically — rules about which transitions are even legal from a given state
@@ -366,4 +366,4 @@ levels, built and deployed by CI, documented with a real OpenAPI contract. If yo
 going rather than stop here, the sections above point at concrete next features — an idempotency
 key, a real order-status state machine, per-client rate limiting — that would each extend the real
 codebase in `examples/tutorial/` rather than a hypothetical one, using exactly the layers and
-patterns the last eighteen chapters already established. Go build the next thing on top of it.
+patterns the last nineteen chapters already established. Go build the next thing on top of it.

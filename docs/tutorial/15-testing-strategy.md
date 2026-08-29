@@ -38,8 +38,8 @@ The four tiers, concretely:
 | Tier | Technique | Real infra? | Real HTTP socket? | Real servo graph? | Files |
 |---|---|---|---|---|---|
 | 1. Unit | gomock, `httptest.NewRecorder` | No | No | No | `auth`, `config`, `service` (×2), `resilience` (×2), `observability` (×2), `session` |
-| 2. API-contract | gomock, `httptest.NewServer` | No | Yes | No | `api/api_test.go` |
-| 3. Full-graph | gomock via `servotest.PanicReporter`, `servo.Override`, `NewTestApp` | No | Yes | Yes | `cmd/orders/app_test.go` |
+| 2. API-contract | gomock, `httptest.NewServer` | No | Yes | No | `api/api_test.go`, and `ginapi`/`grpcapi` for the other two transports (ch 19) |
+| 3. Full-graph | gomock via `servotest.PanicReporter`, `servo.Override`, `NewTestApp` | No | Yes | Yes | `cmd/orders/app_test.go`, plus one per transport variant |
 | 4. Integration | none — real driver, real server | Yes | Yes (where relevant) | No | `postgres`, `redis`, `natsbroker`, `notifier` |
 
 Tiers 1 and 4 were both introduced already — chapter 8 for the mock-based pattern that tiers 1 and
@@ -86,19 +86,22 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	orderCache.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-	// RateLimitRPS is set explicitly (rather than relying on Config's own
-	// envDefault) because a bare &config.Config{} literal skips
-	// caarlos0/env's tag processing entirely — every field not set here
-	// is the Go zero value, not the configured default. A zero
-	// RateLimitRPS would mean the rate limiter allows exactly one request
-	// per test, ever; see TestRateLimiterRejectsRequestsOverTheLimit for
-	// the test that actually wants that.
-	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000}
-	issuer := auth.New(cfg)
-	orders := service.New(repo, orderCache, pub)
+	// Each component gets its own narrow config, built as a literal. RPS
+	// is set explicitly (rather than relying on the envDefault) because a
+	// bare struct literal skips caarlos0/env's tag processing entirely —
+	// every field not set here is the Go zero value, not the configured
+	// default. A zero RPS would mean the rate limiter allows exactly one
+	// request per test, ever; see
+	// TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt for the test
+	// that actually wants that.
+	authCfg := &auth.Config{Secret: "test-secret", Expiry: time.Hour}
+	limitCfg := &resilience.Config{RPS: 1000}
+	sessionCfg := &session.Config{Recent: 10}
+	issuer := auth.New(authCfg)
+	orders := service.New(repo, orderCache, pub, quietLogger())
 	authSvc := service.NewAuthService(users, issuer)
 	metrics := observability.NewMetrics()
-	tracer, err := observability.NewTracer(cfg)
+	tracer, err := observability.NewTracer(&observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
@@ -111,7 +114,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	users.EXPECT().GetByUsername(gomock.Any(), "alice").Return(testUser, nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound).AnyTimes()
 
-	srv := api.New(cfg, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(cfg, metrics))
+	srv := api.New(&api.Config{}, orders, authSvc, issuer, metrics, tracer,
+		resilience.NewRateLimiter(limitCfg, metrics), newFakeSessions(sessionCfg), quietLogger())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, repo, issuer
@@ -125,8 +129,8 @@ to prove the HTTP contract on its own first, decoupled from whether the dependen
 correctly. Two details worth noticing:
 
 - `RateLimitRPS: 1000` is set explicitly rather than left to `Config`'s own `envDefault`. A bare
-  `&config.Config{}` literal skips `caarlos0/env`'s tag processing entirely — every field not set
-  here is Go's zero value, not the configured default. A zero `RateLimitRPS` clamps the limiter's
+  bare struct literal skips `caarlos0/env`'s tag processing entirely — every field not set
+  here is Go's zero value, not the configured default. A zero `RPS` clamps the limiter's
   burst to 1, which silently broke `TestCreateOrderSucceedsWithValidToken` the first time the rate
   limiter was wired into `api.New` in chapter 14, well after this fixture was written. See
   Diagnostics below.
@@ -134,9 +138,9 @@ correctly. Two details worth noticing:
   once, here, rather than repeated in every test function, because `OrderService` always tries the
   cache on every read and always attempts a best-effort write on every create — that's true
   regardless of which specific test is running, so pinning it down once in the shared fixture
-  keeps the seven test functions below from repeating three lines each.
+  keeps the test functions below from repeating three lines each.
 
-The seven tests themselves each check one status code the API contract promises:
+The tests themselves each check one status code the API contract promises:
 
 ```go
 func TestLoginSucceedsWithCorrectPassword(t *testing.T) { /* 200, non-empty token */ }
@@ -159,16 +163,18 @@ The seventh is not like the others:
 // so if Run ever again relies on Stop to make it return, it will time out.
 func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	cfg := &config.Config{HTTPAddr: "127.0.0.1:0", JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000}
-	issuer := auth.New(cfg)
+	apiCfg := &api.Config{HTTPAddr: "127.0.0.1:0"}
+	limitCfg := &resilience.Config{RPS: 1000}
+	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
 	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl))
 	authSvc := service.NewAuthService(mocks.NewMockUserRepository(ctrl), issuer)
-	tracer, err := observability.NewTracer(cfg)
+	tracer, err := observability.NewTracer(&observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
 	testMetrics := observability.NewMetrics()
-	srv := api.New(cfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(cfg, testMetrics))
+	srv := api.New(apiCfg, orders, authSvc, issuer, testMetrics, tracer,
+		resilience.NewRateLimiter(limitCfg, testMetrics), newFakeSessions(&session.Config{Recent: 10}), quietLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -203,37 +209,36 @@ catch a bug tells you less about *why* it failed than a test built to fail exact
 ```
 $ go test ./api/... -v -count=1
 === RUN   TestLoginSucceedsWithCorrectPassword
-2026/08/27 18:08:45 INFO request method=POST path=/auth/login status=200
 --- PASS: TestLoginSucceedsWithCorrectPassword (0.12s)
 === RUN   TestLoginFailsWithWrongUsername
-2026/08/27 18:08:45 INFO request method=POST path=/auth/login status=401
 --- PASS: TestLoginFailsWithWrongUsername (0.05s)
 === RUN   TestCreateOrderRequiresAuth
-2026/08/27 18:08:45 INFO request method=POST path=/orders status=401
 --- PASS: TestCreateOrderRequiresAuth (0.05s)
 === RUN   TestCreateOrderSucceedsWithValidToken
-2026/08/27 18:08:45 INFO request method=POST path=/auth/login status=200
-2026/08/27 18:08:45 INFO request method=POST path=/orders status=201
---- PASS: TestCreateOrderSucceedsWithValidToken (0.10s)
+--- PASS: TestCreateOrderSucceedsWithValidToken (0.09s)
 === RUN   TestGetOrderReturns404ForUnknownID
-2026/08/27 18:08:46 INFO request method=POST path=/auth/login status=200
-2026/08/27 18:08:46 INFO request method=GET path=/orders/d6e1e263-c2a4-436d-a67e-06eaaaafc7a0 status=404
---- PASS: TestGetOrderReturns404ForUnknownID (0.10s)
+--- PASS: TestGetOrderReturns404ForUnknownID (0.09s)
 === RUN   TestGetOrderReturns403ForAnotherUsersOrder
-2026/08/27 18:08:46 INFO request method=POST path=/auth/login status=200
-2026/08/27 18:08:46 INFO request method=GET path=/orders/50bf2af7-e086-4d75-aba2-58f6b4b8e3d1 status=403
---- PASS: TestGetOrderReturns403ForAnotherUsersOrder (0.10s)
+--- PASS: TestGetOrderReturns403ForAnotherUsersOrder (0.09s)
 === RUN   TestRunReturnsPromptlyWhenContextIsCancelled
 --- PASS: TestRunReturnsPromptlyWhenContextIsCancelled (0.00s)
+=== RUN   TestRecentRemembersWhatThisUserViewed
+--- PASS: TestRecentRemembersWhatThisUserViewed (0.09s)
+=== RUN   TestRecentRejectsAnUnauthenticatedCaller
+--- PASS: TestRecentRejectsAnUnauthenticatedCaller (0.05s)
+=== RUN   TestRecentIsEmptyForANewSession
+--- PASS: TestRecentIsEmptyForANewSession (0.09s)
+=== RUN   TestAdminEndpointsAreNotOnThePublicListener
+--- PASS: TestAdminEndpointsAreNotOnThePublicListener (0.06s)
 PASS
 ok  	example.com/servoorders/api	0.969s
 ```
 
-The request logs interleaved with each `--- PASS` line are `loggingMiddleware` (chapter 10) doing
-exactly what it does in production — these tests go through the real middleware chain, not a
-stub of it, so its logging runs too. That's a small, concrete confirmation of what tier 2 buys
-over tier 1: a `httptest.NewRecorder` unit test of one middleware wouldn't incidentally prove the
-*other* middleware in the chain ran at all.
+No request logs appear between the `--- PASS` lines, and that is deliberate: the fixture passes a
+`quietLogger()` — `slog.New(slog.DiscardHandler)` wrapped in an `observability.Logger` — into
+`api.New`. The middleware still runs, and still logs; it logs into a discard handler. Because the
+logger is injected rather than global ([chapter 13](13-observability.md)), silencing it in a test
+is a value you pass, not a package-level default you have to swap and restore.
 
 Now the whole suite, tier by tier. `make test` runs tiers 1 through 3 — nothing in them touches
 real infrastructure, so nothing here needs Docker running:
@@ -241,18 +246,25 @@ real infrastructure, so nothing here needs Docker running:
 ```
 $ make test
 go test ./...
-ok  	example.com/servoorders/api	1.040s
+?   	example.com/servoorders/admin	[no test files]
+ok  	example.com/servoorders/api	1.054s
 ok  	example.com/servoorders/auth	0.606s
 ?   	example.com/servoorders/broker	[no test files]
 ?   	example.com/servoorders/cache	[no test files]
-ok  	example.com/servoorders/cmd/orders	0.696s
+ok  	example.com/servoorders/cmd/orders	0.583s
+ok  	example.com/servoorders/cmd/ordersgin	1.185s
+ok  	example.com/servoorders/cmd/ordersgrpc	0.873s
 ok  	example.com/servoorders/config	0.500s
 ?   	example.com/servoorders/domain	[no test files]
+ok  	example.com/servoorders/ginapi	1.480s
+ok  	example.com/servoorders/grpcapi	0.645s
+?   	example.com/servoorders/grpcapi/ordersv1	[no test files]
 ?   	example.com/servoorders/migrations	[no test files]
 ?   	example.com/servoorders/mocks	[no test files]
 ok  	example.com/servoorders/natsbroker	0.505s
 ok  	example.com/servoorders/notifier	0.344s
 ok  	example.com/servoorders/observability	0.569s
+?   	example.com/servoorders/openapi	[no test files]
 ok  	example.com/servoorders/postgres	0.522s
 ok  	example.com/servoorders/redis	0.508s
 ?   	example.com/servoorders/repository	[no test files]
@@ -308,9 +320,9 @@ every test that checked it, and only those.
 ## Diagnostics
 
 - **A test fails on its second HTTP call, never its first, and only after some unrelated chapter's
-  change** — check whether a `&config.Config{}` literal in the failing test's fixture is missing
-  `RateLimitRPS`. A struct literal doesn't run through `caarlos0/env`, so an omitted field is Go's
-  zero value, not the configured default; zero `RateLimitRPS` clamps the token bucket's burst to 1,
+  change** — check whether a bare config literal in the failing test's fixture is missing
+  `RPS`. A struct literal doesn't run through `caarlos0/env`, so an omitted field is Go's
+  zero value, not the configured default; zero `RPS` clamps the token bucket's burst to 1,
   and the first request in a test consumes it.
 - **A `t.Setenv(k, "")` doesn't produce the "required environment variable" error you expected** —
   an empty string is still a value as far as `,required` validation is concerned; it doesn't unset

@@ -93,7 +93,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	// every field not set here is the Go zero value, not the configured
 	// default. A zero RPS would mean the rate limiter allows exactly one
 	// request per test, ever; see
-	// TestRateLimiterRejectsRequestsOverTheLimit for the test that
+	// TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt for the test that
 	// actually wants that.
 	authCfg := &auth.Config{Secret: "test-secret", Expiry: time.Hour}
 	limitCfg := &resilience.Config{RPS: 1000}
@@ -372,4 +372,30 @@ func authedGetJSON(t *testing.T, ts *httptest.Server, token, path string, into a
 // stdout.
 func quietLogger() *observability.Logger {
 	return &observability.Logger{Logger: slog.New(slog.DiscardHandler)}
+}
+
+// TestAdminEndpointsAreNotOnThePublicListener is the one boundary in this
+// service enforced by a test rather than by convention. /healthz and
+// /readyz name every component in the graph along with its status, and
+// /metrics carries request rates and error counts per route — together
+// they describe the system precisely enough to be worth hiding, so they
+// live on the admin listener and nowhere else (see package admin).
+//
+// Adding any of them to this router — the kind of change that looks
+// harmless in review — fails here. The ginapi and grpcapi variants carry
+// the same assertion.
+func TestAdminEndpointsAreNotOnThePublicListener(t *testing.T) {
+	ts, _, _ := newTestServer(t)
+
+	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
+		resp, err := http.Get(ts.URL + path)
+		if err != nil {
+			t.Fatalf("GET %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusNotFound {
+			t.Errorf("GET %s = %d on the public listener, want 404 — admin endpoints belong on the admin port only",
+				path, resp.StatusCode)
+		}
+	}
 }

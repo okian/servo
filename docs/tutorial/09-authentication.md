@@ -34,8 +34,19 @@ type Issuer struct {
 	expiry time.Duration
 }
 
-func New(cfg *config.Config) *Issuer {
-	return &Issuer{secret: []byte(cfg.JWTSecret), expiry: cfg.JWTExpiry}
+const envPrefix = "JWT_"
+
+type Config struct {
+	Secret string        `env:"SECRET,required"`
+	Expiry time.Duration `env:"EXPIRY" envDefault:"1h"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(cfg *Config) *Issuer {
+	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}
 }
 ```
 
@@ -74,7 +85,7 @@ func (i *Issuer) Issue(userID uuid.UUID, username string) (string, error) {
 `HS256` means the same secret both signs and verifies — simplest option, and the right one as long
 as exactly one service issues and checks these tokens. The moment a second service needs to verify
 tokens without also being trusted to *issue* them, that symmetry becomes a liability; see
-[chapter 19](19-alternatives-and-further-reading.md#jwt-signing-algorithms) for what changes then.
+[chapter 20](20-alternatives-and-further-reading.md#jwt-signing-algorithms) for what changes then.
 
 `Verify` is the reverse direction, and needs to turn parsing failures — an expired token, a bad
 signature, garbage input — into one clear error rather than distinguishing every case:
@@ -125,7 +136,7 @@ isn't a compromise, it's the only correct answer.
 
 ```go
 func TestIssueThenVerifyRoundTrips(t *testing.T) {
-	issuer := auth.New(&config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour})
+	issuer := auth.New(&Config{Secret: "test-secret", Expiry: time.Hour})
 	userID := uuid.New()
 
 	token, err := issuer.Issue(userID, "alice")
@@ -148,7 +159,7 @@ secret than the one verifying it:
 
 ```go
 func TestVerifyRejectsAnExpiredToken(t *testing.T) {
-	issuer := auth.New(&config.Config{JWTSecret: "test-secret", JWTExpiry: -time.Hour}) // already expired
+	issuer := auth.New(&Config{Secret: "test-secret", Expiry: -time.Hour}) // already expired
 	token, err := issuer.Issue(uuid.New(), "alice")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -160,8 +171,8 @@ func TestVerifyRejectsAnExpiredToken(t *testing.T) {
 }
 
 func TestVerifyRejectsATokenSignedWithADifferentSecret(t *testing.T) {
-	issuerA := auth.New(&config.Config{JWTSecret: "secret-a", JWTExpiry: time.Hour})
-	issuerB := auth.New(&config.Config{JWTSecret: "secret-b", JWTExpiry: time.Hour})
+	issuerA := auth.New(&Config{Secret: "secret-a", Expiry: time.Hour})
+	issuerB := auth.New(&Config{Secret: "secret-b", Expiry: time.Hour})
 
 	token, err := issuerA.Issue(uuid.New(), "alice")
 	if err != nil {
@@ -173,7 +184,7 @@ func TestVerifyRejectsATokenSignedWithADifferentSecret(t *testing.T) {
 }
 ```
 
-A negative `JWTExpiry` is a neat trick worth remembering: it produces an already-expired token
+A negative `Expiry` is a neat trick worth remembering: it produces an already-expired token
 without needing to sleep in the test or fake the clock. Run all four:
 
 ```
@@ -268,7 +279,7 @@ gets identical responses either way.
 func TestLoginSucceedsWithCorrectPassword(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	users := mocks.NewMockUserRepository(ctrl)
-	issuer := auth.New(&config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour})
+	issuer := auth.New(&Config{Secret: "test-secret", Expiry: time.Hour})
 
 	hash, err := auth.HashPassword("password123")
 	if err != nil {
@@ -303,7 +314,7 @@ outcome, proving the two failure paths really are indistinguishable from the out
 func TestLoginFailsWithUnknownUsernameTheSameWayAsWrongPassword(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	users := mocks.NewMockUserRepository(ctrl)
-	issuer := auth.New(&config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour})
+	issuer := auth.New(&Config{Secret: "test-secret", Expiry: time.Hour})
 
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound)
 
@@ -332,7 +343,7 @@ belongs to the HTTP layer, not here — that's [chapter 10](10-api-layer.md), ne
 ## Diagnostics
 
 - **`auth: token is expired`** (or similar, from `jwt.ParseWithClaims`) — exactly the intended
-  behavior once `JWTExpiry` has elapsed. A client should re-login, not treat this as a server error.
+  behavior once `Expiry` has elapsed. A client should re-login, not treat this as a server error.
 - **`auth: signature is invalid`** — either `JWT_SECRET` changed between when a token was issued
   and when it's being verified (a config change, or a rolling deploy with mismatched secrets across
   instances), or the token was tampered with. Rotating `JWT_SECRET` invalidates every
@@ -347,7 +358,7 @@ belongs to the HTTP layer, not here — that's [chapter 10](10-api-layer.md), ne
   it only takes one layer accidentally leaking the distinction (a differently-worded error message,
   a different HTTP status, even a measurably different response time) to make the other layers'
   carefulness pointless.
-- **Do** keep `JWTSecret` long and random — generated with a real CSPRNG, not typed by hand. A short
+- **Do** keep `Secret` long and random — generated with a real CSPRNG, not typed by hand. A short
   or guessable HMAC secret defeats the whole scheme regardless of how correct the surrounding code
   is.
 - **Don't** put a password anywhere in a log line, an error message, or a returned struct — not

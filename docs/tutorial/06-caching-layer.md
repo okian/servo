@@ -66,8 +66,18 @@ type Cache struct {
 
 var _ cache.OrderCache = (*Cache)(nil)
 
-func New(cfg *config.Config) *Cache {
-	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.RedisAddr})}
+const envPrefix = "REDIS_"
+
+type Config struct {
+	Addr string `env:"ADDR,required"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(cfg *Config) *Cache {
+	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.Addr})}
 }
 ```
 
@@ -78,7 +88,7 @@ there's no code path that writes to Postgres without also being able to update t
 same request (you'll see that in `CreateOrder`, next chapter). A service where orders *can* change
 after creation needs either active invalidation on every write path, or has to accept
 eventually-stale reads as a deliberate trade-off — see
-[chapter 19](19-alternatives-and-further-reading.md#caching) for what changes once that's true.
+[chapter 20](20-alternatives-and-further-reading.md#caching) for what changes once that's true.
 
 Add the same three capability methods you wrote for `postgres.Store` — the reasoning is identical,
 so it's worth noticing the pattern is already starting to feel familiar:

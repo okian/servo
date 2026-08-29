@@ -45,7 +45,7 @@ layout: default
           <figcaption>What you write</figcaption>
 {% highlight go %}
 // three ordinary constructors
-func New(cfg *config.Config) (*postgres.DB, error)
+func New(cfg *Config) (*postgres.DB, error)
 func New(db *postgres.DB) *OrderService
 func New(s *OrderService) *Server
 
@@ -61,7 +61,11 @@ servo.Build(
 func New(ctx context.Context) (*App, error) {
     a := &App{}
 
-    cfg := config.New()
+    cfg, err := postgres.NewConfig(config.NewEnv())
+    if err != nil {
+        return nil, err
+    }
+
     db, err := postgres.New(cfg)
     if err != nil {
         return nil, err

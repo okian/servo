@@ -1,4 +1,4 @@
-.PHONY: up down test test-integration run generate check
+.PHONY: up down test test-integration run run-gin run-grpc generate check
 
 up:
 	docker compose -f deploy/docker-compose.yml up -d
@@ -18,8 +18,18 @@ test-integration:
 	TEST_NATS_URL="nats://localhost:4222" \
 	go test ./... -v
 
+# Three transports over the same service layer — see
+# docs/tutorial/19-transport-choices.md. Each is its own injector, so
+# `generate` and `check` below cover all three at once.
 run:
 	go run ./cmd/orders
+
+run-gin:
+	go run ./cmd/ordersgin
+
+# Serves gRPC and REST on the same port.
+run-grpc:
+	go run ./cmd/ordersgrpc
 
 generate:
 	go run github.com/okian/servo/v3/cmd/servo generate

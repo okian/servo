@@ -16,17 +16,32 @@ filtering. Fixing that is one function, and it deliberately isn't wired through 
 ```go
 package observability
 
-import (
-	"log/slog"
-	"os"
+// Logger is a defined type rather than a bare *slog.Logger. That matters
+// more than it looks: a foreign type comes with foreign providers.
+// slog.Default and a transitive dependency's logr helper both return
+// *slog.Logger, and servo has no basis for choosing between them — it
+// reports the ambiguity rather than guessing. Owning the type is the same
+// rule as owning your configuration (chapter 3).
+//
+// The embedded *slog.Logger means callers write log.InfoContext(...)
+// exactly as they would have.
+type Logger struct{ *slog.Logger }
 
-	"example.com/servoorders/config"
-)
+type Config struct {
+	LogLevel     string `env:"LOG_LEVEL" envDefault:"info"`
+	OTLPEndpoint string `env:"OTLP_ENDPOINT" envDefault:""`
+}
 
-func ConfigureLogging(cfg *config.Config) {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, "")
+}
+
+func NewLogger(cfg *Config) *Logger {
+	l := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLevel(cfg.LogLevel),
-	})))
+	}))
+	slog.SetDefault(l)
+	return &Logger{Logger: l}
 }
 
 func parseLevel(s string) slog.Level {
@@ -43,23 +58,54 @@ func parseLevel(s string) slog.Level {
 }
 ```
 
-Call it directly at the top of `main`, before `New(ctx)`:
+`NewLogger` is an ordinary provider, and that is the whole point.
+
+### Why the logger is a node, and not a call at the top of `main`
+
+The tempting shape is a plain function called before anything else:
 
 ```go
-cfg, err := config.New()
-if err != nil {
-	log.Fatal(err)
-}
+// don't do this
 observability.ConfigureLogging(cfg) // before anything else has a chance to log
+app, err := New(ctx)
 ```
 
-This is worth pausing on, because it's a real exception to "everything goes through servo": if
-`ConfigureLogging` were a servo-managed component instead, the earliest it could possibly run is
-inside some constructor, in dependency order — and several other constructors that run around the
-same time already call `slog.ErrorContext`/`InfoContext` using whatever the *current* default
-logger is. The only way to guarantee logging is configured before anything can possibly use it is
-to do it before construction starts at all. Not everything belongs in the graph; this is one of
-the genuine exceptions, not a workaround.
+The argument for it is real: logging setup has to happen before anything logs, and calling it first
+obviously achieves that. But look at what that sentence is doing — it is an *ordering assertion*,
+made by a human, in a comment. It is exactly the kind of claim this whole tool exists to derive from
+dependencies rather than assert, and servo cannot check it. Add a component tomorrow whose
+constructor logs, and nothing tells you the ordering assumption still holds.
+
+Making the logger a node removes the question instead of answering it. Anything that logs takes a
+`*observability.Logger`:
+
+```go
+func New(cfg *Config, log *observability.Logger) *Notifier
+func New(repo repository.OrderRepository, c cache.OrderCache, publisher broker.EventPublisher, log *observability.Logger) *OrderService
+```
+
+so the logger is constructed before them by the same rule that orders everything else. "Did logging
+get configured before X" is not a question anyone can ask, because X cannot be built without it.
+`main` configures nothing at all now:
+
+```go
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	app, err := New(ctx)
+	if err != nil {
+		log.Fatal(err)
+	}
+	...
+}
+```
+
+`NewLogger` still calls `slog.SetDefault`, and that is not a leftover. It is for code servo does not
+wire: the standard library and third-party packages log through `slog.Default()` and have no
+constructor to inject into. Our own code never relies on it — every component here takes the logger.
+The global became a *consequence* of building the logger rather than the mechanism for configuring
+it, and it now happens at the right moment by construction.
 
 ## Metrics, and a cardinality trap worth knowing about
 
@@ -202,7 +248,7 @@ type Tracer struct {
 	provider *sdktrace.TracerProvider
 }
 
-func NewTracer(cfg *config.Config) (*Tracer, error) {
+func NewTracer(cfg *Config) (*Tracer, error) {
 	ctx := context.Background()
 	res, err := resource.New(ctx, resource.WithAttributes(
 		semconv.ServiceName("servoorders"),
@@ -239,7 +285,7 @@ understanding rather than a style choice: `api.Server`'s own constructor needs a
 that its `Init` has too. `Init` calls all happen later, together, in one `errgroup`. Splitting this
 into `New` (build) + `Init` (start) the way `postgres.Store` does would hand `api.Server` a
 `*Tracer` whose provider field is still `nil`. Doing all the setup inside `New` itself — the same
-shape `config.Config` already uses — sidesteps the whole question.
+shape every NewConfig already uses — sidesteps the whole question.
 
 The `if cfg.OTLPEndpoint != ""` branch is the other thing worth noticing: with no endpoint
 configured, `NewTracer` still returns a fully working `*Tracer` — spans are created, sampled, and
@@ -249,7 +295,7 @@ it:
 
 ```go
 func TestNewTracerWithNoEndpointStillCreatesSpans(t *testing.T) {
-	tracer, err := observability.NewTracer(&config.Config{OTLPEndpoint: ""})
+	tracer, err := observability.NewTracer(&observability.Config{OTLPEndpoint: ""})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
@@ -275,7 +321,7 @@ asynchronously, in the background. `NewTracer` succeeds immediately even against
 
 ```go
 func TestNewTracerRejectsAnUnreachableEndpointOnlyAtExportTimeNotConstruction(t *testing.T) {
-	tracer, err := observability.NewTracer(&config.Config{OTLPEndpoint: "127.0.0.1:1"})
+	tracer, err := observability.NewTracer(&observability.Config{OTLPEndpoint: "127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("NewTracer: %v, want it to succeed even with an unreachable endpoint", err)
 	}
@@ -306,7 +352,7 @@ func (t *Tracer) Middleware(next http.Handler) http.Handler {
 
 ```go
 func New(
-	cfg *config.Config,
+	cfg *Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,
@@ -339,7 +385,7 @@ func (s *Server) MetricsHandler() http.Handler {
 
 ```go
 // cmd/orders/main.go
-admin := newAdminServer(cfg.AdminAddr, app, app.server.MetricsHandler())
+adminSrv := admin.New(app.apiConfig.AdminAddr, app, app.server.MetricsHandler())
 ```
 
 ## Try it — logs, metrics, and a real trace in Jaeger
@@ -409,10 +455,10 @@ UUID baked into a hundred different span names.
   bounded set of values. `route` here is safe specifically because `r.Pattern` only ever takes one
   of a handful of registered values, never one per request.
 - **Log lines are plain text, not JSON, right at process startup** — a small, known gap: anything
-  logged between process start and `ConfigureLogging` running uses the unconfigured default
-  handler. In this codebase that window is essentially empty (`ConfigureLogging` is the second
-  thing `main` does), but it's worth knowing the gap exists rather than assuming every log line is
-  guaranteed structured.
+  logged before `NewLogger` runs uses the unconfigured default handler. Nothing in this codebase is
+  in that window, because every component that logs depends on the logger and so cannot be built
+  first — but a library logging from an `init` function would be, and it is worth knowing the gap
+  exists rather than assuming every line is guaranteed structured.
 
 ## Do's and don'ts
 

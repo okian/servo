@@ -47,7 +47,10 @@ servoorders/
   resilience/              circuit breaker, rate limiting                    chapter 14
   mocks/                   generated mocks for tests                        chapter 8 onward
   deploy/                  docker-compose.yml, Dockerfile                    chapter 17
-  openapi.yaml             API contract                                     chapter 10
+  openapi/                 API contract, embedded and served                 chapter 10
+  admin/                   health/readiness/metrics, on their own port       chapter 13
+  ginapi/                  the same API in Gin                               chapter 19
+  grpcapi/                 gRPC and REST sharing one port                    chapter 19
 ```
 
 One thing worth deciding now, before it's a habit: every package here is flat, with no `internal/`

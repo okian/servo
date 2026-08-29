@@ -21,7 +21,7 @@ job is to get you to the right one fast, not to repeat it.
 
 ## The process won't start
 
-- **`config: required environment variable "X" is not set`** — working as intended; set the
+- **`env: required environment variable "X" is not set`** — working as intended; set the
   variable. Don't add a default just to silence this unless that default is safe everywhere this
   ever runs. See [chapter 3](03-configuration.md).
 - **A `time.Duration` field fails to parse from an env var** — it needs a Go duration string
@@ -135,7 +135,7 @@ job is to get you to the right one fast, not to repeat it.
   enforce order by default; use `gomock.InOrder(...)` if the order is actually load-bearing. See
   [chapter 8](08-service-layer.md).
 - **A test fails on its second HTTP call, never its first, only after an unrelated change** — a
-  `&config.Config{}` literal in the test is missing `RateLimitRPS`. A struct literal skips
+  `&resilience.Config{}` literal in the test is missing `RPS`. A struct literal skips
   `caarlos0/env` entirely, so the zero value (which clamps the rate limiter's burst to 1) applies
   instead of the configured default. See [chapter 14](14-resilience.md) and [chapter
   15](15-testing-strategy.md).
@@ -220,6 +220,5 @@ job is to get you to the right one fast, not to repeat it.
 
 ## Next
 
-[Chapter 19: Alternatives and further reading](19-alternatives-and-further-reading.md) — the
-choices this tutorial made at every layer, what the real alternatives were, and when you'd actually
-want them instead.
+[Chapter 19: Transport choices](19-transport-choices.md) — the same service layer behind Gin, and
+behind gRPC and REST sharing one port.

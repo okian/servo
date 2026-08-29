@@ -4,8 +4,14 @@ Every earlier chapter ran this service with `go run ./cmd/orders` against infras
 hand. This chapter packages it properly: a `Dockerfile` that builds a small, static binary image,
 and a `docker-compose.yml` that brings up the whole stack — Postgres, Redis, NATS, Jaeger, and now
 the service itself — with one command. It closes with a full reference for every environment
-variable `Config` reads, and the two real infrastructure problems most likely to show up the first
-time you actually try this: a full disk, and a runtime image with no shell to debug from.
+variable the service reads, and the two real infrastructure problems most likely to show up the
+first time you actually try this: a full disk, and a runtime image with no shell to debug from.
+
+Everything here uses `cmd/orders`, the `net/http` transport. The Gin and gRPC binaries from
+[chapter 19](19-transport-choices.md) are built and run identically — `make run-gin`,
+`make run-grpc`, or swap the path in the `Dockerfile`'s `go build` line — and read the same
+environment variables, since the settings that differ between them are the two listen addresses
+they all share.
 
 ## The Dockerfile
 
@@ -259,7 +265,7 @@ volumes — there's no seed data worth keeping between runs.
 
 ## Environment variable reference
 
-Every field `config.Config` reads (chapter 3), in one place:
+Every variable the service reads, gathered from the per-package `Config` types of chapter 3:
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
@@ -272,13 +278,15 @@ Every field `config.Config` reads (chapter 3), in one place:
 | `JWT_EXPIRY` | No | `1h` | Go duration string (`30m`, `2h`) |
 | `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
 | `OTLP_ENDPOINT` | No | *(empty)* | `host:port`, no scheme — tracing is a no-op exporter until set |
-| `RATE_LIMIT_RPS` | No | `50` | See chapter 14; a bare `&config.Config{}` in a test omits this at its peril |
+| `RATE_LIMIT_RPS` | No | `50` | See chapter 14; a bare `&resilience.Config{}` in a test omits this at its peril |
 | `SESSION_RECENT` | No | `10` | How many recently-viewed orders a session keeps. The scope's linger window and Max are *not* here — both are constants in the spec file; see chapter 12 |
 
-The three required variables with no default (`POSTGRES_DSN`, `REDIS_ADDR`, `NATS_URL`) plus
-`JWT_SECRET` are the four things `config.New()` refuses to start without — this is what
-chapter 3's `,required` tag is for, and it's the same reason the very first thing `cmd/orders`'s
-`main` does is call it, before constructing anything else in the graph.
+The four variables with no default (`POSTGRES_DSN`, `REDIS_ADDR`, `NATS_URL`, `JWT_SECRET`) are the
+ones the service refuses to start without — that is what chapter 3's `,required` tag is for. Each is
+checked by the package that declares it, as its `NewConfig` runs during construction, so a missing
+one fails inside the generated `New` before `Run` is ever reached. Nothing partially starts; see
+[chapter 3](03-configuration.md#the-trade-this-design-makes) for what that costs compared to a
+single up-front parse.
 
 ## Diagnostics
 
@@ -355,7 +363,7 @@ chapter 3's `,required` tag is for, and it's the same reason the very first thin
   each service into a `Deployment` (or a `StatefulSet` for Postgres), the health checks into
   `livenessProbe`/`readinessProbe` hitting the same `/healthz`/`/readyz` this service already
   exposes, and `JWT_SECRET` into a `Secret` mounted as an environment variable rather than written
-  into a manifest. [Chapter 19](19-alternatives-and-further-reading.md) goes further into what
+  into a manifest. [Chapter 20](20-alternatives-and-further-reading.md) goes further into what
   changes at that scale.
 - **A registry and a real image tag instead of a local-only build.** Nothing here pushes an image
   anywhere — chapter 16's `docker-build` job proves the image builds, and that's the limit of what

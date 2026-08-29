@@ -117,7 +117,7 @@ Start with constructors. Plain ones. None of them import servo — that's not a 
 the sake of the preface, it's the actual design:
 
 ```go
-func New(cfg *config.Config) (*postgres.DB, error)   // package postgres
+func New(cfg *Config) (*postgres.DB, error)           // package postgres
 func New(db *postgres.DB) *OrderService              // package orders
 func New(s *OrderService) *Server                    // package api
 ```
@@ -136,7 +136,7 @@ func wire() {
 
 That's the whole configuration. You name `*api.Server` as a **root** — the thing you want — and
 servo works backwards from there. It sees that `api.New` needs an `*OrderService`, that
-`orders.New` needs a `*postgres.DB`, that `postgres.New` needs a `*config.Config`, and it builds
+`orders.New` needs a `*postgres.DB`, that `postgres.New` needs a `*postgres.Config`, and it builds
 the chain. Anything nothing depends on simply isn't built.
 
 Two things about that file are worth noticing, because they surprise people.

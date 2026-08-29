@@ -169,7 +169,7 @@ $ go test ./resilience/... -v
 === RUN   TestRateLimiterAllowsRequestsWithinTheLimit
 --- PASS: TestRateLimiterAllowsRequestsWithinTheLimit (0.00s)
 === RUN   TestRateLimiterRejectsRequestsOverTheLimit
---- PASS: TestRateLimiterRejectsRequestsOverTheLimit (0.00s)
+--- PASS: TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt (0.00s)
 PASS
 ok  	example.com/servoorders/resilience	0.312s
 ```
@@ -243,9 +243,9 @@ type RateLimiter struct {
 	limiter *rate.Limiter
 }
 
-func NewRateLimiter(cfg *config.Config) *RateLimiter {
-	burst := max(int(cfg.RateLimitRPS), 1)
-	return &RateLimiter{limiter: rate.NewLimiter(rate.Limit(cfg.RateLimitRPS), burst)}
+func NewRateLimiter(cfg *Config) *RateLimiter {
+	burst := max(int(cfg.RPS), 1)
+	return &RateLimiter{limiter: rate.NewLimiter(rate.Limit(cfg.RPS), burst)}
 }
 
 func (rl *RateLimiter) Middleware(next http.Handler) http.Handler {
@@ -265,7 +265,7 @@ that actually protects the process — a burst of traffic from anywhere gets thr
 means one aggressive client can use up budget that a well-behaved client needed. A real
 multi-tenant service usually wants a bucket per client, keyed by API key or IP, which trades this
 simplicity for needing an eviction strategy so that map of limiters doesn't grow without bound;
-see [chapter 19](19-alternatives-and-further-reading.md#per-client-rate-limiting).
+see [chapter 20](20-alternatives-and-further-reading.md#per-client-rate-limiting).
 
 ## A wiring mistake worth walking through, not just avoiding
 
@@ -327,10 +327,20 @@ type RateLimiter struct {
 	rejections prometheus.Counter
 }
 
-func NewRateLimiter(cfg *config.Config, metrics *observability.Metrics) *RateLimiter {
-	burst := max(int(cfg.RateLimitRPS), 1)
+const envPrefix = "RATE_LIMIT_"
+
+type Config struct {
+	RPS float64 `env:"RPS" envDefault:"50"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func NewRateLimiter(cfg *Config, metrics *observability.Metrics) *RateLimiter {
+	burst := max(int(cfg.RPS), 1)
 	return &RateLimiter{
-		limiter:    rate.NewLimiter(rate.Limit(cfg.RateLimitRPS), burst),
+		limiter:    rate.NewLimiter(rate.Limit(cfg.RPS), burst),
 		rejections: metrics.NewCounter("orders_rate_limit_rejections_total", "Total requests rejected by the rate limiter."),
 	}
 }
@@ -360,7 +370,7 @@ A test proves the counter actually moves:
 ```go
 func TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt(t *testing.T) {
 	metrics := observability.NewMetrics()
-	rl := resilience.NewRateLimiter(&config.Config{RateLimitRPS: 0}, metrics) // burst clamped to 1
+	rl := resilience.NewRateLimiter(&Config{RPS: 0}, metrics) // burst clamped to 1
 	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -385,10 +395,10 @@ func TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt(t *testing.T) {
 }
 ```
 
-A bare `&config.Config{...}` literal is what makes `RateLimitRPS: 0` easy to reach for here on
+A bare `&resilience.Config{...}` literal is what makes `RPS: 0` easy to reach for here on
 purpose — it skips `caarlos0/env`'s tag processing entirely, so any field not set explicitly is
 Go's zero value, not the configured `envDefault`. That's exactly why every *other* test in this
-codebase that constructs a `&config.Config{}` literal needs `RateLimitRPS` set to something
+codebase that constructs a `&resilience.Config{}` literal needs `RPS` set to something
 generous (`api_test.go`'s fixtures use `1000`): forgetting it there isn't a deliberate test of the
 limiter, it's a burst of one silently breaking the second HTTP call any other test happens to make.
 
@@ -399,7 +409,7 @@ walkthrough above landed on:
 
 ```go
 func New(
-	cfg *config.Config,
+	cfg *Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,
@@ -440,15 +450,15 @@ your own code, or a test — still passes the old argument count. That's `servo_
 comment header confirming the shape actually resolved:
 
 ```
-//	[L2] *example.com/servoorders/redis.Cache
-//	      deps: *example.com/servoorders/config.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:30:6
-//	[L3] *example.com/servoorders/resilience.CircuitBreakerCache
+//	[L3] *example.com/servoorders/redis.Cache
+//	      deps: *example.com/servoorders/redis.Config
+//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:40:6
+//	[L4] *example.com/servoorders/resilience.CircuitBreakerCache
 //	      deps: *example.com/servoorders/redis.Cache
 //	      capabilities: none | binding: explicit bind | resilience/breaker.go:38:6
 ```
 
-`redis.Cache` is still level 2, still has all three capabilities, still constructed and started
+`redis.Cache` is still level 3, still has all three capabilities, still constructed and started
 exactly as before — `CircuitBreakerCache` just sits one level above it now, with no capabilities
 of its own, purely logic wrapping logic.
 
@@ -459,7 +469,7 @@ of its own, purely logic wrapping logic.
   custom `IsSuccessful`, or excluded by `IsExcluded`, the breaker never opens no matter how badly
   the dependency is failing.
 - **Tests fail intermittently on the second HTTP call in a test, never the first** — the
-  `RateLimitRPS`-left-at-zero trap above. Check every `&config.Config{}` literal in the failing
+  `RPS`-left-at-zero trap above. Check every `&resilience.Config{}` literal in the failing
   test sets it explicitly.
 - **The circuit breaker "flaps"** (rapidly opens and closes) — usually means `ReadyToTrip`'s
   threshold is too sensitive for the dependency's real, normal error rate (a cache that legitimately
@@ -477,7 +487,7 @@ of its own, purely logic wrapping logic.
 - **Don't** wrap everything in a circuit breaker reflexively. Postgres in this service has no
   breaker — a database this service treats as its primary source of truth failing isn't a
   "degrade gracefully" situation the way a cache miss is; there's nothing to fall back to.
-- **Don't** size a global rate limiter around peak legitimate traffic without margin. `RateLimitRPS`
+- **Don't** size a global rate limiter around peak legitimate traffic without margin. `RPS`
   protects the process from being overwhelmed; set too tight, it starts rejecting the traffic it
   was supposed to serve.
 

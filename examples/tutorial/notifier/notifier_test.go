@@ -25,14 +25,16 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 		t.Skip("TEST_NATS_URL not set; see docs/tutorial/07-messaging-layer.md")
 	}
 
+	// The logger is injected, not global, so the buffer has to be injected
+	// too. Swapping slog's package-level default would capture nothing:
+	// the Notifier writes to whatever it was handed — see
+	// docs/tutorial/13-observability.md for why it takes one at all.
 	var logs bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(prev) })
+	capture := &observability.Logger{Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	n := New(&Config{URL: url}, quietLogger())
+	n := New(&Config{URL: url}, capture)
 	go func() { done <- n.Run(ctx) }()
 
 	pub, err := nats.Connect(url)
@@ -69,11 +71,4 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s of cancellation")
 	}
-}
-
-// quietLogger is the owned logger type with its output discarded, so a
-// test exercises the same code path production does without writing to
-// stdout.
-func quietLogger() *observability.Logger {
-	return &observability.Logger{Logger: slog.New(slog.DiscardHandler)}
 }

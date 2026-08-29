@@ -9,7 +9,7 @@
 //	      capabilities: none | binding: sole implementation | config/config.go:42:6
 //	[L2] *example.com/servoorders/session.Config
 //	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | session/session.go:67:6
+//	      capabilities: none | binding: sole candidate | session/session.go:66:6
 //	[L2] *example.com/servoorders/observability.Config
 //	      deps: *example.com/servoorders/config.Env
 //	      capabilities: none | binding: sole candidate | observability/logging.go:21:6
@@ -831,7 +831,7 @@ func (a *TestApp) Ready(ctx context.Context) servo.Report {
 func (a *TestApp) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
 		{Type: "*example.com/servoorders/config.Env", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole implementation", Pos: "config/config.go:42:6"},
-		{Type: "*example.com/servoorders/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "session/session.go:67:6"},
+		{Type: "*example.com/servoorders/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "session/session.go:66:6"},
 		{Type: "*example.com/servoorders/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:21:6"},
 		{Type: "*example.com/servoorders/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:35:6"},
 		{Type: "*example.com/servoorders/api.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "api/server.go:45:6"},
@@ -850,7 +850,7 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/api.Server", Level: 5, Deps: []string{"*example.com/servoorders/api.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:49:6"},
 		{Type: "*example.com/servoorders/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "notifier/notifier.go:28:6"},
 		{Type: "*example.com/servoorders/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/notifier.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:37:6"},
-		{Type: "*example.com/servoorders/session.Session", Level: 1, Deps: []string{"example.com/servoorders/session.UserID", "*example.com/servoorders/session.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "session/session.go:71:6", Scope: "example.com/servoorders/session.UserID"},
+		{Type: "*example.com/servoorders/session.Session", Level: 1, Deps: []string{"example.com/servoorders/session.UserID", "*example.com/servoorders/session.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "session/session.go:70:6", Scope: "example.com/servoorders/session.UserID"},
 	}, Scopes: []servo.GraphScope{
 		{Key: "example.com/servoorders/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/session.Sessions"}, Members: []string{"*example.com/servoorders/session.Session"}, Borrows: []string{"*example.com/servoorders/session.Config", "*example.com/servoorders/observability.Logger"}},
 	}}
