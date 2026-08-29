@@ -435,3 +435,103 @@ func wire() {
 		t.Fatalf("got err=%v, want a 'no provider' error naming the override's dangling target", err)
 	}
 }
+
+// TestGeneratedCodeCompilesWithComponentsNamedLikeNewsOwnLocals covers
+// every way a component's name can collide with an identifier the App
+// half of the emitter derives rather than allocates.
+//
+// New declares `a`, `ctx` and `err` as bare identifiers in the same scope
+// every node's variable lands in, so components named A, Ctx or Err used
+// to emit `a := app.NewA()` beside `a := &App{}`. Separately, a node's
+// variable name decides a stop<F> method and <F>StopOnce/<F>StopResult
+// fields, so Foo and StopFoo gave App a method and a field of one name —
+// and StartupReport collides with App's own startupReport field.
+// `servo generate` reported success in every case, because it formats its
+// output rather than type-checking it, and the compiler rejected it.
+//
+// This builds the module for real rather than inspecting the emitted
+// text: the failure being guarded against is a compile error, so a
+// compiler is the only honest witness.
+func TestGeneratedCodeCompilesWithComponentsNamedLikeNewsOwnLocals(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+
+	mustWriteFile(t, dir, "go.mod", `module example.com/localsapp
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+root+`
+`)
+	mustWriteFile(t, dir, "app/app.go", `package app
+
+import "context"
+
+type A struct{}
+
+func NewA() *A { return &A{} }
+
+type Ctx struct{}
+
+func NewCtx() *Ctx { return &Ctx{} }
+
+type Err struct{}
+
+func NewErr() *Err { return &Err{} }
+
+type StartupReport struct{}
+
+func NewStartupReport() *StartupReport { return &StartupReport{} }
+
+// Foo and StopFoo collide the other way: an App node's variable name
+// decides a stop<F> method as well as <F>StopOnce/<F>StopResult fields,
+// so StopFoo would take the field name Foo's method already has.
+type Foo struct{}
+
+func NewFoo() *Foo { return &Foo{} }
+
+func (f *Foo) Stop(ctx context.Context) error { return nil }
+
+type StopFoo struct{}
+
+func NewStopFoo() *StopFoo { return &StopFoo{} }
+
+func (s *StopFoo) Stop(ctx context.Context) error { return nil }
+
+type Holder struct{}
+
+func NewHolder(a *A, c *Ctx, e *Err, sr *StartupReport, f *Foo, sf *StopFoo) *Holder {
+	return &Holder{}
+}
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", `package main
+
+func main() {}
+`)
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/localsapp/app"
+	"github.com/okian/servo/v3/servo"
+)
+
+var _ = servo.Build(
+	servo.Root[*app.Holder](),
+)
+`)
+	runGoModTidy(t, dir)
+
+	if err := runGenerate(dir); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		gen, _ := os.ReadFile(filepath.Join(dir, "cmd", "app", "servo_gen.go"))
+		t.Fatalf("generated code does not compile: %v\n%s\n---\n%s", err, out, gen)
+	}
+}

@@ -23,6 +23,85 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
+## [Unreleased]
+
+### Fixed
+- **A successful `Acquire` racing `Shutdown` could hand back an instance that was already drained
+  and stopped.** The entry loop evicted the moment it saw the scope's quit channel, whatever its
+  reference count was, so no check an acquirer made could still hold by the time it returned.
+  The creator path sampled `dead` before returning and lost that race about once in two hundred
+  runs of the `examples/scoped` suite; the join path had no check at all. Against the pre-fix
+  generated file, the two committed regression tests reproduce it in roughly a quarter of runs
+  together, and a shared-key probe with the window widened by a millisecond hits it on nearly every
+  goroutine. After the fix, 200 consecutive runs are green.
+
+  A scope now drains the references outstanding when `Shutdown` arrived before tearing an instance
+  down, bounded by one stop budget, so a counted reference is a promise the instance stays usable
+  until it is given back. In the ordinary case there is nothing to wait for: reverse-level ordering
+  means whatever depends on the scope has already been drained and its releases have landed. Past
+  the bound the instance is torn down anyway and the entry is reported abandoned, so a caller who
+  never releases still cannot hold shutdown open. An acquirer waiting to join when `Shutdown`
+  begins is now told `ErrScopeClosed` immediately rather than waiting out a drain it is not part
+  of.
+
+  `examples/scoped` gains `TestSharedKeyAcquireAfterShutdown`, which covers the join path the
+  existing test could not reach — it used a distinct key per goroutine, so every acquire took the
+  creator path. Shutdown's per-entry budget multiplier grows by one to cover the new phase.
+- **`servo generate` emitted code that did not compile when a scoped member type was named
+  `Result`.** Entry field names were reserved, but the `drain<Field>`/`stop<Field>` method names
+  derived from them were not, so a member named `Result` produced a `stopResult` method beside the
+  entry's own `stopResult` field. `generate` exited 0 and `go build` failed, inside the one file
+  users are told not to read. Two members named `Foo` and `StopFoo` collided the same way. Output
+  is byte-identical for every graph without such a type.
+- The same collision at App level: components named `Foo` and `StopFoo`, or one named
+  `StartupReport`, also emitted a field and a method of one name. A node's variable name decides a
+  `stop<F>` method and `<F>StopOnce`/`<F>StopResult` fields, and only the variable itself was ever
+  reserved. Pre-existing, and the unfixed half of the same bug until now. Output is byte-identical
+  for every graph without such a type.
+- Those collisions — including the `A`/`Ctx`/`Err` case fixed in 3.1.0 — now have a test that
+  builds a real module and compiles the output, since the failure being guarded against is a
+  compile error and nothing else is an honest witness.
+- An eviction is now counted in the same critical section that removes the entry. It was counted
+  just after the lock was released, so `Live` could reach zero before `Evictions` was bumped —
+  and `Live` reaching zero is the documented way to wait for a scope to go quiet. A test that
+  waited that way and then read `Evictions` failed roughly once in two hundred runs.
+- The **undeclared scope** message named the wrong interface in its pasteable `servo.Scoped` line
+  whenever the accessor it found was not the scoped type's name plus an "s" — the prose said
+  `CachePool` and the snippet said `Caches`, which does not exist.
+- The **widening** message listed every accessor in the scope rather than only those the captured
+  node is reachable from. With two `servo.Scoped` declarations sharing a key type, it named an
+  accessor that does not lead to the type being held.
+
+### Changed
+- All four named scope diagnostics now carry the full needed-by chain. Only widening and
+  cross-scope ever had it, and the 3.1.0 entry below claimed all four did until this release
+  corrected it. The extractor-cycle chain leads to
+  the scoped dependency rather than to the extractor, whose own position is already printed above
+  it; the undeclared-scope chain comes from the traversal path that reached the type, since that
+  check fires while candidates are still being selected and there is no finished graph to walk.
+- The **undeclared scope** diagnostic no longer tells you to declare an accessor interface your
+  package already has. The likeliest way to reach it is to have written the type, the `ScopeKey`
+  method and the interface, and forgotten only the `servo.Scoped` line — in which case the
+  suggested snippet was a redeclaration error. When an interface the generated accessor would
+  satisfy already exists, the message names it and prints only the declaration.
+- The **widening** diagnostic gives actionable advice for a node that is scoped only transitively.
+  It used to say "depend on the scope's accessor interface" without naming one, and following that
+  literally did not typecheck, because the accessor hands out the type at the scope's entrance and
+  not the one being captured. It now names both.
+- `examples/basic` no longer trips `errcheck` on two unchecked `app.Shutdown` calls in tests
+  (`servo.Report` implements `error`).
+- CI gains a `golangci-lint` job covering every module, root and examples. Nothing enforced the
+  linter before, which is how the two `errcheck` failures above shipped.
+- CI gains a nightly `soak` job running `examples/scoped` 200 consecutive times under `-race`. That
+  is the stated gate on scopes, and it had only ever been asserted in a commit message. Pull
+  requests keep the `-count=5` run. The teardown race fixed above reproduced roughly once in 200
+  runs and passed `-count=5` every time, so the distinction is not academic.
+- `examples/scoped` gains a `README.md`. It was the only scope surface without one, and it is the
+  module the feature is gated on.
+- `examples/diagnostics` gains a `noscopekey/` fixture for the reverse undeclared case — a
+  `servo.Scoped` declaration whose type has no `ScopeKey` method. Its wording was pinned only by a
+  resolver unit test, and it is the half a new user meets first.
+
 ## [3.2.0] - 2026-08-28
 
 ### Changed
@@ -69,7 +148,7 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   `servo.ErrScopeFull` and `servo.ErrScopeClosed`.
 - `servotest.Linger(t, d)`, which shrinks every scope's linger window for one test the way
   `servotest.Timeout` shrinks the stop budget.
-- Four generate-time diagnostics, each with the full needed-by chain: **widening** (a singleton
+- Four generate-time diagnostics — **widening** (a singleton
   depending on a scoped node — the one that makes this worth generating rather than hand-writing),
   **cross-scope** (nested scopes, rejected on purpose), **extractor cycle** (a `ScopeKey` parameter
   that is itself scoped), and **undeclared scope** (a `ScopeKey` with no `servo.Scoped`, or the

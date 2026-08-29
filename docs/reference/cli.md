@@ -333,6 +333,20 @@ path — not necessarily one through the root you had in mind. In the example ab
 is reachable from both `api.Server` (via `postgres.DB`, two hops) and `worker.Consumer` (one hop),
 and the shorter one is reported.
 
+A path into a scope is reported through the accessor edge without naming it. Asking why a scoped
+node is present prints its consumer directly:
+
+```
+$ servo why --dir examples/scoped example.com/servoscoped/chat.Room
+root  *example.com/servoscoped/api.Server
+  -> *example.com/servoscoped/chat.Room
+```
+
+`api.Server` takes `chat.Rooms`, not `*chat.Room`. The accessor is generated code rather than a
+resolved node, so — as in [`graph`](#graph)'s `dot` and `mermaid` output — the edge is collapsed
+onto the scoped type it hands out, and the answer is about reachability rather than about the
+parameter list.
+
 A node that resolved but isn't reachable from any root is reported as such:
 `servo why: <type> is not reachable from any root`. Type matching works exactly as in
 [`explain`](#explain). `--json` prints the path as an array of type strings.

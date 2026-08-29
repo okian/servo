@@ -5,6 +5,12 @@ on:
     branches: [ master ]
   pull_request:
     branches: [ master ]
+  workflow_dispatch:
+  schedule:
+    # The scope soak below is too slow for every push and too valuable to
+    # drop. 03:17 rather than on the hour, so it is not queued behind
+    # everyone else's midnight cron.
+    - cron: '17 3 * * *'
 
 jobs:
   build:
@@ -78,6 +84,8 @@ jobs:
       # state machine under -race, with a goroutine-leak check after every
       # test. -count=5 is a cheap multiplier on an already-fast suite: a
       # single green run of a concurrency test proves less than five do.
+      # The real gate is 200 consecutive runs, in the nightly `soak` job
+      # below — five is what fits in a pull request.
       - name: Build and test examples/scoped
         working-directory: examples/scoped
         run: |
@@ -112,3 +120,59 @@ jobs:
 
       - name: servo check (examples/mocking)
         run: go run ./cmd/servo check --dir examples/mocking
+
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      # Every module, not just the root one: the example modules are what a
+      # reader copies from, and two unchecked-error failures sat in
+      # examples/basic precisely because nothing here looked at them.
+      - name: Lint every module
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+            | sh -s -- -b "$(go env GOPATH)/bin" v2.13.2
+          lint="$(go env GOPATH)/bin/golangci-lint"
+          fail=0
+          for dir in . examples/basic examples/mocking examples/scoped examples/diagnostics examples/tutorial; do
+            echo "--- $dir ---"
+            (cd "$dir" && "$lint" run --timeout=5m ./...) || fail=1
+          done
+          exit $fail
+
+  # 200 consecutive green runs is the gate on scopes. It takes ~8 minutes
+  # and belongs nowhere near a pull request, but it is not decoration: the
+  # Acquire-racing-Shutdown teardown race reproduced about once in 200 runs
+  # and passed -count=5 every time.
+  soak:
+    name: Scope soak (200 runs)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: 200 consecutive runs under -race
+        working-directory: examples/scoped
+        run: |
+          for i in $(seq 1 200); do
+            if ! go test -race -count=1 ./... > "$RUNNER_TEMP/soak.log" 2>&1; then
+              echo "::error::failed on run $i"
+              cat "$RUNNER_TEMP/soak.log"
+              exit 1
+            fi
+          done
+          echo "200 consecutive runs green"

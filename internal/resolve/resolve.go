@@ -286,7 +286,7 @@ func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry,
 	node := &Node{Key: resultKey, Provider: sel.provider, Binding: sel.binding, Capabilities: r.caps.Detect(sel.provider.ResultType)}
 	r.nodes[resultKey] = node
 
-	if !r.checkScopeDeclaration(node, sel.provider) {
+	if !r.checkScopeDeclaration(node, sel.provider, append(append([]chainEntry{}, chain...), frame), rootPos) {
 		r.color[resultKey] = colorBlack
 		r.failedKey[k] = true
 		return nil, false
@@ -319,13 +319,14 @@ func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry,
 	return node, true
 }
 
-// checkScopeDeclaration is the "undeclared scope" half of §8's pair: a
-// type carrying a ScopeKey method that no servo.Scoped declaration names.
+// checkScopeDeclaration reports a type carrying a ScopeKey method that no
+// servo.Scoped declaration names. It is one half of a pair, the other
+// being missingScopeKeyDiagnostic: a declaration whose type has no method.
 // It runs at selection time rather than afterwards so the message is the
 // one the user needs, instead of the "no provider for chat.RoomKey" that
 // descending into a scoped constructor's key parameter would otherwise
 // produce.
-func (r *resolver) checkScopeDeclaration(node *Node, p *graph.Provider) bool {
+func (r *resolver) checkScopeDeclaration(node *Node, p *graph.Provider, chain []chainEntry, rootPos token.Position) bool {
 	if r.declaredScope[node.Key] {
 		return true // buildScopes already validated it, strictly
 	}
@@ -343,11 +344,10 @@ func (r *resolver) checkScopeDeclaration(node *Node, p *graph.Provider) bool {
 		return true
 	}
 	// The gate is `ScopeKey(ctx context.Context, ...)`: the name plus a
-	// leading context. Anything narrower would let the one shape the PRD
-	// calls out as most dangerous through — an extractor that forgot its
-	// error result, which silently gives every keyless caller the zero
-	// key. Anything wider would catch ordinary methods that merely share
-	// the name.
+	// leading context. Anything narrower would let the most dangerous
+	// shape through — an extractor that forgot its error result, which
+	// silently gives every keyless caller the zero key. Anything wider
+	// would catch ordinary methods that merely share the name.
 	if !graph.ScopeKeyLikely(p.ResultType) {
 		return true
 	}
@@ -355,6 +355,6 @@ func (r *resolver) checkScopeDeclaration(node *Node, p *graph.Provider) bool {
 	// else is wrong with it is downstream of the thing the user has to do
 	// first, which is decide whether this type is scoped at all;
 	// buildScopes reports the rest, strictly, once they have said it is.
-	r.diags = append(r.diags, r.undeclaredScopeDiagnostic(node, graph.ScopeKeyPos(r.fset, p.ResultType)))
+	r.diags = append(r.diags, r.undeclaredScopeDiagnostic(node, graph.ScopeKeyPos(r.fset, p.ResultType), chain, rootPos))
 	return false
 }

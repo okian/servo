@@ -92,6 +92,28 @@ func (_ *Undeclared) ScopeKey(ctx context.Context) (TenantKey, error) { return "
 type UndeclaredHolder struct{}
 func NewUndeclaredHolder(u *Undeclared) *UndeclaredHolder { return &UndeclaredHolder{} }
 
+// Declared is the same, except its accessor interface is already written.
+// Only the servo.Scoped line is missing.
+type Declared struct{}
+func NewDeclared(k TenantKey) *Declared { return &Declared{} }
+func (_ *Declared) ScopeKey(ctx context.Context) (TenantKey, error) { return "", nil }
+type Declareds interface {
+	Acquire(ctx context.Context) (*Declared, func(), error)
+}
+type DeclaredHolder struct{}
+func NewDeclaredHolder(d *Declared) *DeclaredHolder { return &DeclaredHolder{} }
+
+// Blob's accessor is not Blob+"s", so a message that re-derives the name
+// instead of using the one it found names a type that does not exist.
+type Blob struct{}
+func NewBlob(k TenantKey) *Blob { return &Blob{} }
+func (_ *Blob) ScopeKey(ctx context.Context) (TenantKey, error) { return "", nil }
+type BlobPool interface {
+	Acquire(ctx context.Context) (*Blob, func(), error)
+}
+type BlobHolder struct{}
+func NewBlobHolder(b *Blob) *BlobHolder { return &BlobHolder{} }
+
 // NoScopeKey is declared as scoped but has no extractor.
 type NoScopeKey struct{}
 func NewNoScopeKey() *NoScopeKey { return &NoScopeKey{} }
@@ -188,8 +210,9 @@ type SelfAcquirers interface {
 	Acquire(ctx context.Context) (*SelfAcquirer, func(), error)
 }
 
-// NoErrorResult is the shape the PRD calls out as most dangerous: an
-// extractor that forgot its error, so a missing key becomes the zero key.
+// NoErrorResult is the most dangerous extractor shape: one that forgot
+// its error, so a missing key becomes the zero key and every keyless
+// caller silently shares one instance.
 type NoErrorResult struct{}
 func NewNoErrorResult(k RoomKey) *NoErrorResult { return &NoErrorResult{} }
 func (_ *NoErrorResult) ScopeKey(ctx context.Context) RoomKey { return "" }
@@ -523,6 +546,69 @@ func TestUndeclaredScopeDiagnostic(t *testing.T) {
 	}
 }
 
+// TestUndeclaredScopeFindsAnExistingAccessor: the likeliest way to reach
+// this diagnostic is to have written everything except the servo.Scoped
+// line, in which case telling the reader to declare the accessor
+// interface hands them a redeclaration error.
+func TestUndeclaredScopeFindsAnExistingAccessor(t *testing.T) {
+	pkg, fset, pkgs, all := checkScopeFixture(t)
+	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
+		[]load.RootDecl{rootDecl(pkg, "DeclaredHolder")}, nil))
+
+	msg := diagText(diags)
+	if strings.Contains(msg, "type Declareds interface {") {
+		t.Fatalf("diagnostic told the reader to declare an interface their package already has:\n%s", msg)
+	}
+	for _, want := range []string{
+		"scoped.Declareds already has the shape the generated accessor satisfies",
+		"servo.Scoped[*example.com/scoped.Declared, example.com/scoped.Declareds](),",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("diagnostic missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+// TestUndeclaredScopeNamesTheInterfaceItFound: the prose and the
+// pasteable servo.Scoped line have to agree. qualifiedIfaceName used to
+// ignore the name it was handed and re-derive one from the scoped type,
+// which is invisible whenever the accessor happens to be Name+"s" and
+// wrong the moment it is not.
+func TestUndeclaredScopeNamesTheInterfaceItFound(t *testing.T) {
+	pkg, fset, pkgs, all := checkScopeFixture(t)
+	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
+		[]load.RootDecl{rootDecl(pkg, "BlobHolder")}, nil))
+
+	msg := diagText(diags)
+	if !strings.Contains(msg, "scoped.BlobPool already has the shape") {
+		t.Fatalf("diagnostic did not name the interface it found:\n%s", msg)
+	}
+	if !strings.Contains(msg, "servo.Scoped[*example.com/scoped.Blob, example.com/scoped.BlobPool](),") {
+		t.Fatalf("pasteable line does not name BlobPool:\n%s", msg)
+	}
+	if strings.Contains(msg, "example.com/scoped.Blobs") {
+		t.Fatalf("diagnostic invented a Blobs interface that does not exist:\n%s", msg)
+	}
+}
+
+// TestWideningNamesOnlyReachingAccessors: Room and Lobby share RoomKey,
+// so they are one scope with two roots — but only Room reaches RoomLog.
+// Advising the reader to acquire through Lobbies would not typecheck.
+func TestWideningNamesOnlyReachingAccessors(t *testing.T) {
+	pkg, fset, pkgs, all := checkScopeFixture(t)
+	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
+		[]load.RootDecl{rootDecl(pkg, "LogHolder")},
+		[]load.ScopeDecl{scopeDecl(pkg, "Room", "Rooms"), scopeDecl(pkg, "Lobby", "Lobbies")}))
+
+	msg := diagText(diags)
+	if !strings.Contains(msg, "Depend on example.com/scoped.Rooms instead") {
+		t.Fatalf("diagnostic did not name the accessor that reaches RoomLog:\n%s", msg)
+	}
+	if strings.Contains(msg, "Lobbies") || strings.Contains(msg, "scoped.Lobby ") {
+		t.Fatalf("diagnostic named Lobby/Lobbies, which do not reach RoomLog:\n%s", msg)
+	}
+}
+
 func TestScopedWithoutScopeKeyDiagnostic(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
 	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
@@ -749,15 +835,28 @@ func TestWideningOnATransitiveMember(t *testing.T) {
 	if !strings.Contains(msg, "*example.com/scoped.RoomLog is scoped") {
 		t.Fatalf("diagnostic missing the widening claim:\n%s", msg)
 	}
-	if !strings.Contains(msg, "depend on the scope's accessor interface instead") {
-		t.Fatalf("diagnostic should give the generic advice for a node no accessor exposes:\n%s", msg)
+	// The generic "depend on the scope's accessor interface" wording named
+	// no interface, and following it literally did not typecheck: the only
+	// accessor here hands out *Room, not the *RoomLog being captured. The
+	// message has to name the entrance and the interface.
+	for _, want := range []string{
+		"*example.com/scoped.RoomLog has no accessor of its own",
+		"*example.com/scoped.Room reaches it",
+		"Depend on example.com/scoped.Rooms instead",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("diagnostic missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "depend on the scope's accessor interface instead of on") {
+		t.Fatalf("diagnostic fell back to advice that names no interface:\n%s", msg)
 	}
 }
 
-// TestStrayScopeKeyIsRejected is the membership hole in review finding 1:
-// *Widget takes RoomKey but is reachable only from the TenantKey scope, so
-// each scope's own fixpoint classifies it as a member of neither. It used
-// to emit as a singleton with the key argument silently dropped.
+// TestStrayScopeKeyIsRejected covers a hole in scope membership: *Widget
+// takes RoomKey but is reachable only from the TenantKey scope, so each
+// scope's own fixpoint classifies it as a member of neither. It used to
+// emit as a singleton with the key argument silently dropped.
 func TestStrayScopeKeyIsRejected(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
 	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
@@ -770,9 +869,9 @@ func TestStrayScopeKeyIsRejected(t *testing.T) {
 	}
 }
 
-// TestNodeClaimedByTwoScopes is review finding 2: a node both scopes
-// consider theirs used to be assigned to whichever was processed first,
-// leaving the other scope's entry silently without it.
+// TestNodeClaimedByTwoScopes covers a node both scopes consider theirs.
+// It used to be assigned to whichever was processed first, leaving the
+// other scope's entry silently without it.
 func TestNodeClaimedByTwoScopes(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
 	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
@@ -785,9 +884,9 @@ func TestNodeClaimedByTwoScopes(t *testing.T) {
 	}
 }
 
-// TestScopedRootIsRejected is review finding 5: a root is the most
-// singleton thing there is, so declaring a scoped type as one is widening
-// with the App as the consumer. It used to be dropped without a word.
+// TestScopedRootIsRejected covers a scoped type declared as a root. A
+// root is the most singleton thing there is, so that is widening with the
+// App as the consumer. It used to be dropped without a word.
 func TestScopedRootIsRejected(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
 	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
@@ -800,8 +899,8 @@ func TestScopedRootIsRejected(t *testing.T) {
 	}
 }
 
-// TestBindingAnAccessorIsRejected is review finding 3, the only one that
-// was silently wrong at runtime rather than a compile error: an Override
+// TestBindingAnAccessorIsRejected covers the one scope mistake that was
+// silently wrong at runtime rather than a compile error: an Override
 // naming a scope accessor was ignored, so a test App went on exercising
 // the real scope while its spec file said otherwise.
 func TestBindingAnAccessorIsRejected(t *testing.T) {
@@ -821,10 +920,10 @@ func TestBindingAnAccessorIsRejected(t *testing.T) {
 	}
 }
 
-// TestUnrelatedScopeKeyMethodIsIgnored is review finding 4, a regression
-// against "zero impact on apps that declare no scopes": ScopeKey is an
-// ordinary method name, and a type that merely has one must not fail
-// generation for a module with no scopes at all.
+// TestUnrelatedScopeKeyMethodIsIgnored guards zero impact on apps that
+// declare no scopes: ScopeKey is an ordinary method name, and a type that
+// merely has one must not fail generation for a module with no scopes at
+// all.
 func TestUnrelatedScopeKeyMethodIsIgnored(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
 	resolved, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
@@ -837,8 +936,8 @@ func TestUnrelatedScopeKeyMethodIsIgnored(t *testing.T) {
 	}
 }
 
-// TestValueTypedScopeIsRejected is review finding 6: detection accepted a
-// value-typed scoped node that the emitter cannot express, producing a
+// TestValueTypedScopeIsRejected covers a value-typed scoped node.
+// Detection used to accept one the emitter cannot express, producing a
 // generated file that does not compile.
 func TestValueTypedScopeIsRejected(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
@@ -855,9 +954,9 @@ func TestValueTypedScopeIsRejected(t *testing.T) {
 	}
 }
 
-// TestExtractorMayTakeAnotherScopesAccessor: round two found the
-// extractor-cycle check rejecting the very edge every other scope
-// diagnostic recommends. An accessor is an App field, not an instance.
+// TestExtractorMayTakeAnotherScopesAccessor: the extractor-cycle check
+// used to reject the very edge every other scope diagnostic recommends.
+// An accessor is an App field, not an instance.
 func TestExtractorMayTakeAnotherScopesAccessor(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
 	resolved, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,
@@ -885,10 +984,10 @@ func TestSelfAcquiringExtractorIsRejected(t *testing.T) {
 	}
 }
 
-// TestMalformedExtractorIsCaughtEvenUndeclared: round two found the
-// leniency that keeps scope-free modules working also swallowing the one
-// mistake the PRD calls most dangerous — an extractor with no error
-// result, which makes a missing key the zero key.
+// TestMalformedExtractorIsCaughtEvenUndeclared: the leniency that keeps
+// scope-free modules working also swallowed the most dangerous mistake
+// there is — an extractor with no error result, which makes a missing key
+// the zero key.
 func TestMalformedExtractorIsCaughtEvenUndeclared(t *testing.T) {
 	pkg, fset, pkgs, all := checkScopeFixture(t)
 	_, diags := Resolve(scopeInput(t, pkg, fset, pkgs, all,

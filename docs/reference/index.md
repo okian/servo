@@ -61,6 +61,8 @@ write, its own marker, its own generated code, and its own diagnostics.
 [`examples/basic`](https://github.com/okian/servo/tree/master/examples/basic) for the whole feature
 surface, [`examples/mocking`](https://github.com/okian/servo/tree/master/examples/mocking) for the
 three mock-library integrations,
+[`examples/scoped`](https://github.com/okian/servo/tree/master/examples/scoped) for keyed,
+refcounted instances and the race suite that gates them,
 [`examples/diagnostics`](https://github.com/okian/servo/tree/master/examples/diagnostics) for
 permanently broken fixtures that each print one diagnostic, and
 [`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) for the

@@ -46,7 +46,7 @@ func TestAppHealthReflectsDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer app.Shutdown(context.Background())
+	defer func() { _ = app.Shutdown(context.Background()) }()
 
 	health := app.Health(context.Background())
 	if !health.Clean() {

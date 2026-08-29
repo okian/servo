@@ -78,7 +78,7 @@ func (e *emitter) planScopes() {
 			entryNames.AllocateName(reserved)
 		}
 		for _, n := range s.Order {
-			se.Members = append(se.Members, &memberEmit{N: n, Field: entryNames.Allocate(n.Provider.ResultType)})
+			se.Members = append(se.Members, &memberEmit{N: n, Field: allocateEntryField(entryNames, n.Provider.ResultType)})
 		}
 		for _, root := range s.Roots {
 			ib := lowerFirst(shortTypeName(root.IfaceType))
@@ -149,11 +149,11 @@ var entryReservedFields = []string{
 	// Fields.
 	"scope", "key", "ctx", "cancel", "built",
 	"joins", "leaves", "ready", "dead", "torn",
-	"buildErr", "stopResult", "runWG", "runMu", "runErrs",
+	"buildErr", "stopResult", "drainResult", "runWG", "runMu", "runErrs",
 	// Methods. In Go a field and a method share one namespace, so a
 	// member type named Name would collide with the entry's own name().
 	"name", "loop", "evict", "build", "rollback", "teardown",
-	"waitRun", "waitTorn", "releaser",
+	"waitRun", "waitTorn", "releaser", "drainRefs",
 	// The entry receiver, and the locals build() declares. A member field
 	// is referenced as `e.<field>`, but the local it is assigned through
 	// is the bare name — so a member type E, A or Err would redeclare the
@@ -167,7 +167,55 @@ var entryReservedFields = []string{
 var scopeReservedIdents = []string{
 	"app", "entry", "results", "entries", "live", "res",
 	"refs", "timer", "linger", "stopTimer", "zero", "once",
-	"release", "created", "started", "key", "err",
+	"release", "created", "started", "key", "err", "budget",
+}
+
+// allocateEntryField names one scope member's field on the entry, and
+// claims the two method names writeEntryTeardown derives from that field
+// as well.
+//
+// In Go a field and a method share one namespace, so reserving the field
+// names alone is not enough: a member type named Result takes the field
+// `result`, from which the teardown emitter derives `stopResult` — beside
+// the entry's own hard-coded stopResult field. `servo generate` wrote that
+// happily and the compiler rejected it, which is the worst place for the
+// failure to land, since the file it lands in is one users are told not to
+// read. Two members named Foo and StopFoo collide the same way.
+func allocateEntryField(a *NameAllocator, t types.Type) string {
+	for {
+		f := a.Allocate(t)
+		drain, stop := "drain"+capitalize(f), "stop"+capitalize(f)
+		if a.Free(drain) && a.Free(stop) {
+			a.AllocateName(drain)
+			a.AllocateName(stop)
+			return f
+		}
+	}
+}
+
+// allocateAppField is allocateEntryField's App-level twin. An App node's
+// variable name decides a method (stop<F>) and two fields (<F>StopOnce,
+// <F>StopResult), so components named Foo and StopFoo used to give App a
+// stopFoo method beside a stopFoo field — the same field/method namespace
+// collision, emitted just as happily and rejected just as firmly.
+func allocateAppField(a *NameAllocator, t types.Type) string {
+	for {
+		f := a.Allocate(t)
+		derived := []string{"stop" + capitalize(f), f + "StopOnce", f + "StopResult"}
+		free := true
+		for _, d := range derived {
+			if !a.Free(d) {
+				free = false
+				break
+			}
+		}
+		if free {
+			for _, d := range derived {
+				a.AllocateName(d)
+			}
+			return f
+		}
+	}
 }
 
 func scopeBaseName(s *resolve.Scope) string {
@@ -290,10 +338,17 @@ func (e *emitter) writeScopeHelpers(b *strings.Builder, se *scopeEmit) {
 	b.WriteString("\tif s.items[e.key] == e {\n\t\tdelete(s.items, e.key)\n\t}\n")
 	b.WriteString("\ts.mu.Unlock()\n}\n\n")
 
+	b.WriteString("// endTeardown drops the entry and counts the eviction in one critical\n")
+	b.WriteString("// section. Counting after the unlock would let Live reach zero before\n")
+	b.WriteString("// Evictions was bumped — and since Live reaching zero is the\n")
+	b.WriteString("// documented way to wait for a scope to go quiet, a test that waited\n")
+	b.WriteString("// that way and then read Evictions could observe the instance gone\n")
+	b.WriteString("// and its eviction uncounted.\n")
 	fmt.Fprintf(b, "func (s *%s) endTeardown(e *%s, result %s.NodeResult) {\n", se.TypeName, se.EntryName, e.servoAlias)
-	b.WriteString("\ts.mu.Lock()\n\tdelete(s.tearing, e)\n\ts.mu.Unlock()\n")
+	b.WriteString("\ts.mu.Lock()\n\tdelete(s.tearing, e)\n")
 	b.WriteString("\ts.evictions.Add(1)\n")
-	fmt.Fprintf(b, "\tif result.Status != %s.StatusOK {\n\t\ts.failures.Add(1)\n\t}\n}\n\n", e.servoAlias)
+	fmt.Fprintf(b, "\tif result.Status != %s.StatusOK {\n\t\ts.failures.Add(1)\n\t}\n", e.servoAlias)
+	b.WriteString("\ts.mu.Unlock()\n}\n\n")
 
 	b.WriteString("// abandon unwinds an entry whose construction failed, so it leaves\n")
 	b.WriteString("// nothing behind in the map and any waiter gets the error rather than\n")
@@ -329,6 +384,11 @@ func (e *emitter) writeEntryType(b *strings.Builder, se *scopeEmit) {
 	b.WriteString("\tbuilt      int\n")
 	b.WriteString("\tbuildErr   error\n")
 	fmt.Fprintf(b, "\tstopResult %s.NodeResult\n", e.servoAlias)
+	b.WriteString("\t// drainResult is set only when the reference drain overran its\n")
+	b.WriteString("\t// budget, so this instance was stopped while a caller still held\n")
+	b.WriteString("\t// it. Written by the entry's own loop and read by teardown on the\n")
+	b.WriteString("\t// same goroutine, so it needs no lock.\n")
+	fmt.Fprintf(b, "\tdrainResult %s.NodeResult\n", e.servoAlias)
 	b.WriteString("\trunWG   sync.WaitGroup\n\trunMu   sync.Mutex\n\trunErrs []error\n")
 	for _, m := range se.Members {
 		fmt.Fprintf(b, "\t%s %s\n", m.Field, e.qualifiedTypeString(m.N.Provider.ResultType))
@@ -359,7 +419,7 @@ func (e *emitter) writeEntryLoop(b *strings.Builder, se *scopeEmit) {
 	b.WriteString("\t\t// them. A join and a quit both ready in one select is a coin\n")
 	b.WriteString("\t\t// flip, and losing it hands an acquirer an instance this\n")
 	b.WriteString("\t\t// iteration is about to tear down.\n")
-	b.WriteString("\t\tselect {\n\t\tcase <-e.scope.quit:\n\t\t\tstopTimer()\n\t\t\te.evict()\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\n")
+	b.WriteString("\t\tselect {\n\t\tcase <-e.scope.quit:\n\t\t\tstopTimer()\n\t\t\te.drainRefs(refs)\n\t\t\te.evict()\n\t\t\treturn\n\t\tdefault:\n\t\t}\n\n")
 	b.WriteString("\t\tselect {\n")
 	b.WriteString("\t\tcase <-e.joins:\n\t\t\trefs++\n\t\t\tstopTimer()\n")
 	b.WriteString("\t\tcase <-e.leaves:\n\t\t\trefs--\n\t\t\tif refs == 0 {\n")
@@ -369,7 +429,37 @@ func (e *emitter) writeEntryLoop(b *strings.Builder, se *scopeEmit) {
 	b.WriteString("\t\t\t\t// it worth sharing.\n")
 	b.WriteString("\t\t\t\tstopTimer()\n\t\t\t\ttimer = time.NewTimer(e.scope.linger)\n\t\t\t\tlinger = timer.C\n\t\t\t}\n")
 	b.WriteString("\t\tcase <-linger:\n\t\t\ttimer, linger = nil, nil\n\t\t\te.evict()\n\t\t\treturn\n")
-	b.WriteString("\t\tcase <-e.scope.quit:\n\t\t\tstopTimer()\n\t\t\te.evict()\n\t\t\treturn\n")
+	b.WriteString("\t\tcase <-e.scope.quit:\n\t\t\tstopTimer()\n\t\t\te.drainRefs(refs)\n\t\t\te.evict()\n\t\t\treturn\n")
+	b.WriteString("\t\t}\n\t}\n}\n\n")
+
+	b.WriteString("// drainRefs waits for the holders outstanding when Shutdown arrived to\n")
+	b.WriteString("// give their references back before teardown starts. A counted\n")
+	b.WriteString("// reference is a promise that the instance stays usable until it is\n")
+	b.WriteString("// released, and evicting under a live holder would break that promise\n")
+	b.WriteString("// for the one caller who did everything right: acquired successfully,\n")
+	b.WriteString("// a moment before someone else called Shutdown.\n")
+	b.WriteString("//\n")
+	b.WriteString("// In the ordinary case there is nothing to wait for. Shutdown stops\n")
+	b.WriteString("// nodes in reverse level order, so whatever depends on this scope has\n")
+	b.WriteString("// already been drained and stopped, its handlers have returned and\n")
+	b.WriteString("// their releases have already landed.\n")
+	b.WriteString("//\n")
+	b.WriteString("// Bounded by one stop budget, because a caller who never releases must\n")
+	b.WriteString("// not hold shutdown open. Overrunning that bound is recorded in\n")
+	b.WriteString("// drainResult, which teardown merges, so the entry comes back\n")
+	b.WriteString("// abandoned: the report is the only place a promise broken this way\n")
+	b.WriteString("// could show, and a clean one would hide it entirely.\n")
+	fmt.Fprintf(b, "func (e *%s) drainRefs(refs int) {\n", se.EntryName)
+	b.WriteString("\tif refs <= 0 {\n\t\treturn\n\t}\n")
+	fmt.Fprintf(b, "\tbudget := time.NewTimer(%s.DefaultStopBudget)\n", e.servoAlias)
+	b.WriteString("\tdefer budget.Stop()\n")
+	b.WriteString("\tfor refs > 0 {\n")
+	b.WriteString("\t\tselect {\n")
+	b.WriteString("\t\tcase <-e.leaves:\n\t\t\trefs--\n")
+	b.WriteString("\t\tcase <-budget.C:\n")
+	fmt.Fprintf(b, "\t\t\terr := fmt.Errorf(\"servo: torn down with %%d reference(s) still held after %%s\", refs, %s.DefaultStopBudget)\n", e.servoAlias)
+	fmt.Fprintf(b, "\t\t\te.drainResult = %s.NodeResult{Name: e.name(), Status: %s.StatusAbandoned, Err: err}\n", e.servoAlias, e.servoAlias)
+	b.WriteString("\t\t\treturn\n")
 	b.WriteString("\t\t}\n\t}\n}\n\n")
 
 	b.WriteString("// evict removes the key from the map BEFORE announcing the entry's death.\n")
@@ -572,6 +662,9 @@ func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
 	fmt.Fprintf(b, "func (e *%s) teardown() %s.NodeResult {\n", se.EntryName, e.servoAlias)
 	b.WriteString("\tctx := context.Background()\n")
 	fmt.Fprintf(b, "\tvar results []%s.NodeResult\n", e.servoAlias)
+	b.WriteString("\t// Set only when the reference drain overran its budget, so this\n")
+	b.WriteString("\t// instance is being stopped while someone still holds it.\n")
+	fmt.Fprintf(b, "\tif e.drainResult.Status != %s.StatusOK {\n\t\tresults = append(results, e.drainResult)\n\t}\n", e.servoAlias)
 	for i := len(se.Members) - 1; i >= 0; i-- {
 		m := se.Members[i]
 		if hasCapability(m.N, "Drainer") {
@@ -656,6 +749,15 @@ func (e *emitter) writeAcquire(b *strings.Builder, se *scopeEmit, re *rootEmit) 
 	b.WriteString("\t\t\t// Lost the race with eviction. The retry misses the map — the\n")
 	b.WriteString("\t\t\t// key was removed before dead closed — and creates fresh.\n")
 	b.WriteString("\t\t\tcontinue\n")
+	b.WriteString("\t\tcase <-s.quit:\n")
+	b.WriteString("\t\t\t// Shutdown began while this acquirer was waiting to join. The\n")
+	b.WriteString("\t\t\t// loop has stopped reading joins and is draining the holders it\n")
+	b.WriteString("\t\t\t// already has, so waiting here would block for that drain only\n")
+	b.WriteString("\t\t\t// to be told the scope is closed. Say so now. If the join and\n")
+	b.WriteString("\t\t\t// this case are ready together the choice is arbitrary and\n")
+	b.WriteString("\t\t\t// either answer is correct: a join that lands is a counted\n")
+	b.WriteString("\t\t\t// reference the drain will wait for.\n")
+	fmt.Fprintf(b, "\t\t\treturn nil, nil, %s.ErrScopeClosed\n", e.servoAlias)
 	b.WriteString("\t\tcase <-ctx.Done():\n\t\t\treturn nil, nil, ctx.Err()\n")
 	b.WriteString("\t\t}\n\t}\n}\n\n")
 
@@ -868,12 +970,13 @@ func scopeUsesApp(se *scopeEmit) bool {
 }
 
 // teardownPhases counts the budgeted calls one entry's teardown makes:
+// the drain of any references still outstanding when Shutdown arrived,
 // every Drainer's Drain, the wait for the Run goroutines, and every
 // Flush/Stop/cleanup. Shutdown waits for an entry with this many budgets,
 // because waiting with one would time out on a teardown that was
 // proceeding exactly as designed.
 func (se *scopeEmit) teardownPhases() int {
-	n := 1 // waitRun
+	n := 2 // drainRefs, then waitRun
 	for _, m := range se.Members {
 		if hasCapability(m.N, "Drainer") {
 			n++

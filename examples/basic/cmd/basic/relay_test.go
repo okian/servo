@@ -15,7 +15,7 @@ func TestRelayUsesTwoDistinctAccounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer app.Shutdown(context.Background())
+	defer func() { _ = app.Shutdown(context.Background()) }()
 
 	if !strings.Contains(app.relay.OrdersResult, "111111111111") {
 		t.Errorf("OrdersResult = %q, want it to reference the orders account", app.relay.OrdersResult)

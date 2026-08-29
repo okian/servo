@@ -344,7 +344,8 @@ teardown around a graph.
 
 ```go
 type Graph struct {
-	Nodes []GraphNode `json:"nodes"`
+	Nodes  []GraphNode  `json:"nodes"`
+	Scopes []GraphScope `json:"scopes,omitempty"`
 }
 
 type GraphNode struct {
@@ -354,6 +355,7 @@ type GraphNode struct {
 	Capabilities []string `json:"capabilities"`
 	Binding      string   `json:"binding"`
 	Pos          string   `json:"pos"`
+	Scope        string   `json:"scope,omitempty"`
 }
 ```
 
@@ -369,6 +371,7 @@ views can't drift.
 | `Capabilities` | Detected capability names, in a fixed order: `Initializer`, `Runner`, `Drainer`, `Flusher`, `Finalizer`, `Healther`, `Readier` |
 | `Binding` | `explicit bind`, `sole candidate`, or `sole implementation` |
 | `Pos` | The provider's declaration site. Module-relative in generated code, absolute in CLI output |
+| `Scope` | The key type of the scope this node belongs to, or empty for a singleton |
 
 Display-only: type strings are labels, never lookup keys, and there is no path from a `GraphNode`
 back to the instance it describes.

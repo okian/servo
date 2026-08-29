@@ -105,6 +105,11 @@ func TestExampleDiagnosticExtractorCycle(t *testing.T) {
 		"ScopeKey extractor depends on *example.com/servodiagnostics/extractor.Decoder, which is itself scoped",
 		"runs before",
 		"any instance exists",
+		// The chain leads to the scoped dependency rather than to the
+		// extractor, whose own position is printed on the line above it.
+		"needed by *example.com/servodiagnostics/extractor.Decoder",
+		"needed by *example.com/servodiagnostics/extractor.Session",
+		"root",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("diagnostic missing %q:\n%s", want, msg)
@@ -120,9 +125,36 @@ func TestExampleDiagnosticUndeclaredScope(t *testing.T) {
 	msg := err.Error()
 	for _, want := range []string{
 		"declares a ScopeKey method but no servo.Scoped declares it",
+		// Reached mid-traversal, so the chain comes from the DFS path
+		// rather than from a walk of a graph that does not exist yet.
+		"needed by *example.com/servodiagnostics/undeclared.Tenant",
+		"needed by *example.com/servodiagnostics/undeclared.Server",
+		"root",
 		"type Tenants interface {",
 		"Acquire(ctx context.Context) (*Tenant, func(), error)",
 		"servo.Scoped[*example.com/servodiagnostics/undeclared.Tenant, example.com/servodiagnostics/undeclared.Tenants](),",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("diagnostic missing %q:\n%s", want, msg)
+		}
+	}
+}
+
+// TestExampleDiagnosticScopedWithoutScopeKey is the reverse of the
+// undeclared-scope fixture: the declaration is there, the method is not.
+// It is the half a new user meets first, having reached for servo.Scoped
+// before writing the extractor, and until now its wording was pinned only
+// by a resolver unit test rather than by a fixture anyone can run.
+func TestExampleDiagnosticScopedWithoutScopeKey(t *testing.T) {
+	err := runGenerate("../../examples/diagnostics/noscopekey")
+	if err == nil {
+		t.Fatal("expected generation to fail")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"declares a scope, but *example.com/servodiagnostics/noscopekey.Cache has no ScopeKey method",
+		"The receiver must be unnamed",
+		"func (*Cache) ScopeKey(ctx context.Context)",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("diagnostic missing %q:\n%s", want, msg)

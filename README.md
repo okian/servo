@@ -577,7 +577,7 @@ internal/resolve/  roots → closure → order, levels, diagnostics
 internal/emit/     source emission, import manager, name allocator
 internal/render/   text, JSON, DOT, Mermaid graph renderers
 servo/             markers + ~430-line runtime
-servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout, PanicReporter
+servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout, Linger, PanicReporter
 examples/basic/    a complete, runnable example (separate module)
 examples/scoped/   keyed, refcounted instances + the race suite (separate module)
 examples/mocking/  moq/mockery/gomock integrations, one binary each (separate module)

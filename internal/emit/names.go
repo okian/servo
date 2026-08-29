@@ -47,6 +47,15 @@ func (a *NameAllocator) AllocateName(base string) string {
 	return fmt.Sprintf("%s%d", base, n+1)
 }
 
+// Free reports whether name is still unclaimed. It exists for callers that
+// derive further identifiers from an allocated one — a field whose name
+// also decides a method's — and so have to know a candidate is workable
+// before they commit to it.
+func (a *NameAllocator) Free(name string) bool {
+	_, seen := a.used[name]
+	return !seen
+}
+
 // shouldAvoidBare reports whether name is a Go keyword or a predeclared
 // identifier (a builtin type, function, or constant such as "int", "len",
 // "new", "true", "nil") — legal to shadow as a local variable, but never

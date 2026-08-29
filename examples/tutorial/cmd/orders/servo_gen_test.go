@@ -222,14 +222,20 @@ func (s *testUserIDScope) beginTeardown(e *testUserIDEntry) {
 	s.mu.Unlock()
 }
 
+// endTeardown drops the entry and counts the eviction in one critical
+// section. Counting after the unlock would let Live reach zero before
+// Evictions was bumped — and since Live reaching zero is the
+// documented way to wait for a scope to go quiet, a test that waited
+// that way and then read Evictions could observe the instance gone
+// and its eviction uncounted.
 func (s *testUserIDScope) endTeardown(e *testUserIDEntry, result servo.NodeResult) {
 	s.mu.Lock()
 	delete(s.tearing, e)
-	s.mu.Unlock()
 	s.evictions.Add(1)
 	if result.Status != servo.StatusOK {
 		s.failures.Add(1)
 	}
+	s.mu.Unlock()
 }
 
 // abandon unwinds an entry whose construction failed, so it leaves
@@ -274,10 +280,15 @@ type testUserIDEntry struct {
 	built      int
 	buildErr   error
 	stopResult servo.NodeResult
-	runWG      sync.WaitGroup
-	runMu      sync.Mutex
-	runErrs    []error
-	session    *session.Session
+	// drainResult is set only when the reference drain overran its
+	// budget, so this instance was stopped while a caller still held
+	// it. Written by the entry's own loop and read by teardown on the
+	// same goroutine, so it needs no lock.
+	drainResult servo.NodeResult
+	runWG       sync.WaitGroup
+	runMu       sync.Mutex
+	runErrs     []error
+	session     *session.Session
 }
 
 func (e *testUserIDEntry) name() string {
@@ -312,6 +323,7 @@ func (e *testUserIDEntry) loop() {
 		select {
 		case <-e.scope.quit:
 			stopTimer()
+			e.drainRefs(refs)
 			e.evict()
 			return
 		default:
@@ -338,7 +350,43 @@ func (e *testUserIDEntry) loop() {
 			return
 		case <-e.scope.quit:
 			stopTimer()
+			e.drainRefs(refs)
 			e.evict()
+			return
+		}
+	}
+}
+
+// drainRefs waits for the holders outstanding when Shutdown arrived to
+// give their references back before teardown starts. A counted
+// reference is a promise that the instance stays usable until it is
+// released, and evicting under a live holder would break that promise
+// for the one caller who did everything right: acquired successfully,
+// a moment before someone else called Shutdown.
+//
+// In the ordinary case there is nothing to wait for. Shutdown stops
+// nodes in reverse level order, so whatever depends on this scope has
+// already been drained and stopped, its handlers have returned and
+// their releases have already landed.
+//
+// Bounded by one stop budget, because a caller who never releases must
+// not hold shutdown open. Overrunning that bound is recorded in
+// drainResult, which teardown merges, so the entry comes back
+// abandoned: the report is the only place a promise broken this way
+// could show, and a clean one would hide it entirely.
+func (e *testUserIDEntry) drainRefs(refs int) {
+	if refs <= 0 {
+		return
+	}
+	budget := time.NewTimer(servo.DefaultStopBudget)
+	defer budget.Stop()
+	for refs > 0 {
+		select {
+		case <-e.leaves:
+			refs--
+		case <-budget.C:
+			err := fmt.Errorf("servo: torn down with %d reference(s) still held after %s", refs, servo.DefaultStopBudget)
+			e.drainResult = servo.NodeResult{Name: e.name(), Status: servo.StatusAbandoned, Err: err}
 			return
 		}
 	}
@@ -399,6 +447,11 @@ func (e *testUserIDEntry) rollback() {
 func (e *testUserIDEntry) teardown() servo.NodeResult {
 	ctx := context.Background()
 	var results []servo.NodeResult
+	// Set only when the reference drain overran its budget, so this
+	// instance is being stopped while someone still holds it.
+	if e.drainResult.Status != servo.StatusOK {
+		results = append(results, e.drainResult)
+	}
 	e.cancel()
 	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, e.name(), e.waitRun))
 	results = append(results, e.stopSession(ctx)...)
@@ -487,6 +540,15 @@ func (s *testUserIDScope) acquireSession(ctx context.Context) (*session.Session,
 			// Lost the race with eviction. The retry misses the map — the
 			// key was removed before dead closed — and creates fresh.
 			continue
+		case <-s.quit:
+			// Shutdown began while this acquirer was waiting to join. The
+			// loop has stopped reading joins and is draining the holders it
+			// already has, so waiting here would block for that drain only
+			// to be told the scope is closed. Say so now. If the join and
+			// this case are ready together the choice is arbitrary and
+			// either answer is correct: a join that lands is a counted
+			// reference the drain will wait for.
+			return nil, nil, servo.ErrScopeClosed
 		case <-ctx.Done():
 			return nil, nil, ctx.Err()
 		}
@@ -646,10 +708,10 @@ func (a *TestApp) stopUserIDScope(ctx context.Context) servo.NodeResult {
 		// constructor or a Drain is reported abandoned rather than holding
 		// the whole shutdown open past the deadline its caller passed. The
 		// multiplier is the number of budgeted calls one teardown makes
-		// (3 here): a single budget would time out on an entry that was
+		// (4 here): a single budget would time out on an entry that was
 		// tearing down perfectly correctly, and report it abandoned.
 		for _, e := range entries {
-			if res := servo.RunStop(ctx, 3*servo.DefaultStopBudget, e.name(), e.waitTorn); res.Status != servo.StatusOK {
+			if res := servo.RunStop(ctx, 4*servo.DefaultStopBudget, e.name(), e.waitTorn); res.Status != servo.StatusOK {
 				results = append(results, res)
 				continue
 			}

@@ -430,7 +430,7 @@ func (r *resolver) checkScopeEdges(roots []*Node) {
 					continue
 				}
 				if dep.Scope != nil {
-					r.diags = append(r.diags, r.extractorCycleDiagnostic(root, dep))
+					r.diags = append(r.diags, r.extractorCycleDiagnostic(root, dep, roots))
 				}
 			}
 		}
@@ -629,6 +629,22 @@ func (r *resolver) wideningDiagnostic(consumer, scoped *Node, roots []*Node) Dia
 		// the resolved type would tell the user to change a parameter they
 		// did not write.
 		fmt.Fprintf(&b, "    - depend on the accessor instead: change %s's parameter from %s to %s,\n      and call Acquire(ctx) per request\n", consumer.Provider.Name, declaredParamOf(consumer, scoped), iface)
+	} else if owners, accessors := r.scopeEntrancesTo(scoped); len(owners) > 0 {
+		// The captured node is in the scope only because something else
+		// reaches it, so it has no accessor to point at. Saying "depend on
+		// the scope's accessor" without naming one is advice the reader
+		// cannot follow, and following it literally does not typecheck:
+		// that accessor hands out the type at the scope's entrance, not
+		// this one.
+		reaches := "reaches"
+		if len(owners) > 1 {
+			reaches = "reach"
+		}
+		fmt.Fprintf(&b, "    - %s has no accessor of its own. It is in this\n", scoped.Key.String())
+		fmt.Fprintf(&b, "      scope because %s %s it, and only the type at a\n", strings.Join(owners, " and "), reaches)
+		fmt.Fprintf(&b, "      scope's entrance gets one. Depend on %s instead,\n", strings.Join(accessors, " or "))
+		fmt.Fprintf(&b, "      Acquire(ctx) per request, and reach %s through\n", scoped.Key.String())
+		b.WriteString("      what it hands back\n")
 	} else {
 		fmt.Fprintf(&b, "    - depend on the scope's accessor interface instead of on %s directly,\n      and call Acquire(ctx) per request\n", scoped.Key.String())
 	}
@@ -652,6 +668,33 @@ func (r *resolver) accessorIfaceFor(scoped *Node) string {
 	return ""
 }
 
+// scopeEntrancesTo names the scoped types the spec exposes an accessor
+// for *and* from which the captured node is actually reachable.
+//
+// Filtering matters: two servo.Scoped declarations sharing a key type are
+// one scope with two roots, and only some of them may reach the node in
+// hand. Listing all of them would tell the reader to acquire through an
+// accessor that does not lead to what they are holding, which is the same
+// does-not-typecheck advice this branch exists to replace.
+func (r *resolver) scopeEntrancesTo(scoped *Node) (owners, accessors []string) {
+	if scoped.Scope == nil {
+		return nil, nil
+	}
+	for _, root := range scoped.Scope.Roots {
+		if root.Node == nil {
+			continue
+		}
+		reach := map[*Node]bool{}
+		r.collectReachable(root.Node, reach)
+		if !reach[scoped] {
+			continue
+		}
+		owners = append(owners, root.Node.Key.String())
+		accessors = append(accessors, root.Iface.String())
+	}
+	return owners, accessors
+}
+
 func (r *resolver) crossScopeDiagnostic(consumer, dep *Node, roots []*Node) Diagnostic {
 	var b strings.Builder
 	fmt.Fprintf(&b, "servo: %s and %s are in different scopes\n", consumer.Key.String(), dep.Key.String())
@@ -666,13 +709,17 @@ func (r *resolver) crossScopeDiagnostic(consumer, dep *Node, roots []*Node) Diag
 	return Diagnostic{Pos: nodePos(consumer), Message: b.String()}
 }
 
-func (r *resolver) extractorCycleDiagnostic(root *ScopeRoot, dep *Node) Diagnostic {
+func (r *resolver) extractorCycleDiagnostic(root *ScopeRoot, dep *Node, roots []*Node) Diagnostic {
 	var b strings.Builder
 	fmt.Fprintf(&b, "servo: %s's %s extractor depends on %s, which is itself scoped\n",
 		root.Extractor.Owner.String(), graph.ScopeKeyMethodName, dep.Key.String())
 	fmt.Fprintf(&b, "  %s  %s\n", graph.ScopeKeyMethodName, root.Extractor.Pos)
-	fmt.Fprintf(&b, "  %s  %s\n\n", dep.Key.String(), nodePos(dep))
-	b.WriteString("  The extractor is what decides which instance a caller gets, so it runs before\n")
+	// The chain to the scoped dependency, not to the extractor: what the
+	// reader has to change is somewhere along the path that made that
+	// dependency scoped, and the extractor's own position is the line
+	// above.
+	b.WriteString(renderNeededBy(r.chainTo(roots, dep)))
+	b.WriteString("\n  The extractor is what decides which instance a caller gets, so it runs before\n")
 	b.WriteString("  any instance exists. Everything it takes must already be constructed — that is,\n")
 	b.WriteString("  a singleton.\n")
 	return Diagnostic{Pos: root.Extractor.Pos, Message: b.String()}
@@ -687,18 +734,30 @@ func (r *resolver) missingScopeKeyDiagnostic(d load.ScopeDecl) Diagnostic {
 
 // undeclaredScopeDiagnostic is the mirror image: the method is there, the
 // declaration is not.
-func (r *resolver) undeclaredScopeDiagnostic(node *Node, methodPos token.Position) Diagnostic {
+func (r *resolver) undeclaredScopeDiagnostic(node *Node, methodPos token.Position, chain []chainEntry, rootPos token.Position) Diagnostic {
 	local := localTypeString(node.Provider.ResultType)
 	iface := suggestedIfaceName(node)
 	var b strings.Builder
 	fmt.Fprintf(&b, "servo: %s declares a %s method but no servo.Scoped declares it\n", node.Key.String(), graph.ScopeKeyMethodName)
 	fmt.Fprintf(&b, "  %s  %s\n", graph.ScopeKeyMethodName, methodPos)
-	fmt.Fprintf(&b, "  provider  %s\n\n", nodePos(node))
+	// This check fires mid-traversal, before the node's own dependencies
+	// are attached, so the chain comes from the DFS path that reached it
+	// rather than from a walk of the finished graph — the same source the
+	// unresolved and cycle diagnostics use at the same point.
+	b.WriteString(renderNeededBy(chain, rootPos))
+	b.WriteString("\n")
 	fmt.Fprintf(&b, "  A %s method is what makes a type keyed rather than a singleton, and servo\n", graph.ScopeKeyMethodName)
 	b.WriteString("  will not infer the rest of the declaration from it: the accessor interface has\n")
 	b.WriteString("  to be one you name, because servo cannot emit a type into your package.\n\n")
-	fmt.Fprintf(&b, "  In package %s:\n\n\ttype %s interface {\n\t    Acquire(ctx context.Context) (%s, func(), error)\n\t}\n\n", packageNameOf(node), iface, local)
-	fmt.Fprintf(&b, "  In servo.Build:\n\n\tservo.Scoped[%s, %s](),\n\n", node.Key.String(), qualifiedIfaceName(node, iface))
+	if existing := existingAccessorIface(node); existing != "" {
+		// Everything but the declaration is already there, so the message
+		// is one line long and names the half that is missing.
+		fmt.Fprintf(&b, "  %s.%s already has the shape the generated accessor satisfies, so all that is\n  missing is the declaration. In servo.Build:\n\n\tservo.Scoped[%s, %s](),\n\n",
+			packageNameOf(node), existing, node.Key.String(), qualifiedIfaceName(node, existing))
+	} else {
+		fmt.Fprintf(&b, "  In package %s:\n\n\ttype %s interface {\n\t    Acquire(ctx context.Context) (%s, func(), error)\n\t}\n\n", packageNameOf(node), iface, local)
+		fmt.Fprintf(&b, "  In servo.Build:\n\n\tservo.Scoped[%s, %s](),\n\n", node.Key.String(), qualifiedIfaceName(node, iface))
+	}
 	fmt.Fprintf(&b, "  Or delete the %s method, if this type is meant to be an ordinary singleton.\n", graph.ScopeKeyMethodName)
 	return Diagnostic{Pos: methodPos, Message: b.String()}
 }
@@ -743,7 +802,58 @@ func qualifiedIfaceName(n *Node, short string) string {
 	if named == nil || named.Obj().Pkg() == nil {
 		return short
 	}
-	return named.Obj().Pkg().Path() + "." + named.Obj().Name() + "s"
+	// short, not the scoped type's name plus an "s": when the package
+	// already declares a satisfying accessor, short is that interface's
+	// real name, and re-deriving one here would print a servo.Scoped line
+	// naming a type that does not exist.
+	return named.Obj().Pkg().Path() + "." + short
+}
+
+// existingAccessorIface names an interface already declared in the scoped
+// type's own package that the generated accessor would satisfy, or "" if
+// there is none.
+//
+// The likeliest way to arrive at the undeclared-scope diagnostic is to
+// have written the type, the ScopeKey method and the accessor interface,
+// and then forgotten only the servo.Scoped line. Telling that reader to
+// declare an interface they are already looking at hands them a
+// redeclaration error, and makes the message read as though servo had not
+// understood their package.
+func existingAccessorIface(n *Node) string {
+	named := typeNameOf(n.Provider.ResultType)
+	if named == nil || named.Obj().Pkg() == nil {
+		return ""
+	}
+	scope := named.Obj().Pkg().Scope()
+	for _, name := range scope.Names() {
+		obj, isTypeName := scope.Lookup(name).(*types.TypeName)
+		// Unexported would not be nameable from the spec file, which
+		// lives in another package.
+		if !isTypeName || !obj.Exported() {
+			continue
+		}
+		iface, isIface := obj.Type().Underlying().(*types.Interface)
+		if !isIface || iface.NumMethods() == 0 {
+			continue
+		}
+		acquires, ok := false, true
+		for i := 0; i < iface.NumMethods(); i++ {
+			m := iface.Method(i)
+			if accessorMethodOK(m, n.Provider.ResultType) != nil {
+				ok = false
+				break
+			}
+			if m.Name() == "Acquire" {
+				acquires = true
+			}
+		}
+		// Stats alone is satisfiable but useless as the thing a consumer
+		// depends on, so it is not what this message should point at.
+		if ok && acquires {
+			return obj.Name()
+		}
+	}
+	return ""
 }
 
 // suggestedIfaceName turns *chat.Room into Rooms, so the suggested

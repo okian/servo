@@ -112,6 +112,34 @@ This is a rejection with its own diagnostic, not an oversight.
 the method that needs it. That edge crosses no scope boundary, because an accessor is not an
 instance.
 
+### Scopes do not reach the transport, and servo will not put them there
+
+The key comes out of `context.Context`, and putting it there is your middleware's job. servo ships
+no `net/http` handler, no gRPC interceptor and no framework adapter, and the moment it did it would
+stop being a codegen tool and start being a framework with opinions about your router.
+
+*What to do instead:* one line in the middleware you already have — `ctx =
+context.WithValue(r.Context(), roomCtxKey{}, chat.RoomKey(...))` — and a `ScopeKey` method that
+reads it back out.
+
+### A scoped instance is memory, and dies with the process
+
+Instances are in-memory Go values. Nothing is persisted, nothing is migrated, and a restart starts
+every key from nothing. An instance evicted at the end of its linger window is gone with whatever
+it was holding.
+
+*What to do instead:* if the state has to outlive the process, the instance is a cache in front of
+a store, not the store. Write through it.
+
+### servo exports no metrics
+
+`Stats()` on the accessor is the whole of the observability surface: live instances, outstanding
+references, and monotonic totals for acquires, evictions and failures. It is test- and debug-facing.
+servo has no Prometheus dependency, no registry and no exporter, and won't grow one.
+
+*What to do instead:* read `Stats()` from whatever you already scrape with. It is four ints and two
+counters, and wiring it to a gauge is a few lines you can see.
+
 ### A scope accessor cannot be overridden
 
 `servo.Override[I, C]` replaces one *provider* with another. A scope's accessor is emitted, not

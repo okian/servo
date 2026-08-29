@@ -166,14 +166,20 @@ func TestEmitScopedApp(t *testing.T) {
 		"for e := range s.tearing {",
 		// Every wait during shutdown is budgeted — and by as many budgets
 		// as the teardown it waits for actually spends.
-		"servo.RunStop(ctx, 5*servo.DefaultStopBudget, e.name(), e.waitTorn)",
+		"servo.RunStop(ctx, 6*servo.DefaultStopBudget, e.name(), e.waitTorn)",
 		// A panic anywhere in construction unwinds through rollback.
 		"func (e *roomKeyEntry) rollback() {",
 		"entry.rollback()",
 		// An Init panic on a concurrent level must not escape the errgroup.
 		"if r := recover(); r != nil {\n\t\t\t\t\terr = fmt.Errorf(\"servo: panic in Init of",
-		// The loop stops accepting joins once Shutdown has begun.
-		"select {\n\t\tcase <-e.scope.quit:\n\t\t\tstopTimer()\n\t\t\te.evict()\n\t\t\treturn\n\t\tdefault:\n\t\t}",
+		// The loop stops accepting joins once Shutdown has begun, and
+		// waits for the references it already handed out before tearing
+		// the instance down under them.
+		"select {\n\t\tcase <-e.scope.quit:\n\t\t\tstopTimer()\n\t\t\te.drainRefs(refs)\n\t\t\te.evict()\n\t\t\treturn\n\t\tdefault:\n\t\t}",
+		"func (e *roomKeyEntry) drainRefs(refs int) {",
+		// A would-be joiner is told the scope is closed rather than
+		// waiting out the drain it is not part of.
+		"case <-s.quit:\n\t\t\t// Shutdown began while this acquirer was waiting to join.",
 		// A panic in a user constructor must not orphan the entry.
 		"func (s *roomKeyScope) start(entry *roomKeyEntry) (err error) {",
 		"s.abandon(entry, fmt.Errorf(\"servo: panic constructing %s: %v\", entry.name(), r))",

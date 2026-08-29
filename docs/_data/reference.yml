@@ -30,10 +30,11 @@ sections:
           explain, why, list, init, doctor, migrate, new — plus servo-vet.
       - title: Spec file and markers
         url: /reference/spec.html
-        blurb: Build, Root, Bind, Override, and the build tag that keeps them out of your binary.
+        blurb: Build, Root, Bind, Override, Scoped, and the build tag that keeps them out of your binary.
         description: >-
           Reference for servo's spec file: the servoinject build tag, spec
-          discovery, and the Build/Root/Bind/Override markers.
+          discovery, and the Build/Root/Bind/Override/Scoped markers, with
+          Linger and Max.
       - title: Resolution rules
         url: /reference/resolution.html
         blurb: What counts as a constructor, how a dependency is matched, and how order is derived.
@@ -86,11 +87,12 @@ sections:
         blurb: The markers, the capability interfaces, and the ~430-line runtime.
         description: >-
           Complete API reference for the servo package — markers, capability
-          interfaces, Report, NodeResult, NodeStatus, Graph, StartupReport,
-          RunStop, MergeNodeResults and DefaultStopBudget.
+          interfaces, Report, NodeResult, NodeStatus, Graph, GraphScope,
+          StartupReport, RunStop, MergeNodeResults, DefaultStopBudget, and the
+          scope surface: Scoped, Linger, Max, ScopeStats and the scope errors.
       - title: servotest package
         url: /reference/servotest-package.html
         blurb: Leak checks, order assertions, shrunken stop budgets, and a mock reporter.
         description: >-
           Complete API reference for the servotest package — NoLeaks, Timeout,
-          Recorder, AssertInitOrder, AssertStopOrder and PanicReporter.
+          Linger, Recorder, AssertInitOrder, AssertStopOrder and PanicReporter.

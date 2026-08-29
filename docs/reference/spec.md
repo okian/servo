@@ -298,6 +298,7 @@ Everything the spec parser can reject, in one place:
 | `servo.Bind[…] declared twice` | Duplicate bind (or duplicate override) for one interface |
 | `servo.Scoped expects exactly two type arguments` | `Scoped` with the wrong arity |
 | `servo.Scoped's first type argument must be the concrete scoped type` | An interface where the scoped type belongs |
+| `servo.Scoped's first type argument must be a pointer, not X` | `Acquire` has to be able to return a zero alongside an error |
 | `servo.Scoped's second type argument must be an interface` | A concrete type where the accessor interface belongs |
 | `servo.Scoped's accessor interface … declares no methods` | `any` is satisfied by everything, which makes the accessor unusable |
 | `servo.Scoped[T, …] declared twice` | One scoped type, one declaration |

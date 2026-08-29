@@ -1,6 +1,6 @@
 # Diagnostics
 
-Seven fixtures, each deliberately unresolvable in exactly one way, showing what `servo generate`
+Eight fixtures, each deliberately unresolvable in exactly one way, showing what `servo generate`
 reports for each. None of these packages have a `main.go` or a committed `servo_gen.go` — they
 can't, since generation always fails for them. `go build ./...` still succeeds: each `spec.go` is
 gated by the `servoinject` build tag, so the normal build only sees the plain, valid Go around it.
@@ -88,12 +88,19 @@ decides which instance a caller gets, so it runs before any instance exists:
 
 ```
 servo: *…extractor.Session's ScopeKey extractor depends on *…extractor.Decoder, which is itself scoped
+  ScopeKey                      extractor/session.go:36:17
+  needed by *…extractor.Decoder extractor/session.go:25:6
+  needed by *…extractor.Session extractor/session.go:32:6
+  root                          extractor/spec.go:10:3
+  ...
 ```
 
 ## `undeclared/`
 
 `Tenant` has a `ScopeKey` method but no `servo.Scoped` names it. servo will not infer the accessor
-interface, because it cannot emit a type into your package — so it prints the declaration to add:
+interface, because it cannot emit a type into your package — so it prints the declaration to add.
+(If the package already declares an interface the generated accessor would satisfy, the message
+names that one instead and asks only for the marker.)
 
 ```
 servo: *…undeclared.Tenant declares a ScopeKey method but no servo.Scoped declares it
@@ -102,5 +109,23 @@ servo: *…undeclared.Tenant declares a ScopeKey method but no servo.Scoped decl
 
 	type Tenants interface {
 	    Acquire(ctx context.Context) (*Tenant, func(), error)
+	}
+```
+
+## `noscopekey/`
+
+The reverse of `undeclared/`, and the half a new user meets first: `servo.Scoped[*Cache, Caches]`
+declares the scope, the accessor interface is written correctly, and `Cache` has no `ScopeKey`
+method — so nothing can decide which instance a caller gets:
+
+```
+servo: servo.Scoped[*…noscopekey.Cache, …noscopekey.Caches] declares a scope, but
+*…noscopekey.Cache has no ScopeKey method
+
+  Add one. The receiver must be unnamed — generated code calls it on a typed nil,
+  because it needs the key before it can choose an instance:
+
+	func (*Cache) ScopeKey(ctx context.Context) (RoomKey, error) {
+	    ...
 	}
 ```

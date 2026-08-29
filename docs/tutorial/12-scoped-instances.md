@@ -103,11 +103,12 @@ func (*Session) ScopeKey(ctx context.Context) (UserID, error) {
 
 Two things about this signature are load-bearing, and both have a diagnostic behind them.
 
-**The receiver is blank.** Generated code calls this on a typed nil — it has to, because the key
+**The receiver is unnamed.** Generated code calls this on a typed nil — it has to, because the key
 must be known *before* an instance can be chosen, so there is no instance to call it on. A receiver
 the body could reach would be a nil dereference in production, and no signature can say "never
 touches its receiver". So servo checks: `servo generate` rejects a named receiver, and `servo-vet`
-reports it in your editor.
+reports it in your editor. A blank `_` receiver is accepted too, but staticcheck's ST1006 flags it
+and asks for exactly the form above.
 
 **It returns an error.** Drop it, and a request with no key gets the zero `UserID` — and every
 unauthenticated caller silently shares one session. That is the same cross-user leak as before,

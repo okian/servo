@@ -6,9 +6,9 @@ import "github.com/okian/servo/v3/servotest"
 
 **Who this is for:** anyone writing a test against a generated `App` or `TestApp`.
 
-Five small helpers, each addressing something that is awkward to check by hand: goroutine leaks,
-real init/stop ordering, the abandoned-node path, and giving `gomock` a reporter inside a graph that
-has no `*testing.T` in it.
+Six small helpers, each addressing something that is awkward to check by hand: goroutine leaks,
+real init/stop ordering, the abandoned-node path, the eviction-racing-acquire boundary of a scope's
+linger window, and giving `gomock` a reporter inside a graph that has no `*testing.T` in it.
 
 This is the only servo package with a third-party dependency —
 [`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak), used by `NoLeaks`. The core

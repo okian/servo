@@ -100,8 +100,9 @@ job is to get you to the right one fast, not to repeat it.
 - **`servo: X.ScopeKey must not name its receiver`** — write `func (*Session) ScopeKey(...)`.
   servo calls it on a typed nil, before any instance exists to call it on.
 - **`servo: X declares a ScopeKey method but no servo.Scoped declares it`** — the method is there,
-  the marker isn't. The diagnostic prints the exact `servo.Scoped[...]` line and the accessor
-  interface to add.
+  the marker isn't. The diagnostic prints the exact `servo.Scoped[...]` line to add, along with the
+  accessor interface to declare — unless your package already has one the generated accessor would
+  satisfy, in which case it names that instead and asks only for the marker.
 - **`servo: ScopeKey's key type is string, which is not a defined type`** — `type UserID string`,
   and return that. Scope identity is type identity.
 - **`servo.ErrNoScopeKey` on every request** — the middleware isn't putting the key in the context,

@@ -47,6 +47,15 @@ Tiers 1 and 4 were both introduced already — chapter 8 for the mock-based patt
 was chapter 11's `NewTestApp`. What's new here is tier 2, and the practice of running these
 selectively rather than as one undifferentiated `go test ./...`.
 
+One tier-3 helper belongs to scopes specifically. `servotest.Linger(t, d)` shrinks every scope's
+linger window for the duration of one test, the way `servotest.Timeout` shrinks the stop budget, so
+an eviction that would otherwise be thirty seconds away happens while the test is still running.
+Without it, asserting that an instance is actually torn down means either sleeping for the real
+window or not asserting it at all. Generated code reads the override once per scope, inside `New`,
+so call it *before* constructing the app; and because the underlying setting is a package variable,
+a test using it must not run in parallel. [Chapter 12](12-scoped-instances.md) uses it for exactly
+this.
+
 ## Tier 2: proving the HTTP contract, not just the handlers
 
 Chapter 10's handlers were tested implicitly, by running the real service and curling it. That

@@ -688,6 +688,109 @@ func TestAcquireAfterShutdownNeverReturnsATornInstance(t *testing.T) {
 	servotest.NoLeaks(t)
 }
 
+// TestSharedKeyAcquireAfterShutdown is the same race as the test above on
+// the other path into an instance. Every goroutine presents one key, so
+// exactly one builds the entry and the other sixty-three join an existing
+// one — and a join is a reference the entry's loop has already counted.
+//
+// The distinction matters because the two paths failed for different
+// reasons. The creator returns an instance it built itself; a joiner
+// returns one the loop handed it. Both used to be checked against the
+// entry's death with a sample taken before the return, which cannot hold:
+// the loop evicted on Shutdown whatever the reference count was, so the
+// window between the check and the return was always open. Draining the
+// outstanding references before teardown is what closes it, and it closes
+// both paths at once.
+func TestSharedKeyAcquireAfterShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	app, err := New(ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for range 64 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			room, release, err := app.rooms.Acquire(roomCtx(ctx, "shared"))
+			switch {
+			case errors.Is(err, servo.ErrScopeClosed):
+				return
+			case err != nil:
+				t.Errorf("Acquire: %v", err)
+				return
+			}
+			defer release()
+			if room.Stopped() {
+				t.Error("a joiner's Acquire returned a nil error for an instance that was already stopped")
+			}
+		}()
+	}
+
+	report := app.Shutdown(context.Background())
+	wg.Wait()
+	if !report.Clean() {
+		t.Fatalf("shutdown was not clean: %v", report)
+	}
+	settle(t, app)
+	servotest.NoLeaks(t)
+}
+
+// TestDrainOverrunIsReportedAbandoned: a scope waits for outstanding
+// holders before tearing an instance down, but only for one stop budget —
+// a caller who never releases must not hold Shutdown open. When that bound
+// is reached the instance is stopped anyway, and the only place that can
+// show is the report, so it has to show there. A silently clean Shutdown
+// would mean a broken promise left no trace.
+func TestDrainOverrunIsReportedAbandoned(t *testing.T) {
+	servotest.Timeout(t, 300*time.Millisecond)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	app, err := New(ctx)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	// The release closure is deliberately dropped, and ctx is not
+	// cancelled, so the backstop cannot fire either: this reference is
+	// never coming back.
+	room, _, err := app.rooms.Acquire(roomCtx(ctx, "held"))
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	start := time.Now()
+	report := app.Shutdown(context.Background())
+	elapsed := time.Since(start)
+
+	if report.Clean() {
+		t.Error("shutdown reported clean after stopping an instance under a live holder")
+	}
+	var found bool
+	for _, n := range report.Nodes {
+		if n.Status == servo.StatusAbandoned && strings.Contains(n.Name, "chat.RoomKey") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no abandoned result for the scope: %v", report.Nodes)
+	}
+	if !room.Stopped() {
+		t.Error("the instance was not torn down, so Shutdown did not terminate the drain")
+	}
+	// Bounded: the whole point of the budget is that one stuck holder
+	// cannot hold shutdown open indefinitely.
+	if elapsed > 3*time.Second {
+		t.Errorf("shutdown took %v, far past the drain budget", elapsed)
+	}
+	servotest.NoLeaks(t)
+}
+
 // TestFailuresCountsAnUncleanEviction: an instance evicted mid-life has no
 // Report to appear in, so without a counter a Stop that fails would leave
 // no trace anywhere.

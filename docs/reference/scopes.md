@@ -265,10 +265,17 @@ one per instance.
 
 Ordering does most of the work by itself. Draining the server first ends the streams, which cancels
 their contexts, which fires the release backstops, which drops the reference counts — so by the
-time a scope is reached there is usually very little left in it. Anything still held when the scope
-closes is torn down anyway; `Shutdown` has to terminate.
+time a scope is reached there is usually very little left in it.
 
-Once a scope is closed, `Acquire` returns `servo.ErrScopeClosed`.
+Whatever is left, the scope waits for. An instance with holders still outstanding is not torn down
+until they release, bounded by one stop budget — because a reference that was counted is a promise
+that the instance stays usable until it is given back, and a caller who acquired successfully a
+moment before someone else called `Shutdown` did nothing wrong. Past that bound the instance is
+torn down under its holders anyway and the entry is reported abandoned in the scope's
+`NodeResult`, exactly as an overrunning app node is: `Shutdown` has to terminate.
+
+Once a scope is closed, `Acquire` returns `servo.ErrScopeClosed`, including for an acquirer that
+was already waiting to join a live instance when `Shutdown` began.
 
 ## `Stats()`
 
@@ -321,7 +328,8 @@ func (e *roomKeyEntry) loop() {
             e.evict() // ...
             return
         case <-e.scope.quit:
-            e.evict() // ...
+            e.drainRefs(refs) // wait for outstanding holders, bounded
+            e.evict()         // ...
             return
         }
     }
@@ -331,6 +339,18 @@ func (e *roomKeyEntry) loop() {
 The count starts at one rather than zero: whoever built the entry holds the first reference by
 construction and never sends a join for it. Starting at zero would leave an entry whose creator
 gave up before joining alive with no reference and no timer armed — live forever, held by nobody.
+
+**`drainRefs` is what makes a successful `Acquire` mean something under `Shutdown`.** Evicting the
+moment `quit` closes, whatever the count, leaves a window between any check an acquirer makes and
+its own `return` statement — so an acquirer could be handed an instance that was drained and
+stopped a microsecond later, with a nil error and no way to tell. No amount of re-checking closes
+that: the check is a sample, and the loop is free to evict immediately after it. Waiting for the
+count to reach zero removes the window instead of narrowing it, for both the creator and the
+joiner, because both hold a reference the loop has already counted by the time they return.
+
+The wait is bounded by one stop budget, so this is a guarantee with a stated limit rather than an
+absolute one: a holder that never releases has its instance torn down under it after that budget,
+and the entry comes back abandoned. Within the budget the race is gone; past it, it is reported.
 
 **Map access** takes the read lock on the hit path, and the write lock with a second look on the
 miss path: `sync.RWMutex` has no atomic upgrade, and two cold acquires of the same key would
@@ -347,6 +367,8 @@ case e.joins <- struct{}{}:
     return e.room, e.releaser(ctx), nil
 case <-e.dead:
     continue // lost the race; the retry misses and creates fresh
+case <-s.quit:
+    return nil, nil, servo.ErrScopeClosed // Shutdown began; do not wait out its drain
 case <-ctx.Done():
     return nil, nil, ctx.Err()
 }
@@ -366,9 +388,8 @@ has a real user.
 
 ## Diagnostics
 
-Every one of these is a `servo generate` failure with source positions. None is a runtime surprise.
-Widening and cross-scope carry the full needed-by chain; the other two name the two positions
-involved, since neither has a consumer chain to walk.
+Every one of these is a `servo generate` failure with source positions, and all four carry the full
+needed-by chain from the root down to the node at fault. None is a runtime surprise.
 
 | Diagnostic | Condition | Fix |
 | --- | --- | --- |
@@ -381,7 +402,7 @@ Widening is the feature's reason to exist. A singleton holding a scoped instance
 instance for the life of the process — the first room anyone joins becomes everyone's room — and
 nothing about the running program says so. A hand-written registry beside servo gets no such check.
 
-Those four are the named ones. Roughly thirty narrower messages — a stray scope key, a node two
+Those four are the named ones. Thirty-seven narrower messages — a stray scope key, a node two
 scopes both claim, a scoped type declared as a `servo.Root`, an accessor someone tried to `Bind`,
 every malformed `ScopeKey` signature and every rejected marker argument — are tabulated in
 [Other scope errors](diagnostics.md#other-scope-errors).

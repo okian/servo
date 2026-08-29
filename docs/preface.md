@@ -177,11 +177,14 @@ generated file is the entire mechanism, and it's sitting in your repository wher
 
 It isn't a plugin system, a service locator, or a runtime container. You can't ask it for a
 component by name while the program is running — there's no `Get[T]()`, because there's no
-container there to ask. Everything is built once, at startup, and lives as long as the process.
+container there to ask. Almost everything is built once, at startup, and lives as long as the
+process; the one exception is a [scope](reference/scopes.md), where a type gets one instance per
+key and servo generates the reference counting and the per-instance lifecycle around it.
 
-It also has real boundaries, and some of them will rule it out for some projects. You can't have
-two instances of the same type in one graph. You can't depend on "every implementation of this
-interface." You can't generate a different graph for staging than for production.
+It also has real boundaries, and some of them will rule it out for some projects. Outside a scope,
+you can't have two instances of the same type in one graph. You can't depend on "every
+implementation of this interface." You can't generate a different graph for staging than for
+production.
 
 Those aren't oversights — they follow from resolving everything before the program runs — but they
 are limits, and you should know about them before you commit rather than after. They're all written

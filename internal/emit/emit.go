@@ -85,8 +85,12 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	e.names.AllocateName("ctx")
 	e.names.AllocateName("err")
 
+	// startupReport is a field on App too, so a component named
+	// StartupReport would redeclare it.
+	e.names.AllocateName("startupReport")
+
 	for _, n := range resolved.Order {
-		e.varName[n.Key] = e.names.Allocate(n.Provider.ResultType)
+		e.varName[n.Key] = allocateAppField(e.names, n.Provider.ResultType)
 	}
 	e.planScopes()
 

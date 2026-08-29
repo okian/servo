@@ -213,14 +213,15 @@ never print this.
 ## Scopes
 
 These four are what a hand-written registry beside servo cannot give you. All are `generate`
-failures; widening and cross-scope carry the same needed-by chain a resolution diagnostic does,
-while the extractor-cycle and undeclared-scope messages name the two positions involved instead —
-there is no consumer chain to walk for either. See [Scoped instances](scopes.md) for the feature
-they belong to.
+failures, and all four carry the same needed-by chain a resolution diagnostic does. The
+extractor-cycle chain leads to the scoped dependency rather than to the extractor, whose own
+position is printed above it; the undeclared-scope chain comes from the traversal path that reached
+the type, because that check fires while candidates are still being selected. See [Scoped
+instances](scopes.md) for the feature they belong to.
 
-They are the four *named* scope diagnostics. A dozen and a half narrower ones — a stray scope key,
-a node two scopes both claim, a scoped type declared as a root, a bound accessor — are tabulated
-under [Other scope errors](#other-scope-errors) below.
+They are the four *named* scope diagnostics. Thirty-seven narrower ones — a stray scope key, a node
+two scopes both claim, a scoped type declared as a root, a bound accessor — are tabulated under
+[Other scope errors](#other-scope-errors) below.
 
 ### Widening
 
@@ -277,8 +278,10 @@ no scope boundary, because an accessor is not an instance.
 ```
 extractor/session.go:36:17: servo: *extractor.Session's ScopeKey extractor depends on
 *extractor.Decoder, which is itself scoped
-  ScopeKey            extractor/session.go:36:17
-  *extractor.Decoder  extractor/session.go:25:6
+  ScopeKey                      extractor/session.go:36:17
+  needed by *extractor.Decoder  extractor/session.go:25:6
+  needed by *extractor.Session  extractor/session.go:32:6
+  root                          extractor/spec.go:10:3
 
   The extractor is what decides which instance a caller gets, so it runs before
   any instance exists. Everything it takes must already be constructed — that is,
@@ -294,8 +297,10 @@ to do.
 ```
 undeclared/tenant.go:22:16: servo: *undeclared.Tenant declares a ScopeKey method but no
 servo.Scoped declares it
-  ScopeKey  undeclared/tenant.go:22:16
-  provider  undeclared/tenant.go:20:6
+  ScopeKey                      undeclared/tenant.go:22:16
+  needed by *undeclared.Tenant  undeclared/tenant.go:20:6
+  needed by *undeclared.Server  undeclared/tenant.go:32:6
+  root                          undeclared/spec.go:9:3
 
   A ScopeKey method is what makes a type keyed rather than a singleton, and servo
   will not infer the rest of the declaration from it: the accessor interface has
