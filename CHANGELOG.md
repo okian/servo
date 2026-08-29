@@ -94,8 +94,10 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   redundant with `Finalizer`.
 - **The landing page compares the two `main` functions, not the two constructors.** The
   constructors, their `Config` types and their `config.Parse` calls are identical whether or not
-  you use servo — showing them as "what servo generates" implied otherwise. Both figures now show
-  the same handwritten code, and differ only in what wires it together.
+  you use servo — showing them as "what servo generates" implied otherwise. The section is now
+  three blocks: the project once, then its `main` written by hand and the same `main` with servo,
+  side by side. It no longer shows generated code at all, because the generated file is not what
+  the comparison is about — the hand-written `main` it replaces is.
 - **The Gin and gRPC transports are tutorial chapters again, not reference pages.** They walk
   through rebuilding one chapter's code in another framework, against the tutorial's own
   module — a tutorial's job, not a lookup surface's. `docs/reference/transport-gin.md` and

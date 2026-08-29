@@ -34,22 +34,20 @@ layout: default
   <section class="band">
     <div class="band__inner">
       <p class="section-eyebrow">The whole idea</p>
-      <h2 class="section-title">The constructors are the same either way. Your <code>main</code> is not.</h2>
+      <h2 class="section-title">Same project either way. Only <code>main</code> changes.</h2>
       <p class="section-lede">
-        Everything on the left is ordinary Go you would write with or without servo —
-        nothing imports servo, and a component joins the lifecycle by <strong>having a
-        method</strong> rather than registering for one. What changes is the wiring:
-        construction in dependency order, rollback when one fails, every
-        <code>Run</code> supervised, shutdown in reverse. That is the code on the right,
-        and it is the code you stop maintaining.
+        The project below is ordinary Go. Nothing imports servo, and a component joins
+        the lifecycle by <strong>having a method</strong> rather than registering for one —
+        so it is identical whether or not you use servo. What differs is the file that
+        wires it together: construction in dependency order, rollback when one fails,
+        every <code>Run</code> supervised, shutdown in reverse.
       </p>
-      <div class="split">
-        <figure>
-          <figcaption>What you write — unchanged by servo</figcaption>
+
+      <figure class="solo">
+        <figcaption>The project — four packages, no servo anywhere</figcaption>
 {% highlight go %}
-// config/config.go — reads the environment
-// once; every package parses its own slice
-// of it off this
+// config/config.go — reads the environment once;
+// every package parses its own slice of it off this
 func NewEnv() *Env
 
 // logger/logger.go
@@ -77,9 +75,78 @@ func NewConfig(config.Source) (*Config, error)
 func New(cfg *Config, db *postgres.DB) *Server
 func (s *Server) Run(context.Context) error
 func (s *Server) Stop(context.Context) error
+{% endhighlight %}
+      </figure>
 
-// cmd/app/spec.go — build-tagged, so it
-// never reaches your binary
+      <div class="split">
+        <figure>
+          <figcaption>main.go — without servo</figcaption>
+{% highlight go %}
+func main() {
+    ctx, stop := signal.NotifyContext(
+        context.Background(), os.Interrupt, syscall.SIGTERM)
+    defer stop()
+
+    env := config.NewEnv()
+
+    logCfg, err := logger.NewConfig(env)
+    if err != nil {
+        log.Fatal(err)
+    }
+    lg := logger.New(logCfg)
+
+    dbCfg, err := postgres.NewConfig(env)
+    if err != nil {
+        _ = lg.Stop(context.Background())
+        log.Fatal(err)
+    }
+    db, err := postgres.New(dbCfg, lg)
+    if err != nil {
+        _ = lg.Stop(context.Background())
+        log.Fatal(err)
+    }
+    if err := db.Init(ctx); err != nil {
+        _ = db.Stop(context.Background())
+        _ = lg.Stop(context.Background())
+        log.Fatal(err)
+    }
+
+    apiCfg, err := api.NewConfig(env)
+    if err != nil {
+        _ = db.Stop(context.Background())
+        _ = lg.Stop(context.Background())
+        log.Fatal(err)
+    }
+    srv := api.New(apiCfg, db)
+
+    errc := make(chan error, 1)
+    go func() { errc <- srv.Run(ctx) }()
+    select {
+    case err := <-errc:
+        log.Print(err)
+    case <-ctx.Done():
+    }
+
+    // Reverse order, and every one still runs
+    // when an earlier one fails.
+    sctx, cancel := context.WithTimeout(
+        context.Background(), 30*time.Second)
+    defer cancel()
+    for _, shutdown := range []func(context.Context) error{
+        srv.Stop, db.Stop, lg.Stop,
+    } {
+        if err := shutdown(sctx); err != nil {
+            log.Print(err)
+        }
+    }
+}
+{% endhighlight %}
+        </figure>
+        <figure>
+          <figcaption>main.go — with servo</figcaption>
+{% highlight go %}
+// cmd/app/spec.go — build-tagged, so it never
+// reaches your binary
 servo.Build(
     servo.Root[*api.Server](),
 )
@@ -103,63 +170,14 @@ func main() {
 }
 {% endhighlight %}
         </figure>
-        <figure>
-          <figcaption>What you would hand-write in <code>main</code></figcaption>
-{% highlight go %}
-func New(ctx context.Context) (*App, error) {
-    a := &App{}
-
-    env := config.NewEnv()
-    a.env = env
-
-    loggerConfig, err := logger.NewConfig(env)
-    if err != nil {
-        return nil, err
-    }
-    a.loggerConfig = loggerConfig
-
-    log := logger.New(loggerConfig)
-    a.log = log
-
-    postgresConfig, err := postgres.NewConfig(env)
-    if err != nil {
-        _ = a.stopLog(ctx) // unwind what exists
-        return nil, err
-    }
-    a.postgresConfig = postgresConfig
-
-    db, err := postgres.New(postgresConfig, log)
-    if err != nil {
-        _ = a.stopLog(ctx)
-        return nil, err
-    }
-    a.db = db
-
-    apiConfig, err := api.NewConfig(env)
-    if err != nil {
-        _ = a.stopDb(ctx)
-        _ = a.stopLog(ctx)
-        return nil, err
-    }
-    a.apiConfig = apiConfig
-    a.server = api.New(apiConfig, db)
-
-    // Init before anything serves, concurrent
-    // within a level. A failure rolls the
-    // whole graph back.
-    if err := a.db.Init(ctx); err != nil {
-        return nil, errors.Join(err, a.Shutdown(ctx))
-    }
-    return a, nil
-}
-
-// Run supervises every Runner. Shutdown stops
-// in reverse: server, then db, then log.
-func (a *App) Run(ctx context.Context) error
-func (a *App) Shutdown(ctx context.Context) servo.Report
-{% endhighlight %}
-        </figure>
       </div>
+
+      <p class="section-lede" style="margin-top: 2rem;">
+        The left column grows with every component you add, and each addition edits code
+        that already works. The right column does not change at all — the order,
+        the rollback and the reverse shutdown are read out of the constructor signatures
+        above and regenerated.
+      </p>
     </div>
   </section>
 

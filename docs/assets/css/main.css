@@ -606,8 +606,11 @@ pre code { background: none; border: none; padding: 0; font-size: inherit; }
 .section-lede strong { color: var(--text); font-weight: 600; }
 
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 2.25rem; margin-top: 2.25rem; }
-.split figure { margin: 0; }
-.split figcaption {
+.split figure, .solo { margin: 0; }
+/* A single full-width figure above the two-column comparison: the code that
+   is the same on both sides, shown once instead of twice. */
+.solo { margin-top: 2.25rem; }
+.split figcaption, .solo figcaption {
   font-size: .68rem; text-transform: uppercase; letter-spacing: .14em;
   color: var(--text-faint); margin-bottom: .6rem;
 }
