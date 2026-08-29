@@ -17,6 +17,26 @@ import (
 	"github.com/okian/servo/v3/internal/resolve"
 )
 
+// eagerStdlibIdents are the packages Emit registers outright, and
+// lateStdlibIdents the ones only some graphs import. Both lists exist so
+// every identifier generated code hard-codes can be claimed up front —
+// against user packages, in the import manager, and against node variable
+// names, in the App field allocator — without importing anything the file
+// would then not use. Kept as slices rather than a map so the order every
+// claim happens in is the order written here.
+var (
+	eagerStdlibIdents = []string{"context", "os", "signal", "syscall"}
+
+	lateStdlibIdents = []struct{ Path, Ident string }{
+		{"errors", "errors"},
+		{"fmt", "fmt"},
+		{"sync", "sync"},
+		{"sync/atomic", "atomic"},
+		{"time", "time"},
+		{"golang.org/x/sync/errgroup", "errgroup"},
+	}
+)
+
 type emitter struct {
 	resolved *resolve.Resolved
 	spec     *load.Spec
@@ -34,6 +54,7 @@ type emitter struct {
 	// and would otherwise dedupe against each other for no reason.
 	types          *NameAllocator
 	acquireNames   *NameAllocator
+	values         []valueField
 	scopes         []*scopeEmit
 	scopeByScope   map[*resolve.Scope]*scopeEmit
 	rootByAccessor map[*resolve.ScopeRoot]*rootEmit
@@ -68,6 +89,16 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	e.imports.Add("os", "os")
 	e.imports.Add("os/signal", "signal")
 	e.imports.Add("syscall", "syscall")
+	// The rest of the standard library the emitters hard-code are only
+	// imported when the graph actually needs them — a file that imports
+	// time without an Initializer does not compile either — so they claim
+	// their identifier without registering the import. Claiming is what
+	// Add alone could not do: a user package named errors, reached first
+	// while qualifying a type, used to take the identifier and leave the
+	// stdlib import aliased to the same name beside it.
+	for _, p := range lateStdlibIdents {
+		e.imports.Claim(p.Path, p.Ident)
+	}
 	// Claimed before anything else can take them: both are emitted
 	// unconditionally, and a scope type derived from a key type called
 	// "App" would otherwise redeclare one of them.
@@ -89,21 +120,48 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	// StartupReport would redeclare it.
 	e.names.AllocateName("startupReport")
 
+	// Claimed one level out, for the same reason. New's locals share a
+	// scope with the package identifiers its own body qualifies calls and
+	// composite literals with, so a component named Servo took the local
+	// `servo` and every `servo.StartupNode` the Init phase writes after it
+	// resolved against that local instead of the package. User packages
+	// are handled separately, by shadowingBaseNames; this is the fixed set
+	// the emitters name themselves.
+	e.names.AllocateName(e.servoAlias)
+	for _, p := range lateStdlibIdents {
+		e.names.AllocateName(p.Ident)
+	}
+	for _, ident := range eagerStdlibIdents {
+		e.names.AllocateName(ident)
+	}
+	// The Values parameter, claimed only when there is one: reserving it
+	// unconditionally would rename a node in a graph that declares no
+	// servo.Value, and every such graph must emit the file it always did.
+	if len(resolved.Supplied) > 0 {
+		e.names.AllocateName("v")
+	}
+
 	// Names are chosen for the whole set before any is allocated: one
 	// that two nodes would both want is qualified by package, and one
 	// that would shadow a package a later construction still has to call
 	// into is qualified too.
-	base := baseNamesFor(resolved.Order)
-	shadowed := shadowingBaseNames(resolved.Order, base)
-	for _, n := range resolved.Order {
+	// Supplied values are assigned at the top of the constructor, ahead of
+	// every construction, so they are named together with the nodes and
+	// checked for shadowing against everything that follows them.
+	all := append(append([]*resolve.Node{}, resolved.Supplied...), resolved.Order...)
+	base := baseNamesFor(all)
+	shadowed := shadowingBaseNames(all, base)
+	for _, n := range all {
 		if shadowed[n] {
-			base[n] = qualifiedBaseName(n.Provider.ResultType)
+			base[n] = qualifiedBaseName(nodeResultType(n))
 		}
 		e.varName[n.Key] = allocateAppField(e.names, base[n])
 	}
+	e.planValues()
 	e.planScopes()
 
 	scopeDecls := e.scopeDecls()
+	valuesDecl := e.valuesDecl()
 	appStruct := e.appStruct()
 	newFunc := e.newFunc()
 	stopMethods := e.stopMethods() + e.scopeStopMethods()
@@ -120,6 +178,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	body.WriteString(e.imports.RenderImports())
 	body.WriteString("\n")
 	body.WriteString(appStruct)
+	body.WriteString(valuesDecl)
 	body.WriteString(scopeDecls)
 	body.WriteString(newFunc)
 	body.WriteString(stopMethods)
@@ -155,6 +214,9 @@ func (e *emitter) header() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "//go:build %s\n\n", e.buildConstraint())
 	b.WriteString("// Code generated by servo generate. DO NOT EDIT.\n//\n// Resolved graph:\n")
+	for _, n := range e.resolved.Supplied {
+		fmt.Fprintf(&b, "//   [L0] %s\n//         supplied by the caller  %s\n", n.Key.String(), e.posString(n.SuppliedPos))
+	}
 	for _, n := range e.resolved.Order {
 		deps := "none"
 		if len(n.Deps) > 0 {
@@ -249,6 +311,9 @@ func (e *emitter) appStruct() string {
 			fmt.Fprintf(&b, "\t%sStopOnce sync.Once\n", name)
 			fmt.Fprintf(&b, "\t%sStopResult %s.NodeResult\n", name, e.servoAlias)
 		}
+	}
+	for _, v := range e.values {
+		fmt.Fprintf(&b, "\t%s %s\n", v.Field, v.Type)
 	}
 	b.WriteString(e.scopeAppFields())
 	fmt.Fprintf(&b, "\tstartupReport %s.StartupReport\n", e.servoAlias)
@@ -379,11 +444,35 @@ func shadowingBaseNames(nodes []*resolve.Node, base map[*resolve.Node]string) ma
 	out := map[*resolve.Node]bool{}
 	for i, n := range nodes {
 		for _, later := range nodes[i+1:] {
-			if packageNameOfType(later.Provider.ResultType) == base[n] {
+			if qualifiesWith(later, base[n]) {
 				out[n] = true
 				break
 			}
 		}
 	}
 	return out
+}
+
+// qualifiesWith reports whether constructing later writes ident as a
+// package qualifier. Two packages are involved and they are not always the
+// same one: the call is qualified by the provider *function*'s package
+// (`factory.NewWidget`), the result type by its own (`*widget.Widget`).
+// Checking only the result type let the guard pass for every constructor
+// returning a type declared elsewhere — a factory or facade package, or
+// the ordinary `func New(cfg Config) (*sql.DB, error)` shape — which is
+// why the case stayed hidden behind the idiomatic one the test covers.
+func qualifiesWith(later *resolve.Node, ident string) bool {
+	if ident == "" {
+		return false
+	}
+	if packageNameOfType(nodeResultType(later)) == ident {
+		return true
+	}
+	// A supplied value is not constructed, so nothing is called for it and
+	// there is no provider package to shadow.
+	if later.Provider == nil {
+		return false
+	}
+	pkg := later.Provider.Func.Pkg()
+	return pkg != nil && pkg.Name() == ident
 }

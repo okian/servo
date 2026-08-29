@@ -13,8 +13,6 @@ never executed, which drives almost every rule on this page.
 
 package main
 
-//go:generate go run github.com/okian/servo/v3/cmd/servo generate
-
 import (
 	"example.com/servobasic/api"
 	"example.com/servobasic/mockstore"
@@ -37,7 +35,13 @@ func wire() {
 ```
 
 That is [`examples/basic`](https://github.com/okian/servo/blob/master/examples/basic/cmd/basic/spec.go)'s
-real spec file, and it uses every marker there is.
+real spec file, using three of the six markers. The other three —
+[`Scoped`](#scoped), [`Value`](#value) and [`Include`](#include) — are on this page too.
+
+Note what is *not* in it: the `//go:generate` directive. That lives in an untagged
+`servo_generate.go` beside it, because `go generate` honours build constraints and would never
+reach a directive inside a `//go:build servoinject` file. See
+[the `go:generate` directive](#the-gogenerate-directive).
 
 Four facts about it that matter:
 
@@ -69,11 +73,15 @@ spec.go:16:2: spec file is missing a `//go:build servoinject` constraint —
 as written it would compile into the real binary
 ```
 
-The reason is the markers themselves. `Build`, `Root`, `Bind` and `Override` all `panic` when
-executed — they exist to be *read*, and a marker call that actually runs means generation was
-skipped or the tag was missing. Rather than silently returning a nil app, they fail loudly. The
-build tag is what guarantees they never run: `servo generate` loads your module with
-`-tags=servoinject`, so it sees the spec file, and an ordinary `go build` doesn't.
+The reason is the markers themselves. Every one of them — `Build`, `Root`, `Bind`, `Override`,
+`Scoped`, `Value`, `Include`, `Linger`, `Max` — `panic`s when executed. They exist to be *read*, and
+a marker call that actually runs means generation was skipped or the tag was missing. Rather than
+silently returning a nil app, they fail loudly. The build tag is what guarantees they never run:
+`servo generate` loads your module with `-tags=servoinject`, so it sees the spec file, and an
+ordinary `go build` doesn't.
+
+The same requirement extends to any file [`Include`](#include) pulls markers from, even though that
+file is not a spec file: it declares marker calls, so it would compile them into your binary.
 
 The generated file carries the mirror-image constraint, so the two files are never in the same
 build at once. That's also why generation never trips over its own previous output.
@@ -124,13 +132,14 @@ servo: multiple servo.Build(...) calls found in the same package example.com/app
 func Build(...Marker)
 ```
 
-Declares the injector. Every argument must be a `Root`, `Bind`, `Override` or `Scoped` call
-written inline with explicit type arguments.
+Declares the injector. Every argument must be a `Root`, `Bind`, `Override`, `Scoped`, `Value` or
+`Include` call written inline — with explicit type arguments for the five generic ones, and with a
+function *name* for `Include`.
 
-That last part is a real constraint, not a style preference. Servo reads the type arguments out of
-the type-checker's instantiation info for the call it found in the syntax tree. A marker value
-stored in a variable, returned from a helper, or collected into a slice and spread has no
-instantiation at the `Build` call site to read:
+That is a real constraint, not a style preference. Servo reads the type arguments out of the
+type-checker's instantiation info for the call it found in the syntax tree. A marker value stored in
+a variable, returned from a helper, or collected into a slice and spread has no instantiation at the
+`Build` call site to read:
 
 ```go
 // Fine.
@@ -142,6 +151,9 @@ servo.Build(
 markers := []servo.Marker{servo.Root[*api.Server]()}
 servo.Build(markers...)
 ```
+
+[`Include`](#include) is what the second form was reaching for, and it works because servo reads the
+named function's body as syntax rather than taking a value the call site has already erased.
 
 Anything else in the argument list is rejected with its position:
 `servo.Build argument is not a marker call`, or
@@ -275,16 +287,198 @@ Two `Scoped` declarations whose `ScopeKey` methods return the same key type shar
 therefore one policy: declaring different `Linger` or `Max` values across them is an error, because
 there is only one of each to set.
 
+## `Value`
+
+```go
+func Value[T any]() Marker
+```
+
+Declares that `T` is supplied by the caller rather than built by a provider — a parsed flag set, a
+version string injected at link time, a `*sql.DB` opened by a test harness, a fixed clock.
+
+Everything else in the graph is resolved by finding the one function that produces it. A value that
+only exists once the process is already running has no such function, and the workaround servo left
+open — a package-level `var` in `main`, read back by a small provider beside it — is the
+global-lookup pattern this version exists to remove.
+
+```go
+servo.Build(
+	servo.Value[config.Flags](),
+	servo.Root[*api.Server](),
+)
+```
+
+**Declaring one changes the generated API additively.** The injector keeps `New(ctx)` and gains a
+`Values` struct and a `NewWith` that takes it. What exactly gets emitted, including the test
+variant's `TestValues`/`NewTestAppWith`, is in
+[Generated API](generated-api.md#values-and-newwith).
+
+Three rules, each of which follows from the marker being a declaration rather than a hint:
+
+**A `Value` beats any provider that also produces `T`.** Declaring one is how you say "this comes
+from the caller", which is only meaningful if it wins. It sits above the explicit-`Bind` step in
+[selection precedence](resolution.md#selection-precedence), and no diagnostic is produced for the
+provider it displaces — the spec file said so.
+
+**A declared value nothing depends on is a diagnostic**, not a silently unused struct field:
+
+```
+cmd/api/spec.go:13:3: servo: servo.Value[example.com/app/conf.Flags]() is declared, but nothing in
+the graph depends on example.com/app/conf.Flags
+
+  A declared value becomes a field on the generated Values struct, so this
+  one would be supplied by every caller and read by nobody.
+
+  Two ways out:
+    - take it as a constructor parameter somewhere the roots reach:
+      func New(v example.com/app/conf.Flags) *Thing
+    - delete the servo.Value declaration
+```
+
+The position is the `servo.Value[…]()` call site — the declaration servo is complaining about, not
+the type.
+
+Note that this is checked per generated file, so a value used only by a type an
+[`Override`](#override) replaces is reported when the test variant is resolved.
+
+**`T` is matched by type, exactly as a constructor parameter is.** The same identity rules apply:
+`T` and `*T` are different keys, and declaring the same `T` twice is
+`servo.Value[…]() declared twice — first at <pos>`.
+
+A supplied value appears everywhere a constructed node does — `App.Graph()`, `servo graph`,
+`servo explain`, `servo why` — at **level 0**, since the app has it before it builds anything, with
+its binding reported as `supplied` and its provider as `the caller, via NewWith`:
+
+```
+$ servo explain --dir cmd/api conf.Flags
+example.com/app/conf.Flags
+  provider:     the caller, via NewWith (cmd/api/spec.go:13:3)
+  binding:      supplied
+  lifetime:     supplied — handed to NewWith once, held for the life of the process
+  level:        0
+  depends on:   none
+  depended on:  *example.com/app/postgres.DB
+  capabilities: none
+```
+
+That lifetime line is the limitation worth reading twice: a supplied value is one per app, handed
+in at `NewWith` and held for the life of the process. It is not a per-call or per-request value.
+
+## `Include`
+
+```go
+func Include(func() []Marker) Marker
+```
+
+Splices another function's marker list into this `Build` call. It exists for the module with three
+binaries whose specs are identical below the transport: the shared markers are written once, and
+adding a fourth `Bind` stops being a three-file edit nothing checks.
+
+The shared set is an ordinary function in an ordinary package, carrying the same build tag a spec
+file carries:
+
+```go
+//go:build servoinject
+
+// internal/wiring/wiring.go
+package wiring
+
+func Shared() []servo.Marker {
+	return []servo.Marker{
+		servo.Bind[store.Store, *postgres.DB](),
+		servo.Scoped[*chat.Room, chat.Rooms](servo.Linger(time.Minute)),
+	}
+}
+```
+
+Each spec then carries only what actually differs — here, its own transport's root:
+
+```go
+func wire() {
+	servo.Build(
+		servo.Include(wiring.Shared),
+		servo.Root[*api.Server](),
+	)
+}
+```
+
+[`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) is the worked
+case: three injectors sharing one `internal/wiring/wiring.go`, and three spec files of nineteen
+lines each where each used to be fifty-three — eleven marker calls per spec, ten of them
+identical in all three.
+
+**The argument names the function; it is never called.** It has to be a plain identifier or a
+package selector resolving to a declared function — not a function literal, not a method value, not
+a call. Anything else is
+``servo.Include's argument must name a declared func() []servo.Marker — not a literal, a method value, or a call``.
+
+**The included file must carry the `servoinject` build tag**, for exactly the reason a spec file
+does: every marker it returns panics if executed, so an untagged file compiles them into your real
+binary. Both failure modes have their own message — one for a file this build cannot see at all, one
+for a file it can see that isn't gated:
+
+```
+cmd/api/spec.go:12:3: servo.Include names example.com/app/wiring.Shared, which is declared in a
+file without a `//go:build servoinject` constraint — as written it would compile into the real
+binary, where every marker it returns panics
+```
+
+[`servo-vet`](cli.md#servo-vet) flags the calls in that file directly, which is the faster loop; a
+shared marker set lives away from any spec file, which is where the tag is easiest to forget.
+
+**The body must be exactly one `return` of one slice literal of marker calls.** Its contents are
+read as syntax by the same code that reads `Build`'s own argument list. Anything servo would have to
+*execute* to know the answer — a variable, a conditional, an `append` — is refused:
+
+```
+wiring/wiring.go:10:1: Shared must be exactly `return []servo.Marker{ ...marker calls... }` —
+its body is read as syntax and never run, so anything servo would have to execute to know the
+answer is refused
+```
+
+**The function may live in another package**, which is the whole point: a shared marker set is not
+part of any one injector. Servo finds the declaration by walking the injector package's import
+graph, so the spec file importing it is what makes it reachable.
+
+**Includes may nest.** An included function may itself `Include` another. A cycle is a diagnostic
+naming the path that closed it, not a hang:
+
+```
+wiring/wiring.go:19:3: servo.Include cycle — Shared includes itself, through:
+  example.com/app/wiring.Shared
+  example.com/app/wiring.More
+```
+
+**Local declarations win.** Included markers are spliced in where the `Include` sits, so a `Bind` or
+`Override` written after it in the spec file supersedes an included one for the same interface. That
+is deliberate and is the only ordering that makes a shared set worth having: a shared default you
+cannot deviate from in one binary is a shared default you stop using. Two *local* declarations for
+the same interface are still the duplicate they always were —
+`servo.Bind[…, ...] declared twice`.
+
 ## The `go:generate` directive
 
 ```go
-//go:generate go run github.com/okian/servo/v3/cmd/servo generate
+// servo_generate.go — untagged, and holding only this
+package main
+
+//go:generate go tool servo generate
 ```
 
-Scaffolded by `servo init`, and worth keeping in the form above. `go run` against the module path
-uses the servo version your `go.mod` already requires, so every developer and every CI runner
-generates with the same version — which matters, because two servo versions can legitimately
-produce two different (both correct) files, and `servo check` compares bytes.
+Scaffolded by `servo init` into its **own file**, not into the spec file, and worth keeping in that
+form. Both halves are deliberate:
+
+**Untagged, in a separate file.** `go generate` honours build constraints, so a directive inside the
+`//go:build servoinject` spec file is invisible to `go generate ./...` — which then exits 0, prints
+nothing, and generates nothing.
+
+**`go tool servo`, not `go run <module path>`.** A module that requires servo requires it for the
+marker package alone, so the generator's own dependencies are not in that module's build list and
+`go run github.com/okian/servo/v3/cmd/servo` fails on a missing `go.sum` entry. `go get -tool
+github.com/okian/servo/v3/cmd/servo`, once per module, puts the generator in `go.mod` — which also
+pins its version, so every developer and every CI runner generates with the same one. That matters
+because two servo versions can legitimately produce two different (both correct) files, and
+`servo check` compares bytes.
 
 ## Errors from this stage
 
@@ -301,7 +495,15 @@ Everything the spec parser can reject, in one place:
 | `servo.Root expects exactly one type argument` | `Root` with the wrong arity |
 | `servo.Bind/Override expects exactly two type arguments` | `Bind`/`Override` with the wrong arity |
 | `second type argument must be a concrete type, not an interface` | Binding an interface to an interface |
-| `servo.Bind[…] declared twice` | Duplicate bind (or duplicate override) for one interface |
+| `servo.Bind[…] declared twice` | Duplicate bind (or duplicate override) for one interface, both written locally |
+| `servo.Value expects exactly one type argument` | `Value` with the wrong arity |
+| `servo.Value[…]() declared twice` | One `Value` per type |
+| `servo.Include takes exactly one argument, the name of a func() []servo.Marker` | `Include` with the wrong arity |
+| `servo.Include's argument must name a declared func() []servo.Marker` | A literal, a method value, or a call where the function name belongs |
+| `servo.Include names …, whose declaration is not in this build` | The included function is not reachable in this configuration |
+| ``servo.Include names …, which is declared in a file without a `//go:build servoinject` constraint`` | The included file is untagged |
+| ``X must be exactly `return []servo.Marker{ ... }` `` | The included function's body is something servo would have to run |
+| `servo.Include cycle — X includes itself, through:` | Two included sets include each other |
 | `servo.Scoped expects exactly two type arguments` | `Scoped` with the wrong arity |
 | `servo.Scoped's first type argument must be the concrete scoped type` | An interface where the scoped type belongs |
 | `servo.Scoped's first type argument must be a pointer, not X` | `Acquire` has to be able to return a zero alongside an error |
@@ -316,7 +518,7 @@ Everything the spec parser can reject, in one place:
 | `servo.Linger/Max's argument must be a constant expression` | Read as syntax, never executed |
 | `servo.Linger(…) must not be negative` | Use `servo.Linger(0)` for die-with-the-last-holder |
 | `servo.Max(N) must be positive` | A scope that can hold no instances can never hand one out |
-| `servo runtime package … not found among loaded packages` | The spec file doesn't import `servo` |
+| `servo runtime package … is not imported by any file this build configuration can see` | No spec file exists yet, or every one of them is gated out of this configuration |
 
 Diagnostics from the *later* stages — missing providers, ambiguity, cycles — are on the
 [Diagnostics](diagnostics.md) page.

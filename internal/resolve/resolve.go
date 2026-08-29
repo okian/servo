@@ -28,9 +28,9 @@ type Node struct {
 	// "sole candidate", or "sole implementation".
 	Binding string
 
-	// Kind separates ordinary provider-built nodes from the two synthetic
-	// kinds a scope introduces. Only NodeProvider nodes ever appear in
-	// Resolved.Order or Scope.Order.
+	// Kind separates ordinary provider-built nodes from the synthetic
+	// kinds — the two a scope introduces, and a supplied value. Only
+	// NodeProvider nodes ever appear in Resolved.Order or Scope.Order.
 	Kind NodeKind
 	// Scope is the scope this node belongs to, or nil for a singleton.
 	// Every node in the graph is one or the other; a node that a scope
@@ -43,6 +43,11 @@ type Node struct {
 	// scope's Init phases don't depend on how deep the singletons it
 	// borrows happen to be.
 	ScopeLevel int
+
+	// SuppliedType and SuppliedPos are set only on NodeSupplied nodes,
+	// which have no Provider to carry a result type or a position.
+	SuppliedType types.Type
+	SuppliedPos  token.Position
 }
 
 // Scoped reports whether this node is one instance per key rather than one
@@ -55,6 +60,12 @@ type Resolved struct {
 	Roots  []*Node
 	ByKey  map[graph.Key]*Node // every resolved node, keyed by its own result key
 	Scopes []*Scope            // declared scopes, ordered by key type
+	// Supplied is every servo.Value the graph actually uses, in
+	// declaration order. Like the two scope kinds, these never appear in
+	// Order — nothing constructs them — so every pre-existing loop over
+	// Order stays correct, and an app declaring none emits a
+	// byte-identical file.
+	Supplied []*Node
 }
 
 // Input is everything Resolve needs: the spec's roots/binds/scopes, the
@@ -107,6 +118,8 @@ type resolver struct {
 	explicitPos    map[graph.Key]token.Position
 	scopeByKey     map[graph.Key]*Scope
 	accessorByKey  map[graph.Key]*ScopeRoot
+	suppliedByKey  map[graph.Key]*Node
+	suppliedUsed   map[graph.Key]bool
 	declaredScope  map[graph.Key]bool // scoped types with a servo.Scoped declaration
 	activeScope    *Scope
 }
@@ -142,6 +155,8 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		explicitPos:   make(map[graph.Key]token.Position),
 		scopeByKey:    make(map[graph.Key]*Scope),
 		accessorByKey: make(map[graph.Key]*ScopeRoot),
+		suppliedByKey: make(map[graph.Key]*Node),
+		suppliedUsed:  make(map[graph.Key]bool),
 		declaredScope: make(map[graph.Key]bool),
 	}
 	for _, c := range in.Candidates {
@@ -157,6 +172,13 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	}
 	for _, d := range in.Spec.Scopes {
 		r.declaredScope[d.Impl] = true
+	}
+	// Built before anything resolves, so a supplied type is already
+	// available the first time any consumer asks for it — including from
+	// inside a scope's sub-graph, where it is borrowed exactly as a
+	// singleton is.
+	for _, v := range in.Spec.Values {
+		r.suppliedByKey[v.Key] = &Node{Key: v.Key, Kind: NodeSupplied, Level: 0, SuppliedType: v.Type, SuppliedPos: v.Pos}
 	}
 
 	r.buildScopes(in.Spec.Scopes)
@@ -210,11 +232,32 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	}
 	r.checkScopeEdges(roots)
 	r.checkAccessorInterfaces()
+	r.checkSuppliedValues(in.Spec.Values)
 	if len(r.diags) > 0 {
 		return nil, r.diags
 	}
 
-	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes}, nil
+	var supplied []*Node
+	for _, v := range in.Spec.Values {
+		supplied = append(supplied, r.suppliedByKey[v.Key])
+	}
+	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, Supplied: supplied}, nil
+}
+
+// checkSuppliedValues reports a servo.Value nothing depends on.
+//
+// Unused, it would still add a field to the generated Values struct, so
+// every caller would keep passing a value the app never reads — the kind
+// of thing that is true for a release and then quietly wrong. Saying so is
+// consistent with how servo treats the rest of the spec: an unresolvable
+// declaration is a build failure, not a warning.
+func (r *resolver) checkSuppliedValues(values []load.ValueDecl) {
+	for _, v := range values {
+		if r.suppliedUsed[v.Key] {
+			continue
+		}
+		r.diags = append(r.diags, r.unusedValueDiagnostic(v))
+	}
 }
 
 // resolveKey resolves k (statically typed kType). chain is the active path
@@ -251,6 +294,13 @@ func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry,
 	// the same reason an explicit Bind does: the spec file said so.
 	if root, ok := r.accessorByKey[k]; ok {
 		return root.Accessor, true
+	}
+	// And so does a servo.Value, for the same reason and ahead of any
+	// provider that also produces the type: declaring one is how you say
+	// "this comes from the caller", which is only meaningful if it wins.
+	if n, ok := r.suppliedByKey[k]; ok {
+		r.suppliedUsed[k] = true
+		return n, true
 	}
 
 	if n, ok := r.resolvedKey[k]; ok {

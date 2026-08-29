@@ -179,17 +179,27 @@ var scopeReservedIdents = []string{
 func baseNamesFor(nodes []*resolve.Node) map[*resolve.Node]string {
 	count := map[string]int{}
 	for _, n := range nodes {
-		count[baseName(n.Provider.ResultType)]++
+		count[baseName(nodeResultType(n))]++
 	}
 	out := make(map[*resolve.Node]string, len(nodes))
 	for _, n := range nodes {
-		base := baseName(n.Provider.ResultType)
+		base := baseName(nodeResultType(n))
 		if count[base] > 1 {
-			base = qualifiedBaseName(n.Provider.ResultType)
+			base = qualifiedBaseName(nodeResultType(n))
 		}
 		out[n] = base
 	}
 	return out
+}
+
+// nodeResultType is the type a node stands for, read from wherever that
+// node kind records it: a provider's result for an ordinary node, the
+// declared type for a servo.Value, which has no provider at all.
+func nodeResultType(n *resolve.Node) types.Type {
+	if n.Kind == resolve.NodeSupplied {
+		return n.SuppliedType
+	}
+	return n.Provider.ResultType
 }
 
 // allocateEntryField names one scope member's field on the entry, and
@@ -203,35 +213,45 @@ func baseNamesFor(nodes []*resolve.Node) map[*resolve.Node]string {
 // happily and the compiler rejected it, which is the worst place for the
 // failure to land, since the file it lands in is one users are told not to
 // read. Two members named Foo and StopFoo collide the same way.
+// <F>Cleanup is derived for every member, not only the ones whose provider
+// returns a cleanup func: the entry allocator cannot know which will, and
+// burning the name unconditionally is what keeps two members' allocations
+// independent of the order they are asked for.
 func allocateEntryField(a *NameAllocator, base string) string {
 	for {
 		f := a.AllocateName(base)
-		drain, stop := "drain"+capitalize(f), "stop"+capitalize(f)
-		if a.Free(drain) && a.Free(stop) {
-			a.AllocateName(drain)
-			a.AllocateName(stop)
+		derived := []string{"drain" + capitalize(f), "stop" + capitalize(f), f + "Cleanup"}
+		if allFree(a, derived) {
+			for _, d := range derived {
+				a.AllocateName(d)
+			}
 			return f
 		}
 	}
 }
 
+func allFree(a *NameAllocator, names []string) bool {
+	for _, n := range names {
+		if !a.Free(n) {
+			return false
+		}
+	}
+	return true
+}
+
 // allocateAppField is allocateEntryField's App-level twin. An App node's
-// variable name decides a method (stop<F>) and two fields (<F>StopOnce,
-// <F>StopResult), so components named Foo and StopFoo used to give App a
-// stopFoo method beside a stopFoo field — the same field/method namespace
-// collision, emitted just as happily and rejected just as firmly.
+// variable name decides a method (stop<F>) and three fields (<F>StopOnce,
+// <F>StopResult, <F>Cleanup), so components named Foo and StopFoo used to
+// give App a stopFoo method beside a stopFoo field — the same field/method
+// namespace collision, emitted just as happily and rejected just as
+// firmly. <F>Cleanup was the same bug one field along: a provider named
+// Foo returning (T, func()) takes fooCleanup, and a second component named
+// FooCleanup used to take it again.
 func allocateAppField(a *NameAllocator, base string) string {
 	for {
 		f := a.AllocateName(base)
-		derived := []string{"stop" + capitalize(f), f + "StopOnce", f + "StopResult"}
-		free := true
-		for _, d := range derived {
-			if !a.Free(d) {
-				free = false
-				break
-			}
-		}
-		if free {
+		derived := []string{"stop" + capitalize(f), f + "StopOnce", f + "StopResult", f + "Cleanup"}
+		if allFree(a, derived) {
 			for _, d := range derived {
 				a.AllocateName(d)
 			}
@@ -642,7 +662,12 @@ func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
 			fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, e.%s.Stop))\n", e.servoAlias, e.servoAlias, label, m.Field)
 		}
 		if m.N.Provider.HasCleanup {
-			fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { e.%sCleanup(); return nil }))\n", e.servoAlias, e.servoAlias, label, m.Field)
+			// Nil-guarded for the same reason the App-level teardown is:
+			// a provider returning a nil cleanup func is legitimate, and
+			// calling it panicked in a goroutine nothing could recover.
+			fmt.Fprintf(b, "\tif e.%sCleanup != nil {\n", m.Field)
+			fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { e.%sCleanup(); return nil }))\n", e.servoAlias, e.servoAlias, label, m.Field)
+			b.WriteString("\t}\n")
 		}
 		b.WriteString("\treturn results\n}\n\n")
 	}

@@ -193,7 +193,10 @@ func allNodes(resolved *resolve.Resolved) []*resolve.Node {
 	for _, s := range resolved.Scopes {
 		all = append(all, s.Order...)
 	}
-	return all
+	// Supplied values are nodes the graph genuinely contains, so `explain`
+	// and `why` have to find them: a type the app depends on that these
+	// commands report as unknown is worse than not supporting them.
+	return append(all, resolved.Supplied...)
 }
 
 func joinOrNone(ss []string) string {
@@ -201,4 +204,14 @@ func joinOrNone(ss []string) string {
 		return "none"
 	}
 	return strings.Join(ss, ", ")
+}
+
+// moduleRoot is the directory generated positions are written relative to.
+// `servo graph` reports the same strings the generated App.Graph() carries
+// only if it trims the same prefix.
+func moduleRoot(spec *load.Spec) string {
+	if mod := spec.InjectorPkg.Module; mod != nil {
+		return mod.Dir
+	}
+	return ""
 }

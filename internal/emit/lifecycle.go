@@ -41,7 +41,15 @@ func (e *emitter) writeStopMethod(b *strings.Builder, n *resolve.Node) {
 		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.Stop))\n", e.servoAlias, e.servoAlias, label, name)
 	}
 	if n.Provider.HasCleanup {
-		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { a.%sCleanup(); return nil }))\n", e.servoAlias, e.servoAlias, label, name)
+		// Guarded, because a constructor with nothing to clean up on some
+		// path returning a nil func is ordinary Go, and (T, func()) is a
+		// documented provider shape. Unguarded, that nil call panicked
+		// inside RunStop's own goroutine, where no recover in main could
+		// reach it. Skipping the phase rather than recording an OK result
+		// for it leaves the merged NodeResult identical either way.
+		fmt.Fprintf(b, "\t\tif a.%sCleanup != nil {\n", name)
+		fmt.Fprintf(b, "\t\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { a.%sCleanup(); return nil }))\n", e.servoAlias, e.servoAlias, label, name)
+		b.WriteString("\t\t}\n")
 	}
 
 	fmt.Fprintf(b, "\t\ta.%sStopResult = %s.MergeNodeResults(%q, results...)\n", name, e.servoAlias, label)

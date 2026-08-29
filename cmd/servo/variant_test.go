@@ -295,6 +295,18 @@ func TestGenerateRefusesOverlappingVariants(t *testing.T) {
 			t.Errorf("error does not mention %q:\n%v", want, err)
 		}
 	}
+	// The paste-in fix has to be a build tag. It named the generated file
+	// instead, because an explicit fmt argument index picked argument one
+	// and also suppressed the %!(EXTRA) marker that would have shown the
+	// build tag going unused.
+	for _, want := range []string{"`//go:build servoinject && !prod`", "`//go:build servoinject && prod`"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the suggested fix is not a usable build constraint: want %q in:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "//go:build servo.prod_gen.go") {
+		t.Errorf("the suggested fix names the generated file where it means the build tag:\n%v", err)
+	}
 
 	// Nothing may be left behind: a refused generation that still wrote the
 	// file would hand the user the broken build it just warned about.

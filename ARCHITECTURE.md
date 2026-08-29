@@ -14,7 +14,8 @@ view onto the same stages, orchestrated by `cmd/servo/pipeline.go`:
 load.Load             → *load.Loaded             one go/packages session: main module + everything
                                                    it transitively imports, fully type-checked
 load.FindSpec(s)       → *load.Spec, ...          parse servo.Build(...)'s AST: roots, Bind/
-                                                   Override/Scoped declarations, the injector
+                                                   Override/Scoped/Value declarations, any
+                                                   Include spliced in place, the injector
                                                    package
 graph.ScanCandidates   → []*graph.Provider,       every constructor-shaped function in scope,
                           []graph.Rejected         classified; non-candidates kept with a reason
@@ -47,13 +48,40 @@ path at once, so checking injector B doesn't trip on injector A's legitimate pre
 `undefined: New`. `doctor` additionally aggregates every injector's health — spec found, generated
 file present, fresh, tracked by git — into one report, which the single-graph commands don't do.
 
+## Included marker sets
+
+`servo.Include(fn)` is resolved in `internal/load/spec.go`, not by a later stage: `spliceInclude`
+locates the named function's declaration and hands its returned slice literal back to
+`parseMarkerArgs` — the same function that reads `Build`'s own argument list, recursively, rather
+than a second reader that could drift from it. Everything downstream therefore sees one flat
+`*load.Spec` and cannot tell an included declaration from a locally-written one.
+
+Three things fall out of it being syntax rather than a call. The declaration is found by walking
+the injector package's import graph (`allPackages`, breadth-first and deduplicated by path),
+because a shared marker set living in its own package is the whole reason the marker exists; its
+file must require the `servoinject` tag, checked with the same `FileRequiresBuildTag` a spec file
+is checked with, since every marker in it panics if it ever runs; and its body must be exactly
+`return []servo.Marker{...}`, because a variable, a conditional or an `append` would be a program
+servo has to *execute* to know the answer to. Nesting is allowed and the `including` chain is
+carried down each recursion, so a cycle is reported with the path that closed it instead of
+recursing forever.
+
+Ordering is the one place the flattening is visible: markers are appended where the `Include` sits,
+so a `Bind`/`Override` written later in the spec file finds a prior declaration for the same
+interface and replaces it when that prior one came from an include (`BindDecl.Included`). Two local
+declarations for one interface remain the duplicate error they always were.
+
 ## Selection precedence
 
 `internal/resolve` picks one provider per requested type in this order:
-1. An explicit `servo.Bind[I, C]()`, or for `NewTestApp`, `servo.Override[I, C]()` — the spec
+1. A `servo.Value[T]()` — the spec file said this one comes from the caller, so no provider is
+   consulted at all, not even an explicit `Bind` for the same type. (`resolveKey` checks
+   `suppliedByKey` before it reaches `selectProvider`, for the same reason a declared scope
+   accessor is checked before structural search.)
+2. An explicit `servo.Bind[I, C]()`, or for `NewTestApp`, `servo.Override[I, C]()` — the spec
    file's own word overrides everything else.
-2. An exact type match — a candidate whose return type is precisely the requested type.
-3. Structural auto-bind — exactly one candidate in scope whose return type implements the
+3. An exact type match — a candidate whose return type is precisely the requested type.
+4. Structural auto-bind — exactly one candidate in scope whose return type implements the
    requested interface (`types.Implements`).
 
 Zero matches and more than one match both render through the same diagnostic shape ("servo: no
@@ -70,6 +98,33 @@ purpose of depending on an interface in the first place, since the implementatio
 somewhere the consumer doesn't import is exactly the common case. Third-party and stdlib
 candidates are never in scope, which is what keeps deep dependency trees from producing false
 ambiguity at scale.
+
+## Supplied values
+
+A `servo.Value[T]()` enters as a fourth `NodeKind` — `NodeSupplied` — and rides the same trick the
+two scope kinds do: it never appears in `Resolved.Order`, only in other nodes' `Deps`. Nothing
+constructs it, so there is nothing for the construction loop to emit, and every pre-existing loop
+over `Order` stays correct with no `Kind` check added to it. `Resolved.Supplied` carries them
+separately, in declaration order, for the emitter to turn into fields.
+
+It is also the first node kind with no `Provider` that anything still has to *render*. The two
+scope kinds appear only as entries in some other node's `Deps`, where a key string is all a renderer
+needs; a supplied value is a node in its own right, and every stage that used to reach straight
+through `n.Provider` for a result type and a position now reads `Kind` first and falls back to
+`SuppliedType`/`SuppliedPos` on the node itself. `internal/emit/graphdata.go`, `internal/render`,
+`servo explain` (binding "supplied", provider "the caller, via NewWith") and `servo why` all take
+that branch, which is why a supplied value appears in `App.Graph()` and in every view of the graph
+rather than existing only inside the constructor.
+
+`internal/emit/values.go` is the emission side: the `Values` struct (`TestValues` in the override
+variant), `NewWith` carrying the real constructor body, and a `New` that delegates to it with a
+zero `Values{}` — so the generated method set is the documented one whether or not a value is
+declared. All of it is gated on `len(e.values) > 0`, which is what makes a graph declaring no value
+emit a byte-identical file, the same property the no-scope path has and for the same reason.
+
+A declared value nothing in the graph depends on never reaches emission: `resolveKey` marks
+`suppliedUsed` as it hands one out, and `checkSuppliedValues` turns the remainder into diagnostics.
+Unused, it would be a field every caller fills in and the app never reads.
 
 ## Scopes
 
@@ -131,16 +186,27 @@ values.
 
 ## Why the markers panic
 
-`servo.Build`, `Root`, `Bind`, and `Override` (in the `servo` package) all panic unconditionally
-if actually called at runtime. They exist to be read as AST syntax by `load.FindSpec`, inside a
-file carrying the `servoinject` build tag — a tag that's never set for the real binary, so the
-file, and the marker calls in it, compile out entirely. The panic is the fallback for the one way
-this can go wrong: the tag is missing, the marker call compiles into the real binary, and it runs.
-`cmd/servo-vet` is the static safety net for that same failure mode: a go/analysis pass flagging
-any marker call in a file that doesn't carry the tag, catchable in the editor before `go generate`
-or a build ever runs. It carries one other rule for the same reason — a `ScopeKey` method whose
-receiver its body can reach, which the type system cannot rule out and which generated code turns
-into a nil dereference.
+`servo.Build`, `Root`, `Bind`, `Override`, `Scoped`, `Value`, and `Include` (in the `servo`
+package) all panic unconditionally if actually called at runtime. They exist to be read as AST
+syntax by `load.FindSpec`, inside a file carrying the `servoinject` build tag — a tag that's never
+set for the real binary, so the file, and the marker calls in it, compile out entirely. The panic
+is the fallback for the one way this can go wrong: the tag is missing, the marker call compiles
+into the real binary, and it runs.
+
+`servovet` is the static safety net for that same failure mode: a go/analysis pass flagging any
+marker call in a file that doesn't carry the tag, catchable in the editor before `go generate` or a
+build ever runs. `Include` is the marker most likely to trip it, because an included set lives in
+its own package rather than beside a `main.go`, which is where the tag is easiest to forget — the
+loader refuses that case too, but a refusal at generation time is later than an editor squiggle. It
+carries one other rule for the same reason — a `ScopeKey` method whose receiver its body can reach,
+which the type system cannot rule out and which generated code turns into a nil dereference.
+
+The analyzer is its own importable package rather than a `var` in `package main`: golangci-lint's
+module plugin system, a multichecker, and `analysistest` all take an `*analysis.Analyzer` value,
+and nothing can take one out of a command. `cmd/servo-vet` is now the `singlechecker` wrapper
+around `servovet.Analyzer` plus one thing that has to live in the binary — the refusal of
+`-tags=`, which go/analysis registers on every singlechecker and documents as a no-op, so a run
+that looks like it covered the `prod` configuration silently covered the default one.
 
 ## Test overrides
 

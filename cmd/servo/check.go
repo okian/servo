@@ -64,5 +64,22 @@ func checkOne(p *pipeline) error {
 	if string(committed) == string(fresh) {
 		return nil
 	}
-	return fmt.Errorf("servo check: %s is stale — run %s\n%s", outPath, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(fresh), outPath))
+	return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", outPath, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(fresh), outPath), versionSkewNote())
 }
+
+// versionSkewNote is appended to every stale report because the message
+// above has exactly one other cause, and no way to tell them apart from
+// the diff.
+//
+// A change to generated code's internal shape is explicitly not a breaking
+// change — consumers regenerate — so two machines on two servo versions
+// produce a real difference in a file neither of them edited. Without this
+// note the loop is: CI says stale, the developer runs the command it names
+// with their own binary, pushes, and CI says stale again.
+func versionSkewNote() string {
+	return "note: this is servo " + version() + ". If regenerating does not settle it, the machine that\n" +
+		"      committed the file was running a different version — compare `servo version`, and\n" +
+		"      pin one for everybody with `go get -tool " + toolPath + "`."
+}
+
+const toolPath = "github.com/okian/servo/v3/cmd/servo"

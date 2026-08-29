@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -216,5 +217,74 @@ func TestBuildPipelinesForwardsFindSpecsError(t *testing.T) {
 	_, err := buildPipelines(cfg(dir))
 	if err == nil || !strings.Contains(err.Error(), "no servo.Build") {
 		t.Fatalf("got err=%v, want a 'no servo.Build' error", err)
+	}
+}
+
+// TestRunPrintsUsageForEveryHelpSpelling. The dispatch below it leaves a
+// leading flag with the default command, so a `-h` check placed after the
+// extraction can never fire — which is how `servo -h` printed generate's
+// four flags instead of the command list, in the one place a new user looks
+// for the other nine commands.
+func TestRunPrintsUsageForEveryHelpSpelling(t *testing.T) {
+	for _, arg := range []string{"help", "-h", "--help", "-help"} {
+		t.Run(arg, func(t *testing.T) {
+			var err error
+			out := captureStdout(t, func() { err = run([]string{arg}) })
+			if err != nil {
+				t.Fatalf("run(%q) = %v, want nil", arg, err)
+			}
+			for _, want := range []string{"usage: servo <command>", "generate", "doctor", "version", "--overlay"} {
+				if !strings.Contains(out, want) {
+					t.Errorf("usage for %q does not mention %q:\n%s", arg, want, out)
+				}
+			}
+		})
+	}
+}
+
+// TestRunHelpForOneCommand and its unknown-topic twin: the list is the
+// fallback whenever a name does not resolve, since being told a name is
+// wrong without being shown the right ones is a dead end.
+func TestRunHelpForOneCommand(t *testing.T) {
+	var err error
+	out := captureStdout(t, func() { err = run([]string{"help", "check"}) })
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(out, "usage: servo check") {
+		t.Errorf("help check did not print check's usage:\n%s", out)
+	}
+}
+
+func TestRunHelpForAnUnknownCommandListsTheRealOnes(t *testing.T) {
+	err := run([]string{"help", "geneate"})
+	if err == nil {
+		t.Fatal("run = nil, want an error for an unknown topic")
+	}
+	if !strings.Contains(err.Error(), "generate") {
+		t.Errorf("the error does not list the real commands:\n%v", err)
+	}
+}
+
+func TestRunUnknownCommandListsTheRealOnes(t *testing.T) {
+	err := run([]string{"geneate"})
+	if err == nil {
+		t.Fatal("run = nil, want an unknown-command error")
+	}
+	for _, want := range []string{`unknown command "geneate"`, "generate", "servo help"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not mention %q:\n%v", want, err)
+		}
+	}
+}
+
+func TestRunVersionPrintsTheBuildsVersion(t *testing.T) {
+	var err error
+	out := captureStdout(t, func() { err = run([]string{"version"}) })
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.HasPrefix(out, "servo ") || !strings.Contains(out, runtime.Version()) {
+		t.Errorf("version output %q does not name the servo and Go versions", out)
 	}
 }

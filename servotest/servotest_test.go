@@ -66,3 +66,23 @@ func TestTimeoutOverridesAndRestoresDefaultStopBudget(t *testing.T) {
 		t.Fatalf("DefaultStopBudget not restored after subtest: got %v, want %v", servo.DefaultStopBudget, original)
 	}
 }
+
+// TestNoNewLeaksIgnoresAPreexistingGoroutine pins the difference between
+// the two checks: a goroutine parked before the baseline is taken is not
+// this test's leak, and reporting it here is what made NoLeaks fail an
+// innocent test that followed a deliberately-abandoned one.
+func TestNoNewLeaksIgnoresAPreexistingGoroutine(t *testing.T) {
+	release := make(chan struct{})
+	parked := make(chan struct{})
+	go func() {
+		close(parked)
+		<-release
+	}()
+	<-parked
+	// Closed only after the check below has run, so the goroutine really
+	// is still running at the moment NoNewLeaks looks.
+	defer close(release)
+
+	done := NoNewLeaks(t)
+	done()
+}

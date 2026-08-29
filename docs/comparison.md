@@ -19,7 +19,9 @@ to hand anything to.
 
 **Provider set.** A named, reusable bundle of constructors. Instead of listing forty functions in
 one place, you group them — `databaseSet`, `httpSet` — and compose the groups. Useful when several
-binaries share most of their wiring. `wire` has these; servo doesn't.
+binaries share most of their wiring. `wire` has these. servo has something narrower —
+`servo.Include`, a shared list of *markers* rather than of constructors — and the difference is
+spelled out [below](#googlewire).
 
 **Value group.** A way of saying "collect *every* constructor that produces a `Handler`, and give
 me all of them as a slice." It's how you build plugin registries and middleware chains where the
@@ -77,8 +79,8 @@ application lifecycle. There's no notion of "start the server after the database
 This is the single biggest structural difference between the two tools, and it's most of the reason
 servo exists.
 
-**Wire has provider sets; servo doesn't.** With wire you build up named bundles of constructors and
-compose them:
+**Wire has provider sets. servo has something narrower.** With wire you build up named bundles of
+constructors and compose them:
 
 ```go
 // wire: compose sets explicitly, then declare the injector
@@ -99,15 +101,37 @@ servo.Build(
 )
 ```
 
-Neither is obviously better. servo's version is shorter and there's less to maintain. Wire's gives
-you a real unit of reuse when several binaries share wiring, which servo has no answer for.
+Neither is obviously better. servo's version is shorter and there's less to maintain; wire's is a
+real unit of composition.
+
+For the reuse half of that, servo has `servo.Include(fn)` — a function returning `[]servo.Marker`,
+spliced into a `Build` call as syntax and never called, shared by as many injectors as you like,
+with a locally-written marker overriding an included one for the same interface. Three binaries in
+[`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) use it to share
+the twelve markers below their transports that used to be copy-pasted into three 53-line spec
+files; each spec is now nineteen lines.
+
+It is not a provider set, and the difference is worth being exact about rather than blurring. A
+wire set bundles *constructors*: it decides what is available to build from, so composing two sets
+composes two lists of functions and a set is how you scope wiring. An included servo set is a list
+of *markers* — `Bind`, `Override`, `Scoped`, `Value` — so it changes how the graph resolves, not
+what is in scope. servo's candidate set is every constructor-shaped function in the main module, all
+the time, and what gets built is whatever the roots reach. `Include` therefore gives you the shared
+wiring; it does not give you wire's "these constructors and no others."
+
+**Wire's injectors take parameters; servo declares them instead.** A wire injector can accept
+arguments that become graph inputs, which is how a value the program only has at runtime — a parsed
+config, an open `*sql.DB` — gets in. servo's equivalent is `servo.Value[T]()` in the spec, which
+makes the generator emit a `Values` struct and a `NewWith(ctx, Values{...})` beside `New`. Same
+idea, declared in the spec file rather than in a signature you write; the remaining boundary is
+that it is supplied once per app, so a per-call value still has no way in.
 
 One more thing worth knowing: wire is in maintenance mode. It works, it's widely deployed, and it
 isn't gaining features.
 
 **Pick wire when** you want build-time code generation and nothing more, you already handle
-lifecycle in a way you're happy with, or you need provider sets to share wiring across several
-binaries.
+lifecycle in a way you're happy with, or you need provider sets as a unit of composition — deciding
+which constructors are in scope, not only which bindings apply to them.
 
 ## uber-go/fx
 

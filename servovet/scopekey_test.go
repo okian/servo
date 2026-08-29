@@ -1,4 +1,4 @@
-package main
+package servovet
 
 import (
 	"strings"
