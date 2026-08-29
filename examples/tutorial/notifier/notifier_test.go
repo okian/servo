@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"example.com/servoorders/broker"
+	"example.com/servoorders/observability"
 	"github.com/nats-io/nats.go"
 )
 
@@ -31,7 +32,7 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	n := New(&Config{URL: url})
+	n := New(&Config{URL: url}, quietLogger())
 	go func() { done <- n.Run(ctx) }()
 
 	pub, err := nats.Connect(url)
@@ -68,4 +69,11 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("Run did not return within 2s of cancellation")
 	}
+}
+
+// quietLogger is the owned logger type with its output discarded, so a
+// test exercises the same code path production does without writing to
+// stdout.
+func quietLogger() *observability.Logger {
+	return &observability.Logger{Logger: slog.New(slog.DiscardHandler)}
 }

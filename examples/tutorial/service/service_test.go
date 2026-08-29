@@ -3,12 +3,14 @@ package service_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"uuid"
 
 	"example.com/servoorders/cache"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/mocks"
+	"example.com/servoorders/observability"
 	"example.com/servoorders/service"
 	"go.uber.org/mock/gomock"
 )
@@ -31,7 +33,7 @@ func TestCreateOrderPersistsCachesAndPublishes(t *testing.T) {
 	c.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil)
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(nil)
 
-	svc := service.New(repo, c, pub)
+	svc := service.New(repo, c, pub, quietLogger())
 	userID := uuid.New()
 	order, err := svc.CreateOrder(context.Background(), userID, "widget", 3)
 	if err != nil {
@@ -54,6 +56,7 @@ func TestCreateOrderRejectsInvalidInput(t *testing.T) {
 		mocks.NewMockOrderRepository(ctrl),
 		mocks.NewMockOrderCache(ctrl),
 		mocks.NewMockEventPublisher(ctrl),
+		quietLogger(),
 	)
 
 	if _, err := svc.CreateOrder(context.Background(), uuid.New(), "", 1); !errors.Is(err, domain.ErrValidation) {
@@ -77,7 +80,7 @@ func TestCreateOrderSucceedsEvenIfPublishFails(t *testing.T) {
 	c.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil)
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(errors.New("nats: no responders"))
 
-	svc := service.New(repo, c, pub)
+	svc := service.New(repo, c, pub, quietLogger())
 	if _, err := svc.CreateOrder(context.Background(), uuid.New(), "widget", 1); err != nil {
 		t.Fatalf("CreateOrder: %v, want nil despite the publish failure", err)
 	}
@@ -95,7 +98,7 @@ func TestGetOrderReturnsCachedValueOnHit(t *testing.T) {
 	c.EXPECT().Get(gomock.Any(), orderID).Return(cached, nil)
 	// repo.Get must NOT be called on a cache hit — no .EXPECT() for it.
 
-	svc := service.New(repo, c, pub)
+	svc := service.New(repo, c, pub, quietLogger())
 	got, err := svc.GetOrder(context.Background(), userID, orderID)
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
@@ -118,7 +121,7 @@ func TestGetOrderFallsBackToRepositoryOnCacheMiss(t *testing.T) {
 	repo.EXPECT().Get(gomock.Any(), orderID).Return(stored, nil)
 	c.EXPECT().Set(gomock.Any(), stored).Return(nil) // best-effort repopulate
 
-	svc := service.New(repo, c, pub)
+	svc := service.New(repo, c, pub, quietLogger())
 	got, err := svc.GetOrder(context.Background(), userID, orderID)
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
@@ -139,7 +142,7 @@ func TestGetOrderRejectsAnotherUsersOrder(t *testing.T) {
 	orderID := uuid.New()
 	c.EXPECT().Get(gomock.Any(), orderID).Return(&domain.Order{ID: orderID, UserID: owner}, nil)
 
-	svc := service.New(repo, c, pub)
+	svc := service.New(repo, c, pub, quietLogger())
 	if _, err := svc.GetOrder(context.Background(), requester, orderID); !errors.Is(err, domain.ErrForbidden) {
 		t.Errorf("GetOrder for another user's order: err = %v, want domain.ErrForbidden", err)
 	}
@@ -155,8 +158,15 @@ func TestGetOrderPassesThroughNotFound(t *testing.T) {
 	c.EXPECT().Get(gomock.Any(), orderID).Return(nil, cache.ErrMiss)
 	repo.EXPECT().Get(gomock.Any(), orderID).Return(nil, domain.ErrNotFound)
 
-	svc := service.New(repo, c, pub)
+	svc := service.New(repo, c, pub, quietLogger())
 	if _, err := svc.GetOrder(context.Background(), uuid.New(), orderID); !errors.Is(err, domain.ErrNotFound) {
 		t.Errorf("GetOrder for a missing order: err = %v, want domain.ErrNotFound", err)
 	}
+}
+
+// quietLogger is the owned logger type with its output discarded, so a
+// test exercises the same code path production does without writing to
+// stdout.
+func quietLogger() *observability.Logger {
+	return &observability.Logger{Logger: slog.New(slog.DiscardHandler)}
 }

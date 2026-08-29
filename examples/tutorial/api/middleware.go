@@ -2,11 +2,11 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strings"
 
 	"example.com/servoorders/auth"
+	"example.com/servoorders/observability"
 	"example.com/servoorders/session"
 )
 
@@ -52,11 +52,11 @@ func claimsFromContext(ctx context.Context) (auth.Claims, bool) {
 // recoverMiddleware turns a panic anywhere in the handler chain into a 500
 // instead of taking down the whole process — one bad request must never be
 // able to crash every other in-flight request alongside it.
-func recoverMiddleware(next http.Handler) http.Handler {
+func recoverMiddleware(log *observability.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if rec := recover(); rec != nil {
-				slog.ErrorContext(r.Context(), "api: panic recovered", "panic", rec, "path", r.URL.Path)
+				log.ErrorContext(r.Context(), "api: panic recovered", "panic", rec, "path", r.URL.Path)
 				writeError(w, http.StatusInternalServerError, "internal server error")
 			}
 		}()
@@ -68,11 +68,11 @@ func recoverMiddleware(next http.Handler) http.Handler {
 // duration. Chapter 13 replaces the ad hoc status-capturing here with a
 // proper response wrapper shared with metrics, and correlates each line
 // with the request's trace ID.
-func loggingMiddleware(next http.Handler) http.Handler {
+func loggingMiddleware(log *observability.Logger, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
-		slog.InfoContext(r.Context(), "request",
+		log.InfoContext(r.Context(), "request",
 			"method", r.Method, "path", r.URL.Path, "status", sw.status)
 	})
 }

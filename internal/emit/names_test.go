@@ -47,7 +47,7 @@ func TestAllocateEntryFieldAvoidsDerivedMethodCollisions(t *testing.T) {
 		a.AllocateName(reserved)
 	}
 
-	got := allocateEntryField(a, namedType("Result"))
+	got := allocateEntryField(a, baseName(namedType("Result")))
 	if got == "result" {
 		t.Fatal("Result took the field `result`, whose derived stopResult collides with the entry's own stopResult field")
 	}
@@ -62,8 +62,8 @@ func TestAllocateEntryFieldAvoidsDerivedMethodCollisions(t *testing.T) {
 // Foo and StopFoo derive the same stopFoo method from different fields.
 func TestAllocateEntryFieldAvoidsMemberToMemberCollisions(t *testing.T) {
 	a := NewNameAllocator()
-	foo := allocateEntryField(a, namedType("Foo"))
-	stopFoo := allocateEntryField(a, namedType("StopFoo"))
+	foo := allocateEntryField(a, baseName(namedType("Foo")))
+	stopFoo := allocateEntryField(a, baseName(namedType("StopFoo")))
 
 	if "stop"+capitalize(foo) == "stop"+capitalize(stopFoo) {
 		t.Fatalf("Foo -> %q and StopFoo -> %q derive the same stop method", foo, stopFoo)

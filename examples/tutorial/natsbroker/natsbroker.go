@@ -56,12 +56,26 @@ func (p *Publisher) Init(context.Context) error {
 	return nil
 }
 
+// Stop tolerates a nil connection because it can be reached without a
+// successful Init: if Init fails — NATS unreachable at startup — servo
+// rolls the graph back and calls Stop on everything it had already
+// constructed, this component included. Dereferencing conn there turns a
+// clear "connect: connection refused" into a nil-pointer panic that
+// buries it.
 func (p *Publisher) Stop(context.Context) error {
+	if p.conn == nil {
+		return nil
+	}
 	p.conn.Drain()
 	return nil
 }
 
+// Health reports unhealthy rather than panicking for the same reason: a
+// component whose Init failed still has to answer.
 func (p *Publisher) Health(context.Context) error {
+	if p.conn == nil {
+		return fmt.Errorf("natsbroker: not connected (no connection established)")
+	}
 	if !p.conn.IsConnected() {
 		return fmt.Errorf("natsbroker: not connected (status: %s)", p.conn.Status())
 	}

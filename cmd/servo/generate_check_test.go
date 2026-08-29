@@ -535,3 +535,65 @@ var _ = servo.Build(
 		t.Fatalf("generated code does not compile: %v\n%s\n---\n%s", err, out, gen)
 	}
 }
+
+// TestGeneratedCodeCompilesWhenANodeIsNamedAfterItsPackage: New declares
+// every node's variable in one flat scope, so a component named after its
+// own package — Store in package store — hides that package from every
+// line after it. The declaration itself is fine, since the right-hand
+// side resolves before the variable exists, which is why a package
+// providing exactly one node always worked and why this stayed latent
+// until one provided two.
+func TestGeneratedCodeCompilesWhenANodeIsNamedAfterItsPackage(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+
+	mustWriteFile(t, dir, "go.mod", `module example.com/shadowapp
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+root+`
+`)
+	mustWriteFile(t, dir, "store/store.go", `package store
+
+type Store struct{}
+
+func New() *Store { return &Store{} }
+
+// Cache is constructed after Store, so calling store.NewCache is what a
+// shadowed package identifier breaks.
+type Cache struct{}
+
+func NewCache(s *Store) *Cache { return &Cache{} }
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", `package main
+
+func main() {}
+`)
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/shadowapp/store"
+	"github.com/okian/servo/v3/servo"
+)
+
+var _ = servo.Build(
+	servo.Root[*store.Cache](),
+)
+`)
+	runGoModTidy(t, dir)
+
+	if err := runGenerate(dir); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		gen, _ := os.ReadFile(filepath.Join(dir, "cmd", "app", "servo_gen.go"))
+		t.Fatalf("generated code does not compile: %v\n%s\n---\n%s", err, out, gen)
+	}
+}

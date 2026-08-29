@@ -16,9 +16,9 @@
 //	[L3] *example.com/servoorders/observability.Logger
 //	      deps: *example.com/servoorders/observability.Config
 //	      capabilities: none | binding: sole candidate | observability/logging.go:35:6
-//	[L2] *example.com/servoorders/api.Config
+//	[L2] *example.com/servoorders/ginapi.Config
 //	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | api/server.go:45:6
+//	      capabilities: none | binding: sole candidate | ginapi/server.go:48:6
 //	[L2] *example.com/servoorders/postgres.Config
 //	      deps: *example.com/servoorders/config.Env
 //	      capabilities: none | binding: sole candidate | postgres/postgres.go:37:6
@@ -64,9 +64,9 @@
 //	[L3] *example.com/servoorders/resilience.RateLimiter
 //	      deps: *example.com/servoorders/resilience.Config, *example.com/servoorders/observability.Metrics
 //	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:33:6
-//	[L6] *example.com/servoorders/api.Server
-//	      deps: *example.com/servoorders/api.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions, *example.com/servoorders/observability.Logger
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:49:6
+//	[L6] *example.com/servoorders/ginapi.Server
+//	      deps: *example.com/servoorders/ginapi.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions, *example.com/servoorders/observability.Logger
+//	      capabilities: Runner, Finalizer | binding: sole candidate | ginapi/server.go:52:6
 //	[L2] *example.com/servoorders/notifier.Config
 //	      deps: *example.com/servoorders/config.Env
 //	      capabilities: none | binding: sole candidate | notifier/notifier.go:28:6
@@ -94,9 +94,9 @@ import (
 	"syscall"
 	"time"
 
-	"example.com/servoorders/api"
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
+	"example.com/servoorders/ginapi"
 	"example.com/servoorders/natsbroker"
 	"example.com/servoorders/notifier"
 	"example.com/servoorders/observability"
@@ -114,7 +114,7 @@ type App struct {
 	sessionConfig         *session.Config
 	observabilityConfig   *observability.Config
 	logger                *observability.Logger
-	apiConfig             *api.Config
+	ginapiConfig          *ginapi.Config
 	postgresConfig        *postgres.Config
 	store                 *postgres.Store
 	storeStopOnce         sync.Once
@@ -138,7 +138,7 @@ type App struct {
 	tracerStopResult      servo.NodeResult
 	resilienceConfig      *resilience.Config
 	rateLimiter           *resilience.RateLimiter
-	server                *api.Server
+	server                *ginapi.Server
 	serverStopOnce        sync.Once
 	serverStopResult      servo.NodeResult
 	notifierConfig        *notifier.Config
@@ -683,11 +683,11 @@ func New(ctx context.Context) (*App, error) {
 	logger := observability.NewLogger(observabilityConfig)
 	a.logger = logger
 
-	apiConfig, err := api.NewConfig(env)
+	ginapiConfig, err := ginapi.NewConfig(env)
 	if err != nil {
 		return nil, err
 	}
-	a.apiConfig = apiConfig
+	a.ginapiConfig = ginapiConfig
 
 	postgresConfig, err := postgres.NewConfig(env)
 	if err != nil {
@@ -768,7 +768,7 @@ func New(ctx context.Context) (*App, error) {
 	rateLimiter := resilience.NewRateLimiter(resilienceConfig, metrics)
 	a.rateLimiter = rateLimiter
 
-	server := api.New(apiConfig, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions, logger)
+	server := ginapi.New(ginapiConfig, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions, logger)
 	a.server = server
 
 	notifierConfig, err := notifier.NewConfig(env)
@@ -859,8 +859,8 @@ func (a *App) stopTracer(ctx context.Context) servo.NodeResult {
 func (a *App) stopServer(ctx context.Context) servo.NodeResult {
 	a.serverStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/api.Server", a.server.Stop))
-		a.serverStopResult = servo.MergeNodeResults("*example.com/servoorders/api.Server", results...)
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/ginapi.Server", a.server.Stop))
+		a.serverStopResult = servo.MergeNodeResults("*example.com/servoorders/ginapi.Server", results...)
 	})
 	return a.serverStopResult
 }
@@ -967,7 +967,7 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "session/session.go:67:6"},
 		{Type: "*example.com/servoorders/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:21:6"},
 		{Type: "*example.com/servoorders/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:35:6"},
-		{Type: "*example.com/servoorders/api.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "api/server.go:45:6"},
+		{Type: "*example.com/servoorders/ginapi.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "ginapi/server.go:48:6"},
 		{Type: "*example.com/servoorders/postgres.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "postgres/postgres.go:37:6"},
 		{Type: "*example.com/servoorders/postgres.Store", Level: 3, Deps: []string{"*example.com/servoorders/postgres.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "postgres/postgres.go:41:6"},
 		{Type: "*example.com/servoorders/redis.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "redis/redis.go:36:6"},
@@ -983,7 +983,7 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/observability.Tracer", Level: 3, Deps: []string{"*example.com/servoorders/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "observability/tracing.go:29:6"},
 		{Type: "*example.com/servoorders/resilience.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:29:6"},
 		{Type: "*example.com/servoorders/resilience.RateLimiter", Level: 3, Deps: []string{"*example.com/servoorders/resilience.Config", "*example.com/servoorders/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:33:6"},
-		{Type: "*example.com/servoorders/api.Server", Level: 6, Deps: []string{"*example.com/servoorders/api.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:49:6"},
+		{Type: "*example.com/servoorders/ginapi.Server", Level: 6, Deps: []string{"*example.com/servoorders/ginapi.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "ginapi/server.go:52:6"},
 		{Type: "*example.com/servoorders/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "notifier/notifier.go:28:6"},
 		{Type: "*example.com/servoorders/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/notifier.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:37:6"},
 		{Type: "*example.com/servoorders/session.Session", Level: 1, Deps: []string{"example.com/servoorders/session.UserID", "*example.com/servoorders/session.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "session/session.go:71:6", Scope: "example.com/servoorders/session.UserID"},

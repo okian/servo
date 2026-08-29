@@ -1,5 +1,10 @@
 
-# Binaries for programs and plugins
+# Binaries for programs and plugins. The named entries are the tutorial's
+# three injectors: `go build ./cmd/orders` in that module drops a 40MB
+# executable beside the source, and it is easy to miss in a diff.
+/examples/tutorial/orders
+/examples/tutorial/ordersgin
+/examples/tutorial/ordersgrpc
 *.exe
 *.exe~
 *.dll

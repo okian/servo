@@ -3,17 +3,19 @@ package session_test
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"testing"
 	"uuid"
 
 	"github.com/okian/servo/v3/servo"
 
+	"example.com/servoorders/observability"
 	"example.com/servoorders/session"
 )
 
 func newSession(t *testing.T, id session.UserID, cap int) *session.Session {
 	t.Helper()
-	s := session.New(id, &session.Config{Recent: cap})
+	s := session.New(id, &session.Config{Recent: cap}, quietLogger())
 	if err := s.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -115,4 +117,11 @@ func TestFlushThenStop(t *testing.T) {
 	if got := s.Recent(); len(got) != 0 {
 		t.Fatalf("recent after Stop = %v, want empty", got)
 	}
+}
+
+// quietLogger is the owned logger type with its output discarded, so a
+// test exercises the same code path production does without writing to
+// stdout.
+func quietLogger() *observability.Logger {
+	return &observability.Logger{Logger: slog.New(slog.DiscardHandler)}
 }

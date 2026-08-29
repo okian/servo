@@ -77,8 +77,9 @@ func (e *emitter) planScopes() {
 		for _, reserved := range entryReservedFields {
 			entryNames.AllocateName(reserved)
 		}
+		memberBase := baseNamesFor(s.Order)
 		for _, n := range s.Order {
-			se.Members = append(se.Members, &memberEmit{N: n, Field: allocateEntryField(entryNames, n.Provider.ResultType)})
+			se.Members = append(se.Members, &memberEmit{N: n, Field: allocateEntryField(entryNames, memberBase[n])})
 		}
 		for _, root := range s.Roots {
 			ib := lowerFirst(shortTypeName(root.IfaceType))
@@ -170,6 +171,27 @@ var scopeReservedIdents = []string{
 	"release", "created", "started", "key", "err", "budget",
 }
 
+// baseNamesFor picks each node's field name before any is allocated, so a
+// name two nodes would both want can be qualified by package rather than
+// separated by a numeric suffix. Deciding this up front is what keeps the
+// two consistent: whoever came first would otherwise keep the bare name
+// and only the loser would say which package it came from.
+func baseNamesFor(nodes []*resolve.Node) map[*resolve.Node]string {
+	count := map[string]int{}
+	for _, n := range nodes {
+		count[baseName(n.Provider.ResultType)]++
+	}
+	out := make(map[*resolve.Node]string, len(nodes))
+	for _, n := range nodes {
+		base := baseName(n.Provider.ResultType)
+		if count[base] > 1 {
+			base = qualifiedBaseName(n.Provider.ResultType)
+		}
+		out[n] = base
+	}
+	return out
+}
+
 // allocateEntryField names one scope member's field on the entry, and
 // claims the two method names writeEntryTeardown derives from that field
 // as well.
@@ -181,9 +203,9 @@ var scopeReservedIdents = []string{
 // happily and the compiler rejected it, which is the worst place for the
 // failure to land, since the file it lands in is one users are told not to
 // read. Two members named Foo and StopFoo collide the same way.
-func allocateEntryField(a *NameAllocator, t types.Type) string {
+func allocateEntryField(a *NameAllocator, base string) string {
 	for {
-		f := a.Allocate(t)
+		f := a.AllocateName(base)
 		drain, stop := "drain"+capitalize(f), "stop"+capitalize(f)
 		if a.Free(drain) && a.Free(stop) {
 			a.AllocateName(drain)
@@ -198,9 +220,9 @@ func allocateEntryField(a *NameAllocator, t types.Type) string {
 // <F>StopResult), so components named Foo and StopFoo used to give App a
 // stopFoo method beside a stopFoo field — the same field/method namespace
 // collision, emitted just as happily and rejected just as firmly.
-func allocateAppField(a *NameAllocator, t types.Type) string {
+func allocateAppField(a *NameAllocator, base string) string {
 	for {
-		f := a.Allocate(t)
+		f := a.AllocateName(base)
 		derived := []string{"stop" + capitalize(f), f + "StopOnce", f + "StopResult"}
 		free := true
 		for _, d := range derived {

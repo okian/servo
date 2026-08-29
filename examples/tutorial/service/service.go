@@ -8,13 +8,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"time"
 	"uuid"
 
 	"example.com/servoorders/broker"
 	"example.com/servoorders/cache"
 	"example.com/servoorders/domain"
+	"example.com/servoorders/observability"
 	"example.com/servoorders/repository"
 )
 
@@ -22,10 +22,11 @@ type OrderService struct {
 	repo      repository.OrderRepository
 	cache     cache.OrderCache
 	publisher broker.EventPublisher
+	log       *observability.Logger
 }
 
-func New(repo repository.OrderRepository, c cache.OrderCache, publisher broker.EventPublisher) *OrderService {
-	return &OrderService{repo: repo, cache: c, publisher: publisher}
+func New(repo repository.OrderRepository, c cache.OrderCache, publisher broker.EventPublisher, log *observability.Logger) *OrderService {
+	return &OrderService{repo: repo, cache: c, publisher: publisher, log: log}
 }
 
 // CreateOrder writes the order first — that's the operation a caller is
@@ -52,10 +53,10 @@ func (s *OrderService) CreateOrder(ctx context.Context, userID uuid.UUID, item s
 	}
 
 	if err := s.cache.Set(ctx, order); err != nil {
-		slog.ErrorContext(ctx, "service: cache set failed after order create", "order_id", order.ID, "error", err)
+		s.log.ErrorContext(ctx, "service: cache set failed after order create", "order_id", order.ID, "error", err)
 	}
 	if err := s.publisher.PublishOrderPlaced(ctx, order); err != nil {
-		slog.ErrorContext(ctx, "service: publish OrderPlaced failed", "order_id", order.ID, "error", err)
+		s.log.ErrorContext(ctx, "service: publish OrderPlaced failed", "order_id", order.ID, "error", err)
 	}
 	return order, nil
 }
@@ -67,7 +68,7 @@ func (s *OrderService) GetOrder(ctx context.Context, requesterID, orderID uuid.U
 	if cached, err := s.cache.Get(ctx, orderID); err == nil {
 		return authorize(cached, requesterID)
 	} else if !errors.Is(err, cache.ErrMiss) {
-		slog.ErrorContext(ctx, "service: cache read failed, falling back to repository", "order_id", orderID, "error", err)
+		s.log.ErrorContext(ctx, "service: cache read failed, falling back to repository", "order_id", orderID, "error", err)
 	}
 
 	order, err := s.repo.Get(ctx, orderID)
@@ -79,7 +80,7 @@ func (s *OrderService) GetOrder(ctx context.Context, requesterID, orderID uuid.U
 	}
 
 	if err := s.cache.Set(ctx, order); err != nil {
-		slog.ErrorContext(ctx, "service: cache repopulate failed", "order_id", orderID, "error", err)
+		s.log.ErrorContext(ctx, "service: cache repopulate failed", "order_id", orderID, "error", err)
 	}
 	return order, nil
 }

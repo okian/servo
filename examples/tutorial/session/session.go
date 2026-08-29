@@ -14,6 +14,7 @@ import (
 	"uuid"
 
 	"example.com/servoorders/config"
+	"example.com/servoorders/observability"
 	"github.com/okian/servo/v3/servo"
 )
 
@@ -46,6 +47,7 @@ type Sessions interface {
 type Session struct {
 	id  UserID
 	cfg *Config
+	log *observability.Logger
 
 	mu     sync.Mutex
 	recent []uuid.UUID
@@ -66,8 +68,8 @@ func NewConfig(src config.Source) (*Config, error) {
 	return config.Parse[Config](src, envPrefix)
 }
 
-func New(id UserID, cfg *Config) *Session {
-	return &Session{id: id, cfg: cfg}
+func New(id UserID, cfg *Config, log *observability.Logger) *Session {
+	return &Session{id: id, cfg: cfg, log: log}
 }
 
 // ScopeKey extracts the user this request belongs to.

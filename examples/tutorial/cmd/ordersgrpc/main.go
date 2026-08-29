@@ -28,7 +28,7 @@ func main() {
 	// The address comes off the graph rather than being parsed a second
 	// time: servo already built an *api.Config, and this file is in the
 	// same package as the generated code.
-	adminSrv := admin.New(app.apiConfig.AdminAddr, app, app.server.MetricsHandler())
+	adminSrv := admin.New(app.grpcapiConfig.AdminAddr, app, app.server.MetricsHandler())
 	go func() {
 		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Print(err)

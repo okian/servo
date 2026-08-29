@@ -9,10 +9,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 
 	"example.com/servoorders/broker"
 	"example.com/servoorders/config"
+	"example.com/servoorders/observability"
 	"github.com/nats-io/nats.go"
 )
 
@@ -31,10 +31,11 @@ func NewConfig(src config.Source) (*Config, error) {
 
 type Notifier struct {
 	url string
+	log *observability.Logger
 }
 
-func New(cfg *Config) *Notifier {
-	return &Notifier{url: cfg.URL}
+func New(cfg *Config, log *observability.Logger) *Notifier {
+	return &Notifier{url: cfg.URL, log: log}
 }
 
 // Run connects and subscribes on its own — not in a separate Init — since
@@ -50,10 +51,10 @@ func (n *Notifier) Run(ctx context.Context) error {
 	sub, err := conn.Subscribe(broker.OrderPlacedSubject, func(msg *nats.Msg) {
 		var event broker.OrderPlacedEvent
 		if err := json.Unmarshal(msg.Data, &event); err != nil {
-			slog.ErrorContext(ctx, "notifier: malformed event", "error", err)
+			n.log.ErrorContext(ctx, "notifier: malformed event", "error", err)
 			return
 		}
-		slog.InfoContext(ctx, "order placed",
+		n.log.InfoContext(ctx, "order placed",
 			"order_id", event.OrderID, "user_id", event.UserID, "item", event.Item)
 	})
 	if err != nil {

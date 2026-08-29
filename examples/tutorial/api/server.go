@@ -12,6 +12,7 @@ import (
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
 	"example.com/servoorders/observability"
+	"example.com/servoorders/openapi"
 	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
 	"example.com/servoorders/session"
@@ -54,10 +55,18 @@ func New(
 	tracer *observability.Tracer,
 	limiter *resilience.RateLimiter,
 	sessions session.Sessions,
+	log *observability.Logger,
 ) *Server {
 	s := &Server{orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
 
 	mux := http.NewServeMux()
+
+	// The contract and its UI, on the public listener beside the API they
+	// describe. Health, readiness and metrics are deliberately not here —
+	// they live on the admin listener; see package admin.
+	mux.Handle("GET /openapi.yaml", openapi.Handler())
+	mux.Handle("GET /swagger/", openapi.Handler())
+
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /orders", requireAuth(issuer, s.handleCreateOrder))
 	mux.HandleFunc("GET /orders/{id}", requireAuth(issuer, s.handleGetOrder))
@@ -76,11 +85,11 @@ func New(
 	// directly (see resilience.RateLimiter) rather than trying to route
 	// them through requests_total, which a rejected request never reaches
 	// anyway.
-	handler := loggingMiddleware(mux)
+	handler := loggingMiddleware(log, mux)
 	handler = metrics.Middleware(handler)
 	handler = tracer.Middleware(handler)
 	handler = limiter.Middleware(handler)
-	handler = recoverMiddleware(handler)
+	handler = recoverMiddleware(log, handler)
 
 	s.http = &http.Server{Addr: cfg.HTTPAddr, Handler: handler}
 	return s

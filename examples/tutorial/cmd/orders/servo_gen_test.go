@@ -9,10 +9,16 @@
 //	      capabilities: none | binding: sole implementation | config/config.go:42:6
 //	[L2] *example.com/servoorders/session.Config
 //	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | session/session.go:65:6
+//	      capabilities: none | binding: sole candidate | session/session.go:67:6
+//	[L2] *example.com/servoorders/observability.Config
+//	      deps: *example.com/servoorders/config.Env
+//	      capabilities: none | binding: sole candidate | observability/logging.go:21:6
+//	[L3] *example.com/servoorders/observability.Logger
+//	      deps: *example.com/servoorders/observability.Config
+//	      capabilities: none | binding: sole candidate | observability/logging.go:35:6
 //	[L2] *example.com/servoorders/api.Config
 //	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | api/server.go:44:6
+//	      capabilities: none | binding: sole candidate | api/server.go:45:6
 //	[L1] *example.com/servoorders/mocks.OrderRepositoryForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:24:6
@@ -22,9 +28,9 @@
 //	[L1] *example.com/servoorders/mocks.EventPublisherForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:54:6
-//	[L2] *example.com/servoorders/service.OrderService
-//	      deps: *example.com/servoorders/mocks.OrderRepositoryForServo, *example.com/servoorders/mocks.OrderCacheForServo, *example.com/servoorders/mocks.EventPublisherForServo
-//	      capabilities: none | binding: sole candidate | service/service.go:27:6
+//	[L4] *example.com/servoorders/service.OrderService
+//	      deps: *example.com/servoorders/mocks.OrderRepositoryForServo, *example.com/servoorders/mocks.OrderCacheForServo, *example.com/servoorders/mocks.EventPublisherForServo, *example.com/servoorders/observability.Logger
+//	      capabilities: none | binding: sole candidate | service/service.go:28:6
 //	[L1] *example.com/servoorders/mocks.UserRepositoryForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:34:6
@@ -40,9 +46,6 @@
 //	[L1] *example.com/servoorders/observability.Metrics
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | observability/metrics.go:18:6
-//	[L2] *example.com/servoorders/observability.Config
-//	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | observability/logging.go:27:6
 //	[L3] *example.com/servoorders/observability.Tracer
 //	      deps: *example.com/servoorders/observability.Config
 //	      capabilities: Finalizer | binding: sole candidate | observability/tracing.go:29:6
@@ -53,14 +56,14 @@
 //	      deps: *example.com/servoorders/resilience.Config, *example.com/servoorders/observability.Metrics
 //	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:33:6
 //	[L5] *example.com/servoorders/api.Server
-//	      deps: *example.com/servoorders/api.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:48:6
+//	      deps: *example.com/servoorders/api.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions, *example.com/servoorders/observability.Logger
+//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:49:6
 //	[L2] *example.com/servoorders/notifier.Config
 //	      deps: *example.com/servoorders/config.Env
 //	      capabilities: none | binding: sole candidate | notifier/notifier.go:28:6
-//	[L3] *example.com/servoorders/notifier.Notifier
-//	      deps: *example.com/servoorders/notifier.Config
-//	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:36:6
+//	[L4] *example.com/servoorders/notifier.Notifier
+//	      deps: *example.com/servoorders/notifier.Config, *example.com/servoorders/observability.Logger
+//	      capabilities: Runner | binding: sole candidate | notifier/notifier.go:37:6
 //
 // scope example.com/servoorders/session.UserID
 //
@@ -68,7 +71,7 @@
 //	accessor: example.com/servoorders/session.Sessions -> *example.com/servoorders/session.Session
 //	[S1] *example.com/servoorders/session.Session
 //	      capabilities: Initializer, Flusher, Finalizer
-//	borrows: *example.com/servoorders/session.Config
+//	borrows: *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
 package main
 
 import (
@@ -97,27 +100,28 @@ import (
 
 type TestApp struct {
 	env                     *config.Env
-	config                  *session.Config
-	config2                 *api.Config
+	sessionConfig           *session.Config
+	observabilityConfig     *observability.Config
+	logger                  *observability.Logger
+	apiConfig               *api.Config
 	orderRepositoryForServo *mocks.OrderRepositoryForServo
 	orderCacheForServo      *mocks.OrderCacheForServo
 	eventPublisherForServo  *mocks.EventPublisherForServo
 	orderService            *service.OrderService
 	userRepositoryForServo  *mocks.UserRepositoryForServo
-	config3                 *auth.Config
+	authConfig              *auth.Config
 	issuer                  *auth.Issuer
 	authService             *service.AuthService
 	metrics                 *observability.Metrics
-	config4                 *observability.Config
 	tracer                  *observability.Tracer
 	tracerStopOnce          sync.Once
 	tracerStopResult        servo.NodeResult
-	config5                 *resilience.Config
+	resilienceConfig        *resilience.Config
 	rateLimiter             *resilience.RateLimiter
 	server                  *api.Server
 	serverStopOnce          sync.Once
 	serverStopResult        servo.NodeResult
-	config6                 *notifier.Config
+	notifierConfig          *notifier.Config
 	notifier                *notifier.Notifier
 	userIDScope             *testUserIDScope
 	sessions                testSessionsAccessor
@@ -435,7 +439,7 @@ func (e *testUserIDEntry) evict() {
 func (e *testUserIDEntry) build() error {
 	a := e.scope.app
 
-	session := session.New(e.key, a.config)
+	session := session.New(e.key, a.sessionConfig, a.logger)
 	e.session = session
 	e.built = 1
 
@@ -644,17 +648,26 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	env := config.NewEnv()
 	a.env = env
 
-	config, err := session.NewConfig(env)
+	sessionConfig, err := session.NewConfig(env)
 	if err != nil {
 		return nil, err
 	}
-	a.config = config
+	a.sessionConfig = sessionConfig
 
-	config2, err := api.NewConfig(env)
+	observabilityConfig, err := observability.NewConfig(env)
 	if err != nil {
 		return nil, err
 	}
-	a.config2 = config2
+	a.observabilityConfig = observabilityConfig
+
+	logger := observability.NewLogger(observabilityConfig)
+	a.logger = logger
+
+	apiConfig, err := api.NewConfig(env)
+	if err != nil {
+		return nil, err
+	}
+	a.apiConfig = apiConfig
 
 	orderRepositoryForServo := mocks.NewOrderRepositoryForServo()
 	a.orderRepositoryForServo = orderRepositoryForServo
@@ -665,19 +678,19 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	eventPublisherForServo := mocks.NewEventPublisherForServo()
 	a.eventPublisherForServo = eventPublisherForServo
 
-	orderService := service.New(orderRepositoryForServo, orderCacheForServo, eventPublisherForServo)
+	orderService := service.New(orderRepositoryForServo, orderCacheForServo, eventPublisherForServo, logger)
 	a.orderService = orderService
 
 	userRepositoryForServo := mocks.NewUserRepositoryForServo()
 	a.userRepositoryForServo = userRepositoryForServo
 
-	config3, err := auth.NewConfig(env)
+	authConfig, err := auth.NewConfig(env)
 	if err != nil {
 		return nil, err
 	}
-	a.config3 = config3
+	a.authConfig = authConfig
 
-	issuer := auth.New(config3)
+	issuer := auth.New(authConfig)
 	a.issuer = issuer
 
 	authService := service.NewAuthService(userRepositoryForServo, issuer)
@@ -686,40 +699,34 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	metrics := observability.NewMetrics()
 	a.metrics = metrics
 
-	config4, err := observability.NewConfig(env)
-	if err != nil {
-		return nil, err
-	}
-	a.config4 = config4
-
-	tracer, err := observability.NewTracer(config4)
+	tracer, err := observability.NewTracer(observabilityConfig)
 	if err != nil {
 		return nil, err
 	}
 	a.tracer = tracer
 
-	config5, err := resilience.NewConfig(env)
+	resilienceConfig, err := resilience.NewConfig(env)
 	if err != nil {
 		_ = a.stopTracer(ctx)
 		return nil, err
 	}
-	a.config5 = config5
+	a.resilienceConfig = resilienceConfig
 
-	rateLimiter := resilience.NewRateLimiter(config5, metrics)
+	rateLimiter := resilience.NewRateLimiter(resilienceConfig, metrics)
 	a.rateLimiter = rateLimiter
 
-	server := api.New(config2, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions)
+	server := api.New(apiConfig, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions, logger)
 	a.server = server
 
-	config6, err := notifier.NewConfig(env)
+	notifierConfig, err := notifier.NewConfig(env)
 	if err != nil {
 		_ = a.stopServer(ctx)
 		_ = a.stopTracer(ctx)
 		return nil, err
 	}
-	a.config6 = config6
+	a.notifierConfig = notifierConfig
 
-	notifier := notifier.New(config6)
+	notifier := notifier.New(notifierConfig, logger)
 	a.notifier = notifier
 
 	return a, nil
@@ -824,27 +831,28 @@ func (a *TestApp) Ready(ctx context.Context) servo.Report {
 func (a *TestApp) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
 		{Type: "*example.com/servoorders/config.Env", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole implementation", Pos: "config/config.go:42:6"},
-		{Type: "*example.com/servoorders/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "session/session.go:65:6"},
-		{Type: "*example.com/servoorders/api.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "api/server.go:44:6"},
+		{Type: "*example.com/servoorders/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "session/session.go:67:6"},
+		{Type: "*example.com/servoorders/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:21:6"},
+		{Type: "*example.com/servoorders/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:35:6"},
+		{Type: "*example.com/servoorders/api.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "api/server.go:45:6"},
 		{Type: "*example.com/servoorders/mocks.OrderRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:24:6"},
 		{Type: "*example.com/servoorders/mocks.OrderCacheForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:44:6"},
 		{Type: "*example.com/servoorders/mocks.EventPublisherForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:54:6"},
-		{Type: "*example.com/servoorders/service.OrderService", Level: 2, Deps: []string{"*example.com/servoorders/mocks.OrderRepositoryForServo", "*example.com/servoorders/mocks.OrderCacheForServo", "*example.com/servoorders/mocks.EventPublisherForServo"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/service.go:27:6"},
+		{Type: "*example.com/servoorders/service.OrderService", Level: 4, Deps: []string{"*example.com/servoorders/mocks.OrderRepositoryForServo", "*example.com/servoorders/mocks.OrderCacheForServo", "*example.com/servoorders/mocks.EventPublisherForServo", "*example.com/servoorders/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/service.go:28:6"},
 		{Type: "*example.com/servoorders/mocks.UserRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:34:6"},
 		{Type: "*example.com/servoorders/auth.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "auth/auth.go:35:6"},
 		{Type: "*example.com/servoorders/auth.Issuer", Level: 3, Deps: []string{"*example.com/servoorders/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "auth/auth.go:39:6"},
 		{Type: "*example.com/servoorders/service.AuthService", Level: 4, Deps: []string{"*example.com/servoorders/mocks.UserRepositoryForServo", "*example.com/servoorders/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/auth_service.go:18:6"},
 		{Type: "*example.com/servoorders/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "observability/metrics.go:18:6"},
-		{Type: "*example.com/servoorders/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:27:6"},
 		{Type: "*example.com/servoorders/observability.Tracer", Level: 3, Deps: []string{"*example.com/servoorders/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "observability/tracing.go:29:6"},
 		{Type: "*example.com/servoorders/resilience.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:29:6"},
 		{Type: "*example.com/servoorders/resilience.RateLimiter", Level: 3, Deps: []string{"*example.com/servoorders/resilience.Config", "*example.com/servoorders/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:33:6"},
-		{Type: "*example.com/servoorders/api.Server", Level: 5, Deps: []string{"*example.com/servoorders/api.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:48:6"},
+		{Type: "*example.com/servoorders/api.Server", Level: 5, Deps: []string{"*example.com/servoorders/api.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:49:6"},
 		{Type: "*example.com/servoorders/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "notifier/notifier.go:28:6"},
-		{Type: "*example.com/servoorders/notifier.Notifier", Level: 3, Deps: []string{"*example.com/servoorders/notifier.Config"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:36:6"},
-		{Type: "*example.com/servoorders/session.Session", Level: 1, Deps: []string{"example.com/servoorders/session.UserID", "*example.com/servoorders/session.Config"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "session/session.go:69:6", Scope: "example.com/servoorders/session.UserID"},
+		{Type: "*example.com/servoorders/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/notifier.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:37:6"},
+		{Type: "*example.com/servoorders/session.Session", Level: 1, Deps: []string{"example.com/servoorders/session.UserID", "*example.com/servoorders/session.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "session/session.go:71:6", Scope: "example.com/servoorders/session.UserID"},
 	}, Scopes: []servo.GraphScope{
-		{Key: "example.com/servoorders/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/session.Sessions"}, Members: []string{"*example.com/servoorders/session.Session"}, Borrows: []string{"*example.com/servoorders/session.Config"}},
+		{Key: "example.com/servoorders/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/session.Sessions"}, Members: []string{"*example.com/servoorders/session.Session"}, Borrows: []string{"*example.com/servoorders/session.Config", "*example.com/servoorders/observability.Logger"}},
 	}}
 }
 

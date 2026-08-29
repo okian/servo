@@ -64,6 +64,30 @@ func shouldAvoidBare(name string) bool {
 	return token.IsKeyword(name) || types.Universe.Lookup(name) != nil
 }
 
+// qualifiedBaseName is the package name joined to the type name, for when
+// the bare type name is ambiguous. It is the same judgement aliasFor makes
+// about imports: nine packages each declaring a Config would otherwise
+// take config, config2, ... config9, and a reader of the generated file
+// could not tell which was which, where sessionConfig and apiConfig say so
+// outright.
+func qualifiedBaseName(t types.Type) string {
+	named := unwrapToNamed(t)
+	if named == nil || named.Obj().Pkg() == nil {
+		return baseName(t)
+	}
+	return lowerFirst(named.Obj().Pkg().Name()) + capitalize(named.Obj().Name())
+}
+
+// packageNameOfType is the identifier a generated file refers to t's
+// package by, or "" for a type with no package.
+func packageNameOfType(t types.Type) string {
+	named := unwrapToNamed(t)
+	if named == nil || named.Obj().Pkg() == nil {
+		return ""
+	}
+	return named.Obj().Pkg().Name()
+}
+
 func baseName(t types.Type) string {
 	named := unwrapToNamed(t)
 	if named == nil {

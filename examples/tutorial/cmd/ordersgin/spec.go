@@ -5,9 +5,9 @@ package main
 import (
 	"time"
 
-	"example.com/servoorders/api"
 	"example.com/servoorders/broker"
 	"example.com/servoorders/cache"
+	"example.com/servoorders/ginapi"
 	"example.com/servoorders/mocks"
 	"example.com/servoorders/natsbroker"
 	"example.com/servoorders/notifier"
@@ -20,7 +20,7 @@ import (
 
 func wire() {
 	servo.Build(
-		servo.Root[*api.Server](),
+		servo.Root[*ginapi.Server](),
 		servo.Root[*notifier.Notifier](),
 
 		// One session per user, not one per process. Linger keeps it

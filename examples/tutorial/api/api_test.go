@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -52,7 +53,7 @@ func (f *fakeSessions) Acquire(ctx context.Context) (*session.Session, func(), e
 	defer f.mu.Unlock()
 	s, ok := f.by[key]
 	if !ok {
-		s = session.New(key, f.cfg)
+		s = session.New(key, f.cfg, quietLogger())
 		f.by[key] = s
 	}
 	return s, func() {}, nil
@@ -98,7 +99,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	limitCfg := &resilience.Config{RPS: 1000}
 	sessionCfg := &session.Config{Recent: 10}
 	issuer := auth.New(authCfg)
-	orders := service.New(repo, orderCache, pub)
+	orders := service.New(repo, orderCache, pub, quietLogger())
 	authSvc := service.NewAuthService(users, issuer)
 	metrics := observability.NewMetrics()
 	tracer, err := observability.NewTracer(&observability.Config{})
@@ -114,7 +115,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	users.EXPECT().GetByUsername(gomock.Any(), "alice").Return(testUser, nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound).AnyTimes()
 
-	srv := api.New(&api.Config{}, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(limitCfg, metrics), newFakeSessions(sessionCfg))
+	srv := api.New(&api.Config{}, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(limitCfg, metrics), newFakeSessions(sessionCfg), quietLogger())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, repo, issuer
@@ -249,14 +250,14 @@ func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	apiCfg := &api.Config{HTTPAddr: "127.0.0.1:0"}
 	limitCfg := &resilience.Config{RPS: 1000}
 	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
-	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl))
+	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl), quietLogger())
 	authSvc := service.NewAuthService(mocks.NewMockUserRepository(ctrl), issuer)
 	tracer, err := observability.NewTracer(&observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
 	testMetrics := observability.NewMetrics()
-	srv := api.New(apiCfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(limitCfg, testMetrics), newFakeSessions(&session.Config{Recent: 10}))
+	srv := api.New(apiCfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(limitCfg, testMetrics), newFakeSessions(&session.Config{Recent: 10}), quietLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -364,4 +365,11 @@ func authedGetJSON(t *testing.T, ts *httptest.Server, token, path string, into a
 		json.NewDecoder(resp.Body).Decode(into)
 	}
 	return resp.StatusCode
+}
+
+// quietLogger is the owned logger type with its output discarded, so a
+// test exercises the same code path production does without writing to
+// stdout.
+func quietLogger() *observability.Logger {
+	return &observability.Logger{Logger: slog.New(slog.DiscardHandler)}
 }

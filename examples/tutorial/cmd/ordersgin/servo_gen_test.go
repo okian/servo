@@ -16,33 +16,24 @@
 //	[L3] *example.com/servoorders/observability.Logger
 //	      deps: *example.com/servoorders/observability.Config
 //	      capabilities: none | binding: sole candidate | observability/logging.go:35:6
-//	[L2] *example.com/servoorders/api.Config
+//	[L2] *example.com/servoorders/ginapi.Config
 //	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | api/server.go:45:6
-//	[L2] *example.com/servoorders/postgres.Config
-//	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | postgres/postgres.go:37:6
-//	[L3] *example.com/servoorders/postgres.Store
-//	      deps: *example.com/servoorders/postgres.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | postgres/postgres.go:41:6
-//	[L2] *example.com/servoorders/redis.Config
-//	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | redis/redis.go:36:6
-//	[L3] *example.com/servoorders/redis.Cache
-//	      deps: *example.com/servoorders/redis.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:40:6
-//	[L4] *example.com/servoorders/resilience.CircuitBreakerCache
-//	      deps: *example.com/servoorders/redis.Cache
-//	      capabilities: none | binding: explicit bind | resilience/breaker.go:38:6
-//	[L2] *example.com/servoorders/natsbroker.Config
-//	      deps: *example.com/servoorders/config.Env
-//	      capabilities: none | binding: sole candidate | natsbroker/natsbroker.go:35:6
-//	[L3] *example.com/servoorders/natsbroker.Publisher
-//	      deps: *example.com/servoorders/natsbroker.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | natsbroker/natsbroker.go:46:6
-//	[L5] *example.com/servoorders/service.OrderService
-//	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/resilience.CircuitBreakerCache, *example.com/servoorders/natsbroker.Publisher, *example.com/servoorders/observability.Logger
+//	      capabilities: none | binding: sole candidate | ginapi/server.go:48:6
+//	[L1] *example.com/servoorders/mocks.OrderRepositoryForServo
+//	      deps: none
+//	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:24:6
+//	[L1] *example.com/servoorders/mocks.OrderCacheForServo
+//	      deps: none
+//	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:44:6
+//	[L1] *example.com/servoorders/mocks.EventPublisherForServo
+//	      deps: none
+//	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:54:6
+//	[L4] *example.com/servoorders/service.OrderService
+//	      deps: *example.com/servoorders/mocks.OrderRepositoryForServo, *example.com/servoorders/mocks.OrderCacheForServo, *example.com/servoorders/mocks.EventPublisherForServo, *example.com/servoorders/observability.Logger
 //	      capabilities: none | binding: sole candidate | service/service.go:28:6
+//	[L1] *example.com/servoorders/mocks.UserRepositoryForServo
+//	      deps: none
+//	      capabilities: none | binding: explicit bind | mocks/servo_adapters.go:34:6
 //	[L2] *example.com/servoorders/auth.Config
 //	      deps: *example.com/servoorders/config.Env
 //	      capabilities: none | binding: sole candidate | auth/auth.go:35:6
@@ -50,7 +41,7 @@
 //	      deps: *example.com/servoorders/auth.Config
 //	      capabilities: none | binding: sole candidate | auth/auth.go:39:6
 //	[L4] *example.com/servoorders/service.AuthService
-//	      deps: *example.com/servoorders/postgres.Store, *example.com/servoorders/auth.Issuer
+//	      deps: *example.com/servoorders/mocks.UserRepositoryForServo, *example.com/servoorders/auth.Issuer
 //	      capabilities: none | binding: sole candidate | service/auth_service.go:18:6
 //	[L1] *example.com/servoorders/observability.Metrics
 //	      deps: none
@@ -64,9 +55,9 @@
 //	[L3] *example.com/servoorders/resilience.RateLimiter
 //	      deps: *example.com/servoorders/resilience.Config, *example.com/servoorders/observability.Metrics
 //	      capabilities: none | binding: sole candidate | resilience/ratelimit.go:33:6
-//	[L6] *example.com/servoorders/api.Server
-//	      deps: *example.com/servoorders/api.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions, *example.com/servoorders/observability.Logger
-//	      capabilities: Runner, Finalizer | binding: sole candidate | api/server.go:49:6
+//	[L5] *example.com/servoorders/ginapi.Server
+//	      deps: *example.com/servoorders/ginapi.Config, *example.com/servoorders/service.OrderService, *example.com/servoorders/service.AuthService, *example.com/servoorders/auth.Issuer, *example.com/servoorders/observability.Metrics, *example.com/servoorders/observability.Tracer, *example.com/servoorders/resilience.RateLimiter, example.com/servoorders/session.Sessions, *example.com/servoorders/observability.Logger
+//	      capabilities: Runner, Finalizer | binding: sole candidate | ginapi/server.go:52:6
 //	[L2] *example.com/servoorders/notifier.Config
 //	      deps: *example.com/servoorders/config.Env
 //	      capabilities: none | binding: sole candidate | notifier/notifier.go:28:6
@@ -94,14 +85,12 @@ import (
 	"syscall"
 	"time"
 
-	"example.com/servoorders/api"
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
-	"example.com/servoorders/natsbroker"
+	"example.com/servoorders/ginapi"
+	"example.com/servoorders/mocks"
 	"example.com/servoorders/notifier"
 	"example.com/servoorders/observability"
-	"example.com/servoorders/postgres"
-	"example.com/servoorders/redis"
 	"example.com/servoorders/resilience"
 	"example.com/servoorders/service"
 	"example.com/servoorders/session"
@@ -109,53 +98,44 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-type App struct {
-	env                   *config.Env
-	sessionConfig         *session.Config
-	observabilityConfig   *observability.Config
-	logger                *observability.Logger
-	apiConfig             *api.Config
-	postgresConfig        *postgres.Config
-	store                 *postgres.Store
-	storeStopOnce         sync.Once
-	storeStopResult       servo.NodeResult
-	redisConfig           *redis.Config
-	cache                 *redis.Cache
-	cacheStopOnce         sync.Once
-	cacheStopResult       servo.NodeResult
-	circuitBreakerCache   *resilience.CircuitBreakerCache
-	natsbrokerConfig      *natsbroker.Config
-	publisher             *natsbroker.Publisher
-	publisherStopOnce     sync.Once
-	publisherStopResult   servo.NodeResult
-	orderService          *service.OrderService
-	authConfig            *auth.Config
-	issuer                *auth.Issuer
-	authService           *service.AuthService
-	metrics               *observability.Metrics
-	tracer                *observability.Tracer
-	tracerStopOnce        sync.Once
-	tracerStopResult      servo.NodeResult
-	resilienceConfig      *resilience.Config
-	rateLimiter           *resilience.RateLimiter
-	server                *api.Server
-	serverStopOnce        sync.Once
-	serverStopResult      servo.NodeResult
-	notifierConfig        *notifier.Config
-	notifier              *notifier.Notifier
-	userIDScope           *userIDScope
-	sessions              sessionsAccessor
-	userIDScopeStopOnce   sync.Once
-	userIDScopeStopResult servo.NodeResult
-	startupReport         servo.StartupReport
+type TestApp struct {
+	env                     *config.Env
+	sessionConfig           *session.Config
+	observabilityConfig     *observability.Config
+	logger                  *observability.Logger
+	ginapiConfig            *ginapi.Config
+	orderRepositoryForServo *mocks.OrderRepositoryForServo
+	orderCacheForServo      *mocks.OrderCacheForServo
+	eventPublisherForServo  *mocks.EventPublisherForServo
+	orderService            *service.OrderService
+	userRepositoryForServo  *mocks.UserRepositoryForServo
+	authConfig              *auth.Config
+	issuer                  *auth.Issuer
+	authService             *service.AuthService
+	metrics                 *observability.Metrics
+	tracer                  *observability.Tracer
+	tracerStopOnce          sync.Once
+	tracerStopResult        servo.NodeResult
+	resilienceConfig        *resilience.Config
+	rateLimiter             *resilience.RateLimiter
+	server                  *ginapi.Server
+	serverStopOnce          sync.Once
+	serverStopResult        servo.NodeResult
+	notifierConfig          *notifier.Config
+	notifier                *notifier.Notifier
+	userIDScope             *testUserIDScope
+	sessions                testSessionsAccessor
+	userIDScopeStopOnce     sync.Once
+	userIDScopeStopResult   servo.NodeResult
+	startupReport           servo.StartupReport
 }
 
-// userIDScope is the registry for scope example.com/servoorders/session.UserID. One entry per live key, each
+// testUserIDScope is the registry for scope example.com/servoorders/session.UserID. One entry per live key, each
 // owning its own reference count and linger timer in its own goroutine.
-type userIDScope struct {
-	app    *App
+type testUserIDScope struct {
+	app    *TestApp
 	mu     sync.RWMutex
-	items  map[session.UserID]*userIDEntry
+	items  map[session.UserID]*testUserIDEntry
 	closed bool
 	// quit is closed once, by Shutdown, and read by every entry loop.
 	quit chan struct{}
@@ -182,14 +162,14 @@ type userIDScope struct {
 	// retry misses — but an entry in this window is still very much an
 	// instance: Shutdown has to wait for it, Max has to count it, and
 	// Stats must not report the scope quiet while it is running.
-	tearing map[*userIDEntry]struct{}
+	tearing map[*testUserIDEntry]struct{}
 }
 
-func newUserIDScope(ctx context.Context, app *App) *userIDScope {
-	return &userIDScope{
+func newTestUserIDScope(ctx context.Context, app *TestApp) *testUserIDScope {
+	return &testUserIDScope{
 		app:     app,
-		items:   map[session.UserID]*userIDEntry{},
-		tearing: map[*userIDEntry]struct{}{},
+		items:   map[session.UserID]*testUserIDEntry{},
+		tearing: map[*testUserIDEntry]struct{}{},
 		quit:    make(chan struct{}),
 		base:    context.WithoutCancel(ctx),
 		linger:  servo.LingerWindow(5 * time.Minute),
@@ -197,7 +177,7 @@ func newUserIDScope(ctx context.Context, app *App) *userIDScope {
 	}
 }
 
-func (s *userIDScope) Stats() servo.ScopeStats {
+func (s *testUserIDScope) Stats() servo.ScopeStats {
 	s.mu.RLock()
 	live := s.liveLocked()
 	s.mu.RUnlock()
@@ -206,13 +186,13 @@ func (s *userIDScope) Stats() servo.ScopeStats {
 
 // liveLocked is how many instances exist: mapped, plus those that have
 // left the map but are still tearing down. Callers hold s.mu.
-func (s *userIDScope) liveLocked() int { return len(s.items) + len(s.tearing) }
+func (s *testUserIDScope) liveLocked() int { return len(s.items) + len(s.tearing) }
 
 // lookupOrCreate takes the read lock on the hit path and the write lock,
 // with a second look, on the miss path: sync.RWMutex has no atomic
 // upgrade, so two cold acquires of the same key would otherwise both
 // create, orphaning one entry and the goroutine it was about to start.
-func (s *userIDScope) lookupOrCreate(key session.UserID) (*userIDEntry, bool, error) {
+func (s *testUserIDScope) lookupOrCreate(key session.UserID) (*testUserIDEntry, bool, error) {
 	s.mu.RLock()
 	e, ok := s.items[key]
 	closed := s.closed
@@ -239,7 +219,7 @@ func (s *userIDScope) lookupOrCreate(key session.UserID) (*userIDEntry, bool, er
 		return nil, false, servo.ErrScopeFull
 	}
 	ctx, cancel := context.WithCancel(s.base)
-	e = &userIDEntry{
+	e = &testUserIDEntry{
 		scope: s, key: key, ctx: ctx, cancel: cancel,
 		joins: make(chan struct{}), leaves: make(chan struct{}),
 		ready: make(chan struct{}), dead: make(chan struct{}), torn: make(chan struct{}),
@@ -251,7 +231,7 @@ func (s *userIDScope) lookupOrCreate(key session.UserID) (*userIDEntry, bool, er
 // remove deletes key only while it still maps to this exact entry. A
 // dying entry is never revived — a new incarnation is a new entry with a
 // new goroutine — and that replacement may already have claimed the key.
-func (s *userIDScope) remove(key session.UserID, e *userIDEntry) {
+func (s *testUserIDScope) remove(key session.UserID, e *testUserIDEntry) {
 	s.mu.Lock()
 	if s.items[key] == e {
 		delete(s.items, key)
@@ -262,7 +242,7 @@ func (s *userIDScope) remove(key session.UserID, e *userIDEntry) {
 // beginTeardown moves an entry out of the map and into tearing in one
 // step. Both have to happen under the same lock: an entry visible in
 // neither set is one Shutdown would not wait for and Max would not count.
-func (s *userIDScope) beginTeardown(e *userIDEntry) {
+func (s *testUserIDScope) beginTeardown(e *testUserIDEntry) {
 	s.mu.Lock()
 	s.tearing[e] = struct{}{}
 	if s.items[e.key] == e {
@@ -277,7 +257,7 @@ func (s *userIDScope) beginTeardown(e *userIDEntry) {
 // documented way to wait for a scope to go quiet, a test that waited
 // that way and then read Evictions could observe the instance gone
 // and its eviction uncounted.
-func (s *userIDScope) endTeardown(e *userIDEntry, result servo.NodeResult) {
+func (s *testUserIDScope) endTeardown(e *testUserIDEntry, result servo.NodeResult) {
 	s.mu.Lock()
 	delete(s.tearing, e)
 	s.evictions.Add(1)
@@ -290,7 +270,7 @@ func (s *userIDScope) endTeardown(e *userIDEntry, result servo.NodeResult) {
 // abandon unwinds an entry whose construction failed, so it leaves
 // nothing behind in the map and any waiter gets the error rather than
 // blocking on an instance that will never exist.
-func (s *userIDScope) abandon(e *userIDEntry, err error) error {
+func (s *testUserIDScope) abandon(e *testUserIDEntry, err error) error {
 	s.remove(e.key, e)
 	e.cancel()
 	e.buildErr = err
@@ -304,11 +284,11 @@ func (s *userIDScope) abandon(e *userIDEntry, err error) error {
 	return err
 }
 
-// userIDEntry is one live key's instances plus the channels its loop
+// testUserIDEntry is one live key's instances plus the channels its loop
 // selects on. Everything mutable about the reference count lives inside
 // that loop as a local variable, so there is nothing here to lock.
-type userIDEntry struct {
-	scope  *userIDScope
+type testUserIDEntry struct {
+	scope  *testUserIDScope
 	key    session.UserID
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -340,7 +320,7 @@ type userIDEntry struct {
 	session     *session.Session
 }
 
-func (e *userIDEntry) name() string {
+func (e *testUserIDEntry) name() string {
 	return fmt.Sprintf("%s[%v]", "scope example.com/servoorders/session.UserID", e.key)
 }
 
@@ -352,7 +332,7 @@ func (e *userIDEntry) name() string {
 // reference by construction and never sends a join for it. Starting at
 // zero would leave an entry whose creator gave up before joining alive
 // with no reference and no timer armed — live forever, held by nobody.
-func (e *userIDEntry) loop() {
+func (e *testUserIDEntry) loop() {
 	refs := 1
 	var timer *time.Timer
 	var linger <-chan time.Time
@@ -423,7 +403,7 @@ func (e *userIDEntry) loop() {
 // drainResult, which teardown merges, so the entry comes back
 // abandoned: the report is the only place a promise broken this way
 // could show, and a clean one would hide it entirely.
-func (e *userIDEntry) drainRefs(refs int) {
+func (e *testUserIDEntry) drainRefs(refs int) {
 	if refs <= 0 {
 		return
 	}
@@ -444,7 +424,7 @@ func (e *userIDEntry) drainRefs(refs int) {
 // evict removes the key from the map BEFORE announcing the entry's death.
 // Reversed, an acquirer that lost the join race would retry, look the key
 // up, find this same dying entry, and never terminate.
-func (e *userIDEntry) evict() {
+func (e *testUserIDEntry) evict() {
 	e.scope.beginTeardown(e)
 	close(e.dead)
 	e.stopResult = e.teardown()
@@ -456,7 +436,7 @@ func (e *userIDEntry) evict() {
 // the same level order and with the same rollback shape as the App's own
 // constructor. It runs in the acquiring goroutine, not under the scope's
 // lock, so one slow constructor cannot freeze every other key.
-func (e *userIDEntry) build() error {
+func (e *testUserIDEntry) build() error {
 	a := e.scope.app
 
 	session := session.New(e.key, a.sessionConfig, a.logger)
@@ -470,7 +450,7 @@ func (e *userIDEntry) build() error {
 	return nil
 }
 
-func (e *userIDEntry) stopSession(ctx context.Context) []servo.NodeResult {
+func (e *testUserIDEntry) stopSession(ctx context.Context) []servo.NodeResult {
 	var results []servo.NodeResult
 	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/session.Session", e.session.Flush))
 	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/session.Session", e.session.Stop))
@@ -480,7 +460,7 @@ func (e *userIDEntry) stopSession(ctx context.Context) []servo.NodeResult {
 // rollback stops whatever build() managed to construct, newest first.
 // The error paths inside build() unroll a known prefix inline; this is
 // for the panic path, which cannot know how far it got.
-func (e *userIDEntry) rollback() {
+func (e *testUserIDEntry) rollback() {
 	ctx := context.Background()
 	if e.built > 0 {
 		e.stopSession(ctx)
@@ -493,7 +473,7 @@ func (e *userIDEntry) rollback() {
 // streaming consumer unblocks before its context is pulled out from
 // under it; Flush comes after the Run goroutines have returned, so
 // anything Run buffered is flushed rather than discarded.
-func (e *userIDEntry) teardown() servo.NodeResult {
+func (e *testUserIDEntry) teardown() servo.NodeResult {
 	ctx := context.Background()
 	var results []servo.NodeResult
 	// Set only when the reference drain overran its budget, so this
@@ -507,7 +487,7 @@ func (e *userIDEntry) teardown() servo.NodeResult {
 	return servo.MergeNodeResults(e.name(), results...)
 }
 
-func (e *userIDEntry) waitRun(context.Context) error {
+func (e *testUserIDEntry) waitRun(context.Context) error {
 	e.runWG.Wait()
 	e.runMu.Lock()
 	defer e.runMu.Unlock()
@@ -516,7 +496,7 @@ func (e *userIDEntry) waitRun(context.Context) error {
 
 // waitTorn blocks until this entry has finished tearing down. Shutdown
 // calls it through servo.RunStop so the wait is bounded.
-func (e *userIDEntry) waitTorn(ctx context.Context) error {
+func (e *testUserIDEntry) waitTorn(ctx context.Context) error {
 	select {
 	case <-e.torn:
 		return nil
@@ -530,7 +510,7 @@ func (e *userIDEntry) waitTorn(ctx context.Context) error {
 // use of the instance, not the lifetime of ctx: cancellation is not
 // completion, and a client disconnecting mid-handler must not free an
 // instance whose deferred cleanups are still running.
-func (s *userIDScope) acquireSession(ctx context.Context) (*session.Session, func(), error) {
+func (s *testUserIDScope) acquireSession(ctx context.Context) (*session.Session, func(), error) {
 	// A context that can never be done disables the release backstop
 	// below, so a caller who forgets the closure would pin this instance
 	// for the life of the process. Refusing is the only way to say so.
@@ -604,7 +584,7 @@ func (s *userIDScope) acquireSession(ctx context.Context) (*session.Session, fun
 	}
 }
 
-func (s *userIDScope) start(entry *userIDEntry) (err error) {
+func (s *testUserIDScope) start(entry *testUserIDEntry) (err error) {
 	started := false
 	defer func() {
 		if started {
@@ -630,7 +610,7 @@ func (s *userIDScope) start(entry *userIDEntry) (err error) {
 // backstop behind it. Both paths run the same sync.Once, so a caller who
 // forgets the closure still releases when their request ends — later
 // than ideal, but not never.
-func (e *userIDEntry) releaser(ctx context.Context) func() {
+func (e *testUserIDEntry) releaser(ctx context.Context) func() {
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
@@ -648,22 +628,22 @@ func (e *userIDEntry) releaser(ctx context.Context) func() {
 	}
 }
 
-// sessionsAccessor is what satisfies example.com/servoorders/session.Sessions. It is a distinct type per
+// testSessionsAccessor is what satisfies example.com/servoorders/session.Sessions. It is a distinct type per
 // exposed root so that two roots sharing one scope can each have a method
 // literally named Acquire.
-type sessionsAccessor struct{ s *userIDScope }
+type testSessionsAccessor struct{ s *testUserIDScope }
 
-func (x sessionsAccessor) Acquire(ctx context.Context) (*session.Session, func(), error) {
+func (x testSessionsAccessor) Acquire(ctx context.Context) (*session.Session, func(), error) {
 	return x.s.acquireSession(ctx)
 }
 
-func (x sessionsAccessor) Stats() servo.ScopeStats { return x.s.Stats() }
+func (x testSessionsAccessor) Stats() servo.ScopeStats { return x.s.Stats() }
 
-func New(ctx context.Context) (*App, error) {
-	a := &App{}
+func NewTestApp(ctx context.Context) (*TestApp, error) {
+	a := &TestApp{}
 
-	a.userIDScope = newUserIDScope(ctx, a)
-	a.sessions = sessionsAccessor{s: a.userIDScope}
+	a.userIDScope = newTestUserIDScope(ctx, a)
+	a.sessions = testSessionsAccessor{s: a.userIDScope}
 
 	env := config.NewEnv()
 	a.env = env
@@ -683,56 +663,29 @@ func New(ctx context.Context) (*App, error) {
 	logger := observability.NewLogger(observabilityConfig)
 	a.logger = logger
 
-	apiConfig, err := api.NewConfig(env)
+	ginapiConfig, err := ginapi.NewConfig(env)
 	if err != nil {
 		return nil, err
 	}
-	a.apiConfig = apiConfig
+	a.ginapiConfig = ginapiConfig
 
-	postgresConfig, err := postgres.NewConfig(env)
-	if err != nil {
-		return nil, err
-	}
-	a.postgresConfig = postgresConfig
+	orderRepositoryForServo := mocks.NewOrderRepositoryForServo()
+	a.orderRepositoryForServo = orderRepositoryForServo
 
-	store, err := postgres.New(postgresConfig)
-	if err != nil {
-		return nil, err
-	}
-	a.store = store
+	orderCacheForServo := mocks.NewOrderCacheForServo()
+	a.orderCacheForServo = orderCacheForServo
 
-	redisConfig, err := redis.NewConfig(env)
-	if err != nil {
-		_ = a.stopStore(ctx)
-		return nil, err
-	}
-	a.redisConfig = redisConfig
+	eventPublisherForServo := mocks.NewEventPublisherForServo()
+	a.eventPublisherForServo = eventPublisherForServo
 
-	cache := redis.New(redisConfig)
-	a.cache = cache
-
-	circuitBreakerCache := resilience.NewCircuitBreakerCache(cache)
-	a.circuitBreakerCache = circuitBreakerCache
-
-	natsbrokerConfig, err := natsbroker.NewConfig(env)
-	if err != nil {
-		_ = a.stopCache(ctx)
-		_ = a.stopStore(ctx)
-		return nil, err
-	}
-	a.natsbrokerConfig = natsbrokerConfig
-
-	publisher := natsbroker.New(natsbrokerConfig)
-	a.publisher = publisher
-
-	orderService := service.New(store, circuitBreakerCache, publisher, logger)
+	orderService := service.New(orderRepositoryForServo, orderCacheForServo, eventPublisherForServo, logger)
 	a.orderService = orderService
+
+	userRepositoryForServo := mocks.NewUserRepositoryForServo()
+	a.userRepositoryForServo = userRepositoryForServo
 
 	authConfig, err := auth.NewConfig(env)
 	if err != nil {
-		_ = a.stopPublisher(ctx)
-		_ = a.stopCache(ctx)
-		_ = a.stopStore(ctx)
 		return nil, err
 	}
 	a.authConfig = authConfig
@@ -740,7 +693,7 @@ func New(ctx context.Context) (*App, error) {
 	issuer := auth.New(authConfig)
 	a.issuer = issuer
 
-	authService := service.NewAuthService(store, issuer)
+	authService := service.NewAuthService(userRepositoryForServo, issuer)
 	a.authService = authService
 
 	metrics := observability.NewMetrics()
@@ -748,9 +701,6 @@ func New(ctx context.Context) (*App, error) {
 
 	tracer, err := observability.NewTracer(observabilityConfig)
 	if err != nil {
-		_ = a.stopPublisher(ctx)
-		_ = a.stopCache(ctx)
-		_ = a.stopStore(ctx)
 		return nil, err
 	}
 	a.tracer = tracer
@@ -758,9 +708,6 @@ func New(ctx context.Context) (*App, error) {
 	resilienceConfig, err := resilience.NewConfig(env)
 	if err != nil {
 		_ = a.stopTracer(ctx)
-		_ = a.stopPublisher(ctx)
-		_ = a.stopCache(ctx)
-		_ = a.stopStore(ctx)
 		return nil, err
 	}
 	a.resilienceConfig = resilienceConfig
@@ -768,16 +715,13 @@ func New(ctx context.Context) (*App, error) {
 	rateLimiter := resilience.NewRateLimiter(resilienceConfig, metrics)
 	a.rateLimiter = rateLimiter
 
-	server := api.New(apiConfig, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions, logger)
+	server := ginapi.New(ginapiConfig, orderService, authService, issuer, metrics, tracer, rateLimiter, a.sessions, logger)
 	a.server = server
 
 	notifierConfig, err := notifier.NewConfig(env)
 	if err != nil {
 		_ = a.stopServer(ctx)
 		_ = a.stopTracer(ctx)
-		_ = a.stopPublisher(ctx)
-		_ = a.stopCache(ctx)
-		_ = a.stopStore(ctx)
 		return nil, err
 	}
 	a.notifierConfig = notifierConfig
@@ -785,69 +729,10 @@ func New(ctx context.Context) (*App, error) {
 	notifier := notifier.New(notifierConfig, logger)
 	a.notifier = notifier
 
-	{
-		var timingMu sync.Mutex
-		g, gctx := errgroup.WithContext(ctx)
-		g.Go(func() error {
-			start := time.Now()
-			err := a.store.Init(gctx)
-			timingMu.Lock()
-			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servoorders/postgres.Store", Duration: time.Since(start)})
-			timingMu.Unlock()
-			return err
-		})
-		g.Go(func() error {
-			start := time.Now()
-			err := a.cache.Init(gctx)
-			timingMu.Lock()
-			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servoorders/redis.Cache", Duration: time.Since(start)})
-			timingMu.Unlock()
-			return err
-		})
-		g.Go(func() error {
-			start := time.Now()
-			err := a.publisher.Init(gctx)
-			timingMu.Lock()
-			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servoorders/natsbroker.Publisher", Duration: time.Since(start)})
-			timingMu.Unlock()
-			return err
-		})
-		if err := g.Wait(); err != nil {
-			report := a.Shutdown(ctx)
-			return nil, errors.Join(err, report)
-		}
-	}
 	return a, nil
 }
 
-func (a *App) stopStore(ctx context.Context) servo.NodeResult {
-	a.storeStopOnce.Do(func() {
-		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/postgres.Store", a.store.Stop))
-		a.storeStopResult = servo.MergeNodeResults("*example.com/servoorders/postgres.Store", results...)
-	})
-	return a.storeStopResult
-}
-
-func (a *App) stopCache(ctx context.Context) servo.NodeResult {
-	a.cacheStopOnce.Do(func() {
-		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/redis.Cache", a.cache.Stop))
-		a.cacheStopResult = servo.MergeNodeResults("*example.com/servoorders/redis.Cache", results...)
-	})
-	return a.cacheStopResult
-}
-
-func (a *App) stopPublisher(ctx context.Context) servo.NodeResult {
-	a.publisherStopOnce.Do(func() {
-		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/natsbroker.Publisher", a.publisher.Stop))
-		a.publisherStopResult = servo.MergeNodeResults("*example.com/servoorders/natsbroker.Publisher", results...)
-	})
-	return a.publisherStopResult
-}
-
-func (a *App) stopTracer(ctx context.Context) servo.NodeResult {
+func (a *TestApp) stopTracer(ctx context.Context) servo.NodeResult {
 	a.tracerStopOnce.Do(func() {
 		var results []servo.NodeResult
 		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/observability.Tracer", a.tracer.Stop))
@@ -856,16 +741,16 @@ func (a *App) stopTracer(ctx context.Context) servo.NodeResult {
 	return a.tracerStopResult
 }
 
-func (a *App) stopServer(ctx context.Context) servo.NodeResult {
+func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
 	a.serverStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/api.Server", a.server.Stop))
-		a.serverStopResult = servo.MergeNodeResults("*example.com/servoorders/api.Server", results...)
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/ginapi.Server", a.server.Stop))
+		a.serverStopResult = servo.MergeNodeResults("*example.com/servoorders/ginapi.Server", results...)
 	})
 	return a.serverStopResult
 }
 
-func (a *App) stopUserIDScope(ctx context.Context) servo.NodeResult {
+func (a *TestApp) stopUserIDScope(ctx context.Context) servo.NodeResult {
 	a.userIDScopeStopOnce.Do(func() {
 		s := a.userIDScope
 		s.mu.Lock()
@@ -877,7 +762,7 @@ func (a *App) stopUserIDScope(ctx context.Context) servo.NodeResult {
 		// ago has already left the map, and waiting only on what is mapped
 		// would let Shutdown return while its Drain and Flush were still
 		// running — against singletons this very function is about to stop.
-		entries := make([]*userIDEntry, 0, s.liveLocked())
+		entries := make([]*testUserIDEntry, 0, s.liveLocked())
 		for _, e := range s.items {
 			entries = append(entries, e)
 		}
@@ -905,14 +790,14 @@ func (a *App) stopUserIDScope(ctx context.Context) servo.NodeResult {
 	return a.userIDScopeStopResult
 }
 
-func (a *App) Run(ctx context.Context) error {
+func (a *TestApp) Run(ctx context.Context) error {
 	g, gctx := errgroup.WithContext(ctx)
 	g.Go(func() error { return a.server.Run(gctx) })
 	g.Go(func() error { return a.notifier.Run(gctx) })
 	return g.Wait()
 }
 
-func (a *App) Shutdown(ctx context.Context) servo.Report {
+func (a *TestApp) Shutdown(ctx context.Context) servo.Report {
 	forceExit := make(chan os.Signal, 1)
 	signal.Notify(forceExit, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(forceExit)
@@ -930,60 +815,39 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	nodes = append(nodes, a.stopServer(ctx))
 	nodes = append(nodes, a.stopUserIDScope(ctx))
 	nodes = append(nodes, a.stopTracer(ctx))
-	nodes = append(nodes, a.stopPublisher(ctx))
-	nodes = append(nodes, a.stopCache(ctx))
-	nodes = append(nodes, a.stopStore(ctx))
 	return servo.Report{Nodes: nodes}
 }
 
-func (a *App) Health(ctx context.Context) servo.Report {
-	var nodes []servo.NodeResult
-	if err := a.store.Health(ctx); err != nil {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/postgres.Store", Status: servo.StatusFailed, Err: err})
-	} else {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/postgres.Store", Status: servo.StatusOK})
-	}
-	if err := a.cache.Health(ctx); err != nil {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/redis.Cache", Status: servo.StatusFailed, Err: err})
-	} else {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/redis.Cache", Status: servo.StatusOK})
-	}
-	if err := a.publisher.Health(ctx); err != nil {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/natsbroker.Publisher", Status: servo.StatusFailed, Err: err})
-	} else {
-		nodes = append(nodes, servo.NodeResult{Name: "*example.com/servoorders/natsbroker.Publisher", Status: servo.StatusOK})
-	}
-	return servo.Report{Nodes: nodes}
-}
-
-func (a *App) Ready(ctx context.Context) servo.Report {
+func (a *TestApp) Health(ctx context.Context) servo.Report {
 	var nodes []servo.NodeResult
 	return servo.Report{Nodes: nodes}
 }
 
-func (a *App) Graph() servo.Graph {
+func (a *TestApp) Ready(ctx context.Context) servo.Report {
+	var nodes []servo.NodeResult
+	return servo.Report{Nodes: nodes}
+}
+
+func (a *TestApp) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
 		{Type: "*example.com/servoorders/config.Env", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole implementation", Pos: "config/config.go:42:6"},
 		{Type: "*example.com/servoorders/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "session/session.go:67:6"},
 		{Type: "*example.com/servoorders/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:21:6"},
 		{Type: "*example.com/servoorders/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "observability/logging.go:35:6"},
-		{Type: "*example.com/servoorders/api.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "api/server.go:45:6"},
-		{Type: "*example.com/servoorders/postgres.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "postgres/postgres.go:37:6"},
-		{Type: "*example.com/servoorders/postgres.Store", Level: 3, Deps: []string{"*example.com/servoorders/postgres.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "postgres/postgres.go:41:6"},
-		{Type: "*example.com/servoorders/redis.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "redis/redis.go:36:6"},
-		{Type: "*example.com/servoorders/redis.Cache", Level: 3, Deps: []string{"*example.com/servoorders/redis.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "sole candidate", Pos: "redis/redis.go:40:6"},
-		{Type: "*example.com/servoorders/resilience.CircuitBreakerCache", Level: 4, Deps: []string{"*example.com/servoorders/redis.Cache"}, Capabilities: nil, Binding: "explicit bind", Pos: "resilience/breaker.go:38:6"},
-		{Type: "*example.com/servoorders/natsbroker.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "natsbroker/natsbroker.go:35:6"},
-		{Type: "*example.com/servoorders/natsbroker.Publisher", Level: 3, Deps: []string{"*example.com/servoorders/natsbroker.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "natsbroker/natsbroker.go:46:6"},
-		{Type: "*example.com/servoorders/service.OrderService", Level: 5, Deps: []string{"*example.com/servoorders/postgres.Store", "*example.com/servoorders/resilience.CircuitBreakerCache", "*example.com/servoorders/natsbroker.Publisher", "*example.com/servoorders/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/service.go:28:6"},
+		{Type: "*example.com/servoorders/ginapi.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "ginapi/server.go:48:6"},
+		{Type: "*example.com/servoorders/mocks.OrderRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:24:6"},
+		{Type: "*example.com/servoorders/mocks.OrderCacheForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:44:6"},
+		{Type: "*example.com/servoorders/mocks.EventPublisherForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:54:6"},
+		{Type: "*example.com/servoorders/service.OrderService", Level: 4, Deps: []string{"*example.com/servoorders/mocks.OrderRepositoryForServo", "*example.com/servoorders/mocks.OrderCacheForServo", "*example.com/servoorders/mocks.EventPublisherForServo", "*example.com/servoorders/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/service.go:28:6"},
+		{Type: "*example.com/servoorders/mocks.UserRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "mocks/servo_adapters.go:34:6"},
 		{Type: "*example.com/servoorders/auth.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "auth/auth.go:35:6"},
 		{Type: "*example.com/servoorders/auth.Issuer", Level: 3, Deps: []string{"*example.com/servoorders/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "auth/auth.go:39:6"},
-		{Type: "*example.com/servoorders/service.AuthService", Level: 4, Deps: []string{"*example.com/servoorders/postgres.Store", "*example.com/servoorders/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/auth_service.go:18:6"},
+		{Type: "*example.com/servoorders/service.AuthService", Level: 4, Deps: []string{"*example.com/servoorders/mocks.UserRepositoryForServo", "*example.com/servoorders/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "service/auth_service.go:18:6"},
 		{Type: "*example.com/servoorders/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "observability/metrics.go:18:6"},
 		{Type: "*example.com/servoorders/observability.Tracer", Level: 3, Deps: []string{"*example.com/servoorders/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "observability/tracing.go:29:6"},
 		{Type: "*example.com/servoorders/resilience.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:29:6"},
 		{Type: "*example.com/servoorders/resilience.RateLimiter", Level: 3, Deps: []string{"*example.com/servoorders/resilience.Config", "*example.com/servoorders/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "resilience/ratelimit.go:33:6"},
-		{Type: "*example.com/servoorders/api.Server", Level: 6, Deps: []string{"*example.com/servoorders/api.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "api/server.go:49:6"},
+		{Type: "*example.com/servoorders/ginapi.Server", Level: 5, Deps: []string{"*example.com/servoorders/ginapi.Config", "*example.com/servoorders/service.OrderService", "*example.com/servoorders/service.AuthService", "*example.com/servoorders/auth.Issuer", "*example.com/servoorders/observability.Metrics", "*example.com/servoorders/observability.Tracer", "*example.com/servoorders/resilience.RateLimiter", "example.com/servoorders/session.Sessions", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer"}, Binding: "sole candidate", Pos: "ginapi/server.go:52:6"},
 		{Type: "*example.com/servoorders/notifier.Config", Level: 2, Deps: []string{"*example.com/servoorders/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "notifier/notifier.go:28:6"},
 		{Type: "*example.com/servoorders/notifier.Notifier", Level: 4, Deps: []string{"*example.com/servoorders/notifier.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "notifier/notifier.go:37:6"},
 		{Type: "*example.com/servoorders/session.Session", Level: 1, Deps: []string{"example.com/servoorders/session.UserID", "*example.com/servoorders/session.Config", "*example.com/servoorders/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "session/session.go:71:6", Scope: "example.com/servoorders/session.UserID"},
@@ -992,6 +856,6 @@ func (a *App) Graph() servo.Graph {
 	}}
 }
 
-func (a *App) Report() servo.StartupReport {
+func (a *TestApp) Report() servo.StartupReport {
 	return a.startupReport
 }

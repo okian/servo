@@ -89,8 +89,17 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	// StartupReport would redeclare it.
 	e.names.AllocateName("startupReport")
 
+	// Names are chosen for the whole set before any is allocated: one
+	// that two nodes would both want is qualified by package, and one
+	// that would shadow a package a later construction still has to call
+	// into is qualified too.
+	base := baseNamesFor(resolved.Order)
+	shadowed := shadowingBaseNames(resolved.Order, base)
 	for _, n := range resolved.Order {
-		e.varName[n.Key] = allocateAppField(e.names, n.Provider.ResultType)
+		if shadowed[n] {
+			base[n] = qualifiedBaseName(n.Provider.ResultType)
+		}
+		e.varName[n.Key] = allocateAppField(e.names, base[n])
 	}
 	e.planScopes()
 
@@ -343,4 +352,26 @@ func levelGroups(nodes []*resolve.Node, pred func(*resolve.Node) bool) [][]*reso
 		groups[i] = byLevel[lvl]
 	}
 	return groups
+}
+
+// shadowingBaseNames finds the nodes whose variable would shadow a package
+// that a later construction in the same function still has to call into.
+//
+// New declares each node's variable in one flat scope, so `config :=
+// session.NewConfig(env)` hides the config package from every line after
+// it. The declaration itself is fine — the right-hand side is resolved
+// before the variable exists — which is why a package providing exactly
+// one node has always worked, and why this stayed latent until one
+// provided two.
+func shadowingBaseNames(nodes []*resolve.Node, base map[*resolve.Node]string) map[*resolve.Node]bool {
+	out := map[*resolve.Node]bool{}
+	for i, n := range nodes {
+		for _, later := range nodes[i+1:] {
+			if packageNameOfType(later.Provider.ResultType) == base[n] {
+				out[n] = true
+				break
+			}
+		}
+	}
+	return out
 }
