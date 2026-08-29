@@ -47,15 +47,15 @@ func wire() { servo.Build(servo.Root[*worker.Consumer]()) }
 	runGoModTidy(t, dir)
 
 	// Generate only apisvc, leaving workersvc's servo_gen.go missing.
-	if err := runGenerate(filepath.Join(dir, "cmd", "apisvc")); err != nil {
-		t.Fatalf("runGenerate(apisvc): %v", err)
+	if err := runGenerate(cfg(filepath.Join(dir, "cmd", "apisvc"))); err != nil {
+		t.Fatalf("runGenerate(cfg(apisvc)): %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "cmd", "apisvc", generatedFileName)); err != nil {
 		t.Fatalf("expected apisvc's servo_gen.go to exist: %v", err)
 	}
 
 	var doctorErr error
-	out := captureStdout(t, func() { doctorErr = runDoctor(dir) })
+	out := captureStdout(t, func() { doctorErr = runDoctor(cfg(dir)) })
 	if doctorErr == nil {
 		t.Fatal("expected an overall failure: workersvc has no generated file")
 	}
@@ -81,7 +81,7 @@ func TestRunDoctorFailsOnNonInjectorBuildErrors(t *testing.T) {
 	mustWriteFile(t, dir, "broken/broken.go", "package broken\n\nfunc Bad() int { return \"not an int\" }\n")
 
 	var err error
-	out := captureStdout(t, func() { err = runDoctor(dir) })
+	out := captureStdout(t, func() { err = runDoctor(cfg(dir)) })
 	if err == nil {
 		t.Fatal("expected runDoctor to fail on a build error outside the injector")
 	}
@@ -96,7 +96,7 @@ func TestRunDoctorFailsWhenModuleDoesNotLoad(t *testing.T) {
 	mustWriteFile(t, dir, "main.go", "package main\n\nfunc main() {}\n")
 
 	var err error
-	out := captureStdout(t, func() { err = runDoctor(dir) })
+	out := captureStdout(t, func() { err = runDoctor(cfg(dir)) })
 	if err == nil || !strings.Contains(err.Error(), "problems found") {
 		t.Fatalf("got err=%v, want 'problems found'", err)
 	}
@@ -113,7 +113,7 @@ func TestRunDoctorFailsWhenSpecMissing(t *testing.T) {
 	runGoModTidy(t, dir)
 
 	var err error
-	out := captureStdout(t, func() { err = runDoctor(dir) })
+	out := captureStdout(t, func() { err = runDoctor(cfg(dir)) })
 	if err == nil || !strings.Contains(err.Error(), "problems found") {
 		t.Fatalf("got err=%v, want 'problems found'", err)
 	}
@@ -126,7 +126,7 @@ func TestRunDoctorFailsWhenGeneratedFileMissing(t *testing.T) {
 	dir := writeAppModule(t, "example.com/doctormissing", true, "")
 
 	var err error
-	out := captureStdout(t, func() { err = runDoctor(dir) })
+	out := captureStdout(t, func() { err = runDoctor(cfg(dir)) })
 	if err == nil {
 		t.Fatal("expected an error when the generated file is missing")
 	}
@@ -137,7 +137,7 @@ func TestRunDoctorFailsWhenGeneratedFileMissing(t *testing.T) {
 
 func TestRunDoctorFailsWhenGeneratedFileStale(t *testing.T) {
 	dir := writeAppModule(t, "example.com/doctorstale", true, "")
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 	genPath := filepath.Join(dir, "cmd", "app", generatedFileName)
@@ -146,7 +146,7 @@ func TestRunDoctorFailsWhenGeneratedFileStale(t *testing.T) {
 	}
 
 	var err error
-	out := captureStdout(t, func() { err = runDoctor(dir) })
+	out := captureStdout(t, func() { err = runDoctor(cfg(dir)) })
 	if err == nil {
 		t.Fatal("expected an error when the generated file is stale")
 	}
@@ -157,12 +157,12 @@ func TestRunDoctorFailsWhenGeneratedFileStale(t *testing.T) {
 
 func TestRunDoctorWarnsWhenNotTrackedByGit(t *testing.T) {
 	dir := writeAppModule(t, "example.com/doctoruntracked", true, "")
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 
 	var err error
-	out := captureStdout(t, func() { err = runDoctor(dir) })
+	out := captureStdout(t, func() { err = runDoctor(cfg(dir)) })
 	if err != nil {
 		t.Fatalf("runDoctor should succeed (untracked is a warning, not a failure): %v", err)
 	}
@@ -176,7 +176,7 @@ func TestRunDoctorCleanWhenTrackedByGit(t *testing.T) {
 		t.Skip("git not available")
 	}
 	dir := writeAppModule(t, "example.com/doctorclean", true, "")
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 
@@ -205,7 +205,7 @@ func TestRunDoctorCleanWhenTrackedByGit(t *testing.T) {
 	}
 
 	var err error
-	out := captureStdout(t, func() { err = runDoctor(dir) })
+	out := captureStdout(t, func() { err = runDoctor(cfg(dir)) })
 	if err != nil {
 		t.Fatalf("runDoctor on a fully clean, committed tree: %v", err)
 	}

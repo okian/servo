@@ -55,14 +55,30 @@ one. The README's Mocking section walks through the pattern for `moq`, `mockery`
 *What to do instead:* for the general case, nothing. Take the value as a struct field and set it
 after construction, or test that component directly instead of through the graph.
 
-### The graph can't change based on the environment
+### The graph can't change at run time
 
-One `servo.Build` call produces exactly one graph. There's no conditional wiring, no per-environment
-variation, no feature-flagged nodes. You can't generate one graph for staging and a different one
-for production.
+One `servo.Build` call produces exactly one graph, and it is fixed when you generate. There's no
+conditional wiring evaluated at startup, no feature-flagged nodes, no reading an environment
+variable to decide what to construct.
 
-*What to do instead:* put the variation behind an interface whose single implementation branches
-internally, or build separate binaries that each have their own spec file.
+*What to do instead:* put run-time variation behind an interface whose single implementation
+branches internally.
+
+Variation at *build* time is supported, and is a different thing: gate a second spec file on a build
+tag and generate a variant for it, so `go build` and `go build -tags=prod` each select their own
+generated file. See [Build variants](reference/cli.md#build-variants). The cost is a spec file per
+configuration — one shared spec can't do it, because a marker naming a type that only exists under
+`prod` cannot type-check without `prod`.
+
+### Build variants only cover build tags, not `GOOS`/`GOARCH`
+
+`servo generate --tags=prod` records `prod` in the generated file's build constraint, so the wrong
+variant can never be selected. `GOOS=linux servo generate` resolves the Linux graph — servo inherits
+the environment like any go tool — but nothing in the output records that, so a graph that differs
+across platforms has no variant mechanism to keep it straight.
+
+This only bites if your providers actually differ by platform, which is rare for the kind of
+component servo wires. If yours do, gate them on a build tag of your own and use that.
 
 ### Your spec file is read, never run
 

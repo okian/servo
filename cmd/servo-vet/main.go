@@ -14,8 +14,11 @@
 package main
 
 import (
+	"fmt"
 	"go/ast"
 	"go/types"
+	"os"
+	"strings"
 
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/singlechecker"
@@ -31,7 +34,43 @@ var Analyzer = &analysis.Analyzer{
 }
 
 func main() {
+	rejectInheritedTagsFlag(os.Args[1:])
 	singlechecker.Main(Analyzer)
+}
+
+// rejectInheritedTagsFlag turns a silent lie into an error.
+//
+// go/analysis registers a -tags flag on every singlechecker binary and
+// documents it as "no effect (deprecated)": checker.Run builds its own
+// packages.Config with no BuildFlags, so `servo-vet -tags=prod ./...`
+// exits 0 having analysed only the default configuration. Anyone who typed
+// it believes prod was covered. There is no hook to make it work — the
+// config is internal to x/tools — so the honest move is to refuse and name
+// the invocation that does.
+//
+// Scanned from os.Args rather than registered as a flag: the flag already
+// exists on flag.CommandLine by the time Main runs, and registering a
+// second one panics.
+func rejectInheritedTagsFlag(args []string) {
+	for i, arg := range args {
+		name, value, hasValue := strings.Cut(arg, "=")
+		if name != "-tags" && name != "--tags" {
+			continue
+		}
+		if !hasValue && i+1 < len(args) {
+			value = args[i+1]
+		}
+		if value == "" {
+			continue
+		}
+		fmt.Fprintf(os.Stderr, `servo-vet: -tags does not work here — it is go/analysis's own no-op flag, so this run would silently analyse only the default configuration.
+
+To check a tagged configuration, drive servo-vet through the go command, which does understand build flags:
+
+	go vet -tags=%s -vettool=$(which servo-vet) ./...
+`, value)
+		os.Exit(2)
+	}
 }
 
 var markerNames = map[string]bool{

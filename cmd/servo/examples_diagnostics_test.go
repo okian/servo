@@ -10,7 +10,7 @@ import (
 // apart as resolve's diagnostic wording evolves.
 
 func TestExampleDiagnosticMissingProvider(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/missing")
+	err := runGenerate(cfg("../../examples/diagnostics/missing"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}
@@ -24,7 +24,7 @@ func TestExampleDiagnosticMissingProvider(t *testing.T) {
 }
 
 func TestExampleDiagnosticAmbiguousProvider(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/ambiguous")
+	err := runGenerate(cfg("../../examples/diagnostics/ambiguous"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}
@@ -41,7 +41,7 @@ func TestExampleDiagnosticAmbiguousProvider(t *testing.T) {
 }
 
 func TestExampleDiagnosticCycle(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/cycle")
+	err := runGenerate(cfg("../../examples/diagnostics/cycle"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}
@@ -59,7 +59,7 @@ func TestExampleDiagnosticCycle(t *testing.T) {
 // matching what generation actually prints.
 
 func TestExampleDiagnosticWidening(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/widening")
+	err := runGenerate(cfg("../../examples/diagnostics/widening"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}
@@ -78,7 +78,7 @@ func TestExampleDiagnosticWidening(t *testing.T) {
 }
 
 func TestExampleDiagnosticCrossScope(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/crossscope")
+	err := runGenerate(cfg("../../examples/diagnostics/crossscope"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}
@@ -96,7 +96,7 @@ func TestExampleDiagnosticCrossScope(t *testing.T) {
 }
 
 func TestExampleDiagnosticExtractorCycle(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/extractor")
+	err := runGenerate(cfg("../../examples/diagnostics/extractor"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}
@@ -118,7 +118,7 @@ func TestExampleDiagnosticExtractorCycle(t *testing.T) {
 }
 
 func TestExampleDiagnosticUndeclaredScope(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/undeclared")
+	err := runGenerate(cfg("../../examples/diagnostics/undeclared"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}
@@ -146,7 +146,7 @@ func TestExampleDiagnosticUndeclaredScope(t *testing.T) {
 // before writing the extractor, and until now its wording was pinned only
 // by a resolver unit test rather than by a fixture anyone can run.
 func TestExampleDiagnosticScopedWithoutScopeKey(t *testing.T) {
-	err := runGenerate("../../examples/diagnostics/noscopekey")
+	err := runGenerate(cfg("../../examples/diagnostics/noscopekey"))
 	if err == nil {
 		t.Fatal("expected generation to fail")
 	}

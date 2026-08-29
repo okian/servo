@@ -27,8 +27,8 @@ type pipeline struct {
 // loadModule does the spec-independent work shared regardless of how many
 // injectors end up being processed: load the package graph once, load
 // capabilities once.
-func loadModule(dir string) (*load.Loaded, *graph.Capabilities, error) {
-	loaded, err := load.Load(load.Config{Dir: dir})
+func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, error) {
+	loaded, err := load.Load(cfg)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -54,8 +54,8 @@ func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec)
 // buildPipeline resolves exactly one injector — for commands that operate
 // on a single target and ask the caller to disambiguate with --dir when
 // the scope contains more than one (see load.FindSpec).
-func buildPipeline(dir string) (*pipeline, error) {
-	loaded, caps, err := loadModule(dir)
+func buildPipeline(cfg load.Config) (*pipeline, error) {
+	loaded, caps, err := loadModule(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -73,8 +73,8 @@ func buildPipeline(dir string) (*pipeline, error) {
 // generate/check, which process a whole multi-injector module in one pass
 // (matching `wire ./...`'s discovery model) rather than erroring when more
 // than one spec exists.
-func buildPipelines(dir string) ([]*pipeline, error) {
-	loaded, caps, err := loadModule(dir)
+func buildPipelines(cfg load.Config) ([]*pipeline, error) {
+	loaded, caps, err := loadModule(cfg)
 	if err != nil {
 		return nil, err
 	}

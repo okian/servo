@@ -15,7 +15,7 @@ import (
 func TestGenerateThenCheckRoundTrips(t *testing.T) {
 	dir := writeAppModule(t, "example.com/roundtrip", true, "")
 
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 	genPath := filepath.Join(dir, "cmd", "app", generatedFileName)
@@ -27,7 +27,7 @@ func TestGenerateThenCheckRoundTrips(t *testing.T) {
 		t.Errorf("generated file missing the New constructor:\n%s", out)
 	}
 
-	if err := runCheck(dir); err != nil {
+	if err := runCheck(cfg(dir)); err != nil {
 		t.Fatalf("runCheck on a freshly generated file: %v", err)
 	}
 }
@@ -35,7 +35,7 @@ func TestGenerateThenCheckRoundTrips(t *testing.T) {
 func TestCheckFailsWhenGeneratedFileMissing(t *testing.T) {
 	dir := writeAppModule(t, "example.com/missing", true, "")
 
-	err := runCheck(dir)
+	err := runCheck(cfg(dir))
 	if err == nil || !strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("got err=%v, want a 'does not exist' error", err)
 	}
@@ -43,7 +43,7 @@ func TestCheckFailsWhenGeneratedFileMissing(t *testing.T) {
 
 func TestCheckFailsWhenGeneratedFileStale(t *testing.T) {
 	dir := writeAppModule(t, "example.com/stale", true, "")
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 
@@ -52,7 +52,7 @@ func TestCheckFailsWhenGeneratedFileStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := runCheck(dir)
+	err := runCheck(cfg(dir))
 	if err == nil || !strings.Contains(err.Error(), "is stale") {
 		t.Fatalf("got err=%v, want an 'is stale' error", err)
 	}
@@ -96,7 +96,7 @@ func wire() {
 `)
 	runGoModTidy(t, dir)
 
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func wire() {
 		t.Errorf("generated test file missing NewTestApp:\n%s", out)
 	}
 
-	if err := runCheck(dir); err != nil {
+	if err := runCheck(cfg(dir)); err != nil {
 		t.Fatalf("runCheck: %v", err)
 	}
 }
@@ -144,7 +144,7 @@ func wire() { servo.Build(servo.Root[*worker.Consumer]()) }
 `)
 	runGoModTidy(t, dir)
 
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 	for _, svc := range []string{"apisvc", "workersvc"} {
@@ -152,7 +152,7 @@ func wire() { servo.Build(servo.Root[*worker.Consumer]()) }
 			t.Errorf("expected %s to be generated for %s: %v", generatedFileName, svc, err)
 		}
 	}
-	if err := runCheck(dir); err != nil {
+	if err := runCheck(cfg(dir)); err != nil {
 		t.Fatalf("runCheck across both injectors: %v", err)
 	}
 }
@@ -194,7 +194,7 @@ func wire() { servo.Build(servo.Root[*broken.Thing]()) }
 `)
 	runGoModTidy(t, dir)
 
-	err := runGenerate(dir)
+	err := runGenerate(cfg(dir))
 	if err == nil || !strings.Contains(err.Error(), "no provider for int") {
 		t.Fatalf("got err=%v, want it to mention the broken injector's missing int provider", err)
 	}
@@ -207,10 +207,10 @@ func wire() { servo.Build(servo.Root[*broken.Thing]()) }
 
 	// runCheck must behave the same way: report the broken one, but still
 	// treat the healthy one as passing (no complaint about it).
-	if err := runGenerate(dir); err == nil {
+	if err := runGenerate(cfg(dir)); err == nil {
 		t.Fatal("expected runGenerate to keep failing on the still-broken injector")
 	}
-	checkErr := runCheck(dir)
+	checkErr := runCheck(cfg(dir))
 	if checkErr == nil || !strings.Contains(checkErr.Error(), "no provider for int") {
 		t.Fatalf("got err=%v, want runCheck to also mention the broken injector", checkErr)
 	}
@@ -237,10 +237,10 @@ func TestGenerateWorksUnderVendorMode(t *testing.T) {
 	}
 
 	t.Setenv("GOFLAGS", "-mod=vendor")
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate under -mod=vendor: %v", err)
 	}
-	if err := runCheck(dir); err != nil {
+	if err := runCheck(cfg(dir)); err != nil {
 		t.Fatalf("runCheck under -mod=vendor: %v", err)
 	}
 }
@@ -248,7 +248,7 @@ func TestGenerateWorksUnderVendorMode(t *testing.T) {
 func TestGenerateReportsResolutionErrors(t *testing.T) {
 	dir := writeAppModule(t, "example.com/ambiguous", false, "")
 
-	err := runGenerate(dir)
+	err := runGenerate(cfg(dir))
 	if err == nil || !strings.Contains(err.Error(), "no provider for") {
 		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
 	}
@@ -282,7 +282,7 @@ func wire() {
 `)
 	runGoModTidy(t, dir)
 
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("runGenerate: %v", err)
 	}
 	genPath := filepath.Join(dir, "wiring", generatedFileName)
@@ -297,7 +297,7 @@ func wire() {
 		t.Errorf("generated file missing the New constructor:\n%s", out)
 	}
 
-	if err := runCheck(dir); err != nil {
+	if err := runCheck(cfg(dir)); err != nil {
 		t.Fatalf("runCheck on the non-main injector: %v", err)
 	}
 }
@@ -305,14 +305,14 @@ func wire() {
 func TestCheckReportsResolutionErrors(t *testing.T) {
 	dir := writeAppModule(t, "example.com/ambiguous2", false, "")
 
-	err := runCheck(dir)
+	err := runCheck(cfg(dir))
 	if err == nil || !strings.Contains(err.Error(), "no provider for") {
 		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
 	}
 }
 
 func TestRunCheckFailsWhenModuleFailsToLoad(t *testing.T) {
-	err := runCheck(filepath.Join(t.TempDir(), "does-not-exist"))
+	err := runCheck(cfg(filepath.Join(t.TempDir(), "does-not-exist")))
 	if err == nil {
 		t.Fatal("expected an error for a nonexistent directory")
 	}
@@ -325,7 +325,7 @@ func TestRunCheckFailsWhenModuleFailsToLoad(t *testing.T) {
 // directory where servo_gen.go should be.
 func TestCheckOneFailsWhenGeneratedFileIsADirectory(t *testing.T) {
 	dir := writeAppModule(t, "example.com/checkgenisdir", true, "")
-	p, err := buildPipeline(dir)
+	p, err := buildPipeline(cfg(dir))
 	if err != nil {
 		t.Fatalf("buildPipeline: %v", err)
 	}
@@ -373,7 +373,7 @@ func TestGenerateOneFailsWhenEmitFails(t *testing.T) {
 // temp file at all when the target directory itself isn't writable.
 func TestGenerateOneFailsWhenOutputDirIsReadOnly(t *testing.T) {
 	dir := writeAppModule(t, "example.com/genreadonlydir", true, "")
-	p, err := buildPipeline(dir)
+	p, err := buildPipeline(cfg(dir))
 	if err != nil {
 		t.Fatalf("buildPipeline: %v", err)
 	}
@@ -430,7 +430,7 @@ func wire() {
 `)
 	runGoModTidy(t, dir)
 
-	err := runGenerate(dir)
+	err := runGenerate(cfg(dir))
 	if err == nil || !strings.Contains(err.Error(), "no provider for *example.com/badoverride/missing.Ghost") {
 		t.Fatalf("got err=%v, want a 'no provider' error naming the override's dangling target", err)
 	}
@@ -524,7 +524,7 @@ var _ = servo.Build(
 `)
 	runGoModTidy(t, dir)
 
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 
@@ -586,7 +586,7 @@ var _ = servo.Build(
 `)
 	runGoModTidy(t, dir)
 
-	if err := runGenerate(dir); err != nil {
+	if err := runGenerate(cfg(dir)); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 

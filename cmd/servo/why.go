@@ -4,13 +4,14 @@ import (
 	"fmt"
 
 	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
 	"github.com/okian/servo/v3/internal/resolve"
 )
 
 // runWhy answers "why is this even in my binary": the shortest path from
 // any root to the named node.
-func runWhy(dir, query string, jsonOut bool) error {
-	p, err := buildPipeline(dir)
+func runWhy(cfg load.Config, query string, jsonOut bool) error {
+	p, err := buildPipeline(cfg)
 	if err != nil {
 		return err
 	}

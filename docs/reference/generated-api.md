@@ -21,6 +21,11 @@ the spec file belongs next to the `main.go` that will call `New`.
 so the two are never in one build. `servo_gen_test.go` is a `_test.go` file, so the test-only
 constructor never reaches your binary.
 
+When `servo generate` is given [build flags](cli.md#build-flags), the names and the constraints both
+follow the configuration: `--tags=prod` writes `servo.prod_gen.go` gated `//go:build !servoinject &&
+prod`, alongside rather than instead of the default variant. See
+[Build variants](cli.md#build-variants).
+
 Both carry the standard marker:
 
 ```go

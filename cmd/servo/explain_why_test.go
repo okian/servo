@@ -10,7 +10,7 @@ func TestRunExplainKnownNode(t *testing.T) {
 	dir := writeAppModule(t, "example.com/explain", true, "")
 
 	out := captureStdout(t, func() {
-		if err := runExplain(dir, "postgres.DB", false); err != nil {
+		if err := runExplain(cfg(dir), "postgres.DB", false); err != nil {
 			t.Fatalf("runExplain: %v", err)
 		}
 	})
@@ -36,7 +36,7 @@ func TestRunExplainJSON(t *testing.T) {
 	dir := writeAppModule(t, "example.com/explainjson", true, "")
 
 	out := captureStdout(t, func() {
-		if err := runExplain(dir, "api.Server", true); err != nil {
+		if err := runExplain(cfg(dir), "api.Server", true); err != nil {
 			t.Fatalf("runExplain: %v", err)
 		}
 	})
@@ -49,14 +49,14 @@ func TestRunExplainJSON(t *testing.T) {
 
 func TestRunExplainUnknownNode(t *testing.T) {
 	dir := writeAppModule(t, "example.com/explainmissing", true, "")
-	err := runExplain(dir, "nope.Nothing", false)
+	err := runExplain(cfg(dir), "nope.Nothing", false)
 	if err == nil || !strings.Contains(err.Error(), "no node matches") {
 		t.Fatalf("got err=%v, want a 'no node matches' error", err)
 	}
 }
 
 func TestRunExplainFailsWhenModuleFailsToLoad(t *testing.T) {
-	err := runExplain(filepath.Join(t.TempDir(), "does-not-exist"), "api.Server", false)
+	err := runExplain(cfg(filepath.Join(t.TempDir(), "does-not-exist")), "api.Server", false)
 	if err == nil {
 		t.Fatal("expected an error for a nonexistent directory")
 	}
@@ -64,7 +64,7 @@ func TestRunExplainFailsWhenModuleFailsToLoad(t *testing.T) {
 
 func TestRunExplainFailsWhenResolutionFails(t *testing.T) {
 	dir := writeAppModule(t, "example.com/explainresolvefail", false, "")
-	err := runExplain(dir, "api.Server", false)
+	err := runExplain(cfg(dir), "api.Server", false)
 	if err == nil || !strings.Contains(err.Error(), "no provider for") {
 		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
 	}
@@ -77,7 +77,7 @@ func TestRunWhyFromDeeperNode(t *testing.T) {
 	// shorter than api.Server -> postgres.DB -> logger.Logger (3 hops), so
 	// the shortest path must go through Consumer.
 	out := captureStdout(t, func() {
-		if err := runWhy(dir, "logger.Logger", false); err != nil {
+		if err := runWhy(cfg(dir), "logger.Logger", false); err != nil {
 			t.Fatalf("runWhy: %v", err)
 		}
 	})
@@ -96,7 +96,7 @@ func TestRunWhyOnARootItself(t *testing.T) {
 	dir := writeAppModule(t, "example.com/whyroot", true, "")
 
 	out := captureStdout(t, func() {
-		if err := runWhy(dir, "api.Server", false); err != nil {
+		if err := runWhy(cfg(dir), "api.Server", false); err != nil {
 			t.Fatalf("runWhy: %v", err)
 		}
 	})
@@ -112,7 +112,7 @@ func TestRunWhyJSON(t *testing.T) {
 	dir := writeAppModule(t, "example.com/whyjson", true, "")
 
 	out := captureStdout(t, func() {
-		if err := runWhy(dir, "logger.Logger", true); err != nil {
+		if err := runWhy(cfg(dir), "logger.Logger", true); err != nil {
 			t.Fatalf("runWhy: %v", err)
 		}
 	})
@@ -123,14 +123,14 @@ func TestRunWhyJSON(t *testing.T) {
 
 func TestRunWhyUnknownNode(t *testing.T) {
 	dir := writeAppModule(t, "example.com/whymissing", true, "")
-	err := runWhy(dir, "nope.Nothing", false)
+	err := runWhy(cfg(dir), "nope.Nothing", false)
 	if err == nil || !strings.Contains(err.Error(), "no node matches") {
 		t.Fatalf("got err=%v, want a 'no node matches' error", err)
 	}
 }
 
 func TestRunWhyFailsWhenModuleFailsToLoad(t *testing.T) {
-	err := runWhy(filepath.Join(t.TempDir(), "does-not-exist"), "api.Server", false)
+	err := runWhy(cfg(filepath.Join(t.TempDir(), "does-not-exist")), "api.Server", false)
 	if err == nil {
 		t.Fatal("expected an error for a nonexistent directory")
 	}
@@ -138,7 +138,7 @@ func TestRunWhyFailsWhenModuleFailsToLoad(t *testing.T) {
 
 func TestRunWhyFailsWhenResolutionFails(t *testing.T) {
 	dir := writeAppModule(t, "example.com/whyresolvefail", false, "")
-	err := runWhy(dir, "api.Server", false)
+	err := runWhy(cfg(dir), "api.Server", false)
 	if err == nil || !strings.Contains(err.Error(), "no provider for") {
 		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
 	}
@@ -174,7 +174,7 @@ func wire() {
 	runGoModTidy(t, dir)
 
 	out := captureStdout(t, func() {
-		if err := runWhy(dir, "api.Server", false); err != nil {
+		if err := runWhy(cfg(dir), "api.Server", false); err != nil {
 			t.Fatalf("runWhy: %v", err)
 		}
 	})

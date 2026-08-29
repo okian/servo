@@ -13,7 +13,7 @@ func TestRunInitScaffoldsSpecFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runInit(dir); err != nil {
+	if err := runInit(dir, nil); err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
 
@@ -36,7 +36,7 @@ func TestRunInitScaffoldsSpecFile(t *testing.T) {
 func TestRunInitFallsBackToMainPackage(t *testing.T) {
 	dir := t.TempDir() // empty: no existing .go files to detect a package name from
 
-	if err := runInit(dir); err != nil {
+	if err := runInit(dir, nil); err != nil {
 		t.Fatalf("runInit: %v", err)
 	}
 	out, err := os.ReadFile(filepath.Join(dir, "servo_spec.go"))
@@ -54,7 +54,7 @@ func TestRunInitFailsWhenSpecAlreadyExists(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := runInit(dir)
+	err := runInit(dir, nil)
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("got err=%v, want an 'already exists' error", err)
 	}
@@ -114,7 +114,7 @@ func TestRunInitFailsWhenMkdirAllBlockedByFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := runInit(filepath.Join(blocker, "nested"))
+	err := runInit(filepath.Join(blocker, "nested"), nil)
 	if err == nil {
 		t.Fatal("expected an error when dir's path is blocked by an existing file")
 	}
@@ -131,7 +131,69 @@ func TestRunInitFailsWhenDirNotWritable(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(dir, 0o755) }() // best-effort restore so t.TempDir cleanup can remove it
 
-	if err := runInit(dir); err == nil {
+	if err := runInit(dir, nil); err == nil {
 		t.Fatal("expected an error when the target directory is not writable")
+	}
+}
+
+// TestRunInitScaffoldsAVariantSpec: the scaffold is where the one mistake
+// the variant model allows is cheapest to prevent, so `servo init
+// --tags=prod` must produce a spec already gated for prod, with a
+// go:generate line that regenerates that variant rather than the default.
+func TestRunInitScaffoldsAVariantSpec(t *testing.T) {
+	dir := t.TempDir()
+	if err := runInit(dir, []string{"prod"}); err != nil {
+		t.Fatalf("init --tags=prod: %v", err)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, "servo_spec_prod.go"))
+	if err != nil {
+		t.Fatalf("expected servo_spec_prod.go beside the default spec: %v", err)
+	}
+	for _, want := range []string{
+		"//go:build servoinject && prod",
+		"servo generate --tags=prod",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("scaffolded spec missing %q:\n%s", want, body)
+		}
+	}
+
+	// The default name is untouched, so the two coexist.
+	if _, err := os.Stat(filepath.Join(dir, "servo_spec.go")); !os.IsNotExist(err) {
+		t.Errorf("init --tags=prod should not write servo_spec.go (stat err = %v)", err)
+	}
+}
+
+// TestRunInitWarnsAboutAnUnexcludedSibling covers the step every user will
+// forget: adding a prod variant beside a spec that does not exclude prod
+// leaves two specs visible under --tags=prod, and `servo generate` would
+// then refuse. Saying so at scaffold time is cheaper than saying so later.
+func TestRunInitWarnsAboutAnUnexcludedSibling(t *testing.T) {
+	dir := t.TempDir()
+	if err := runInit(dir, nil); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runInit(dir, []string{"prod"}); err != nil {
+			t.Fatalf("init --tags=prod: %v", err)
+		}
+	})
+	if !strings.Contains(out, "servo_spec.go is also visible with --tags=prod") {
+		t.Errorf("expected a warning naming the unexcluded sibling, got:\n%s", out)
+	}
+	if !strings.Contains(out, "servoinject && !prod") {
+		t.Errorf("expected the warning to give the constraint to narrow it to, got:\n%s", out)
+	}
+}
+
+// TestRunInitRejectsAnUnusableVariantTag confirms the same validation the
+// other commands apply reaches init, so a bad tag is caught before a spec
+// file is written around it.
+func TestRunInitRejectsAnUnusableVariantTag(t *testing.T) {
+	err := run([]string{"init", "--dir", t.TempDir(), "--tags", "linux"})
+	if err == nil || !strings.Contains(err.Error(), "GOOS/GOARCH") {
+		t.Fatalf("init --tags=linux = %v, want the GOOS/GOARCH rejection", err)
 	}
 }

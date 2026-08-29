@@ -401,7 +401,12 @@ specific injector's own directory (e.g. `--dir cmd/api`) scopes the scan to just
 unreachable from it.
 
 `explain`, `why`, and `list` accept `--json` for machine consumption, and `graph` takes
-`--format=json` alongside its text, DOT, and Mermaid renderers. `cmd/servo-vet` is a standalone
+`--format=json` alongside its text, DOT, and Mermaid renderers. Every command that loads packages
+also takes the go build flags that decide which files exist — `--tags`, `--mod`, `--modfile`,
+`--overlay` — spelled exactly as `go build` spells them. `--tags` resolves the graph under those
+tags and writes a correspondingly constrained generated file, so one injector can hold a default and
+a `--tags=prod` variant side by side; see
+[Build variants](./docs/reference/cli.md#build-variants). `cmd/servo-vet` is a standalone
 `go/analysis` analyzer for the two mistakes the compiler can't catch: a marker call in a file
 missing the `servoinject` build tag, and a `ScopeKey` method whose body can reach its own receiver
 (servo calls it on a typed nil). Both are caught in the editor, not at runtime.

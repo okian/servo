@@ -16,5 +16,9 @@ if ! command -v go >/dev/null 2>&1; then
 	exit 0
 fi
 
+# A project with build variants needs one check per configuration, since
+# each variant has its own generated file and `check` only inspects the one
+# its flags select:
+#   go run github.com/okian/servo/v3/cmd/servo check --tags=prod
 echo "pre-commit: servo check"
 go run github.com/okian/servo/v3/cmd/servo check

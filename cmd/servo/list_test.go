@@ -10,7 +10,7 @@ func TestRunListDefaultShowsInScopeCandidates(t *testing.T) {
 	dir := writeAppModule(t, "example.com/list", true, "")
 
 	out := captureStdout(t, func() {
-		if err := runList(dir, false, false, false); err != nil {
+		if err := runList(cfg(dir), false, false, false); err != nil {
 			t.Fatalf("runList: %v", err)
 		}
 	})
@@ -28,7 +28,7 @@ func TestRunListRejectedShowsExcludedFunctions(t *testing.T) {
 	dir := writeAppModule(t, "example.com/listrejected", true, "")
 
 	out := captureStdout(t, func() {
-		if err := runList(dir, true, false, false); err != nil {
+		if err := runList(cfg(dir), true, false, false); err != nil {
 			t.Fatalf("runList --rejected: %v", err)
 		}
 	})
@@ -41,7 +41,7 @@ func TestRunListJSONVariants(t *testing.T) {
 	dir := writeAppModule(t, "example.com/listjson", true, "")
 
 	accepted := captureStdout(t, func() {
-		if err := runList(dir, false, false, true); err != nil {
+		if err := runList(cfg(dir), false, false, true); err != nil {
 			t.Fatalf("runList --json: %v", err)
 		}
 	})
@@ -50,7 +50,7 @@ func TestRunListJSONVariants(t *testing.T) {
 	}
 
 	rejected := captureStdout(t, func() {
-		if err := runList(dir, true, false, true); err != nil {
+		if err := runList(cfg(dir), true, false, true); err != nil {
 			t.Fatalf("runList --rejected --json: %v", err)
 		}
 	})
@@ -63,12 +63,12 @@ func TestRunListAllIncludesOutOfScopeCandidates(t *testing.T) {
 	dir := writeAppModule(t, "example.com/listall", true, "")
 
 	inScope := captureStdout(t, func() {
-		if err := runList(dir, false, false, false); err != nil {
+		if err := runList(cfg(dir), false, false, false); err != nil {
 			t.Fatalf("runList: %v", err)
 		}
 	})
 	all := captureStdout(t, func() {
-		if err := runList(dir, false, true, false); err != nil {
+		if err := runList(cfg(dir), false, true, false); err != nil {
 			t.Fatalf("runList --all: %v", err)
 		}
 	})
@@ -80,7 +80,7 @@ func TestRunListAllIncludesOutOfScopeCandidates(t *testing.T) {
 }
 
 func TestRunListFailsWhenModuleFailsToLoad(t *testing.T) {
-	err := runList(filepath.Join(t.TempDir(), "does-not-exist"), false, false, false)
+	err := runList(cfg(filepath.Join(t.TempDir(), "does-not-exist")), false, false, false)
 	if err == nil {
 		t.Fatal("expected an error for a nonexistent directory")
 	}

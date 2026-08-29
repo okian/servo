@@ -12,7 +12,7 @@ import (
 
 func TestRunExplainScopedNode(t *testing.T) {
 	out := captureStdout(t, func() {
-		if err := runExplain("../../examples/scoped", "chat.Room", false); err != nil {
+		if err := runExplain(cfg("../../examples/scoped"), "chat.Room", false); err != nil {
 			t.Fatalf("runExplain: %v", err)
 		}
 	})
@@ -39,7 +39,7 @@ func TestRunExplainScopedNode(t *testing.T) {
 // than say nothing.
 func TestRunExplainSingletonSaysSo(t *testing.T) {
 	out := captureStdout(t, func() {
-		if err := runExplain("../../examples/scoped", "api.Server", false); err != nil {
+		if err := runExplain(cfg("../../examples/scoped"), "api.Server", false); err != nil {
 			t.Fatalf("runExplain: %v", err)
 		}
 	})
@@ -50,7 +50,7 @@ func TestRunExplainSingletonSaysSo(t *testing.T) {
 
 func TestRunExplainScopedJSON(t *testing.T) {
 	out := captureStdout(t, func() {
-		if err := runExplain("../../examples/scoped", "chat.RoomLog", true); err != nil {
+		if err := runExplain(cfg("../../examples/scoped"), "chat.RoomLog", true); err != nil {
 			t.Fatalf("runExplain: %v", err)
 		}
 	})
@@ -70,7 +70,7 @@ func TestRunExplainScopedJSON(t *testing.T) {
 // so findNode has to look through the scopes to see it.
 func TestRunExplainFindsATransitivelyScopedNode(t *testing.T) {
 	out := captureStdout(t, func() {
-		if err := runExplain("../../examples/scoped", "chat.RoomLog", false); err != nil {
+		if err := runExplain(cfg("../../examples/scoped"), "chat.RoomLog", false); err != nil {
 			t.Fatalf("runExplain: %v", err)
 		}
 	})
@@ -85,7 +85,7 @@ func TestRunExplainFindsATransitivelyScopedNode(t *testing.T) {
 // which is exactly backwards.
 func TestRunWhyReachesThroughAnAccessor(t *testing.T) {
 	out := captureStdout(t, func() {
-		if err := runWhy("../../examples/scoped", "chat.RoomLog", false); err != nil {
+		if err := runWhy(cfg("../../examples/scoped"), "chat.RoomLog", false); err != nil {
 			t.Fatalf("runWhy: %v", err)
 		}
 	})
@@ -102,7 +102,7 @@ func TestRunWhyReachesThroughAnAccessor(t *testing.T) {
 
 func TestRunWhyScopedJSON(t *testing.T) {
 	out := captureStdout(t, func() {
-		if err := runWhy("../../examples/scoped", "chat.Room", true); err != nil {
+		if err := runWhy(cfg("../../examples/scoped"), "chat.Room", true); err != nil {
 			t.Fatalf("runWhy: %v", err)
 		}
 	})
@@ -125,7 +125,7 @@ func TestRunGraphScopedFormats(t *testing.T) {
 	} {
 		t.Run(tc.format, func(t *testing.T) {
 			out := captureStdout(t, func() {
-				if err := runGraph("../../examples/scoped", tc.format); err != nil {
+				if err := runGraph(cfg("../../examples/scoped"), tc.format); err != nil {
 					t.Fatalf("runGraph: %v", err)
 				}
 			})
@@ -142,7 +142,7 @@ func TestRunGraphScopedFormats(t *testing.T) {
 // resolution, so a scoped type's constructor is an ordinary candidate.
 func TestRunListSeesScopedProviders(t *testing.T) {
 	out := captureStdout(t, func() {
-		if err := runList("../../examples/scoped", false, false, false); err != nil {
+		if err := runList(cfg("../../examples/scoped"), false, false, false); err != nil {
 			t.Fatalf("runList: %v", err)
 		}
 	})

@@ -7,15 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/okian/servo/v3/internal/emit"
-)
-
-// generatedFileName is the emitted file's name, placed alongside the spec
-// file it was generated from. generatedTestFileName is the servotest
-// override variant — a _test.go file so it compiles only during `go test`,
-// since NewTestApp/TestApp have no reason to exist in the real binary.
-const (
-	generatedFileName     = "servo_gen.go"
-	generatedTestFileName = "servo_gen_test.go"
+	"github.com/okian/servo/v3/internal/load"
 )
 
 // runGenerate processes every injector found within dir's scope. A module
@@ -23,13 +15,30 @@ const (
 // monorepo's cmd/api, cmd/worker, cmd/migrator) gets all of them generated
 // in one pass, matching `wire ./...`'s discovery model instead of making
 // the caller script a loop over --dir themselves.
-func runGenerate(dir string) error {
-	pipelines, err := buildPipelines(dir)
+func runGenerate(cfg load.Config) error {
+	pipelines, err := buildPipelines(cfg)
 	if err != nil {
 		return err
 	}
 
+	// Every injector's variant overlap is checked before any of them is
+	// written. Resolution failures stay per-injector — generating the
+	// injectors that are fine and reporting the ones that are not is
+	// long-standing behaviour — but an overlap is a property of the
+	// *output layout*, and discovering one halfway through would leave a
+	// tree where some injectors had gained a variant and others had not,
+	// from a command that exited non-zero.
 	var errs []error
+	for _, p := range pipelines {
+		dir := filepath.Dir(p.spec.Pos.Filename)
+		if err := checkVariantOverlap(dir, variantFileName(p.spec.Variant, false), p.spec.GeneratedConstraint); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p.spec.InjectorPkg.PkgPath, err))
+		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+
 	for _, p := range pipelines {
 		if err := generateOne(p); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p.spec.InjectorPkg.PkgPath, err))
@@ -50,7 +59,12 @@ func generateOne(p *pipeline) error {
 	if err != nil {
 		return err
 	}
-	outPath := filepath.Join(filepath.Dir(p.spec.Pos.Filename), generatedFileName)
+	dir := filepath.Dir(p.spec.Pos.Filename)
+	name := variantFileName(p.spec.Variant, false)
+	if err := checkVariantOverlap(dir, name, p.spec.GeneratedConstraint); err != nil {
+		return err
+	}
+	outPath := filepath.Join(dir, name)
 	if err := writeFileAtomic(outPath, out, 0o644); err != nil {
 		return err
 	}
@@ -66,7 +80,7 @@ func generateOne(p *pipeline) error {
 	if err != nil {
 		return err
 	}
-	testOutPath := filepath.Join(filepath.Dir(p.spec.Pos.Filename), generatedTestFileName)
+	testOutPath := filepath.Join(dir, variantFileName(p.spec.Variant, true))
 	return writeFileAtomic(testOutPath, testOut, 0o644)
 }
 

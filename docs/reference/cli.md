@@ -73,17 +73,198 @@ Pointing `--dir` at one injector's own directory narrows the scan to exactly tha
 `package main` can never be imported by another `package main` — sibling injectors are structurally
 unreachable from it.
 
+## Build flags
+
+Servo resolves your graph by loading your module the same way the go command does, so it takes the
+go build flags that decide *which files and packages exist*:
+
+```
+--tags tag,list      additional build tags to consider satisfied during the load
+--mod mode           module download mode: readonly, vendor or mod
+--modfile file       read an alternate go.mod instead of the one in the module root
+--overlay file       read a JSON config file providing an overlay for build operations
+```
+
+Same names, same syntax, same meaning as `go build`. `--tags` takes a comma-separated list (the
+deprecated space-separated form the go command still accepts works here too), and repeating the flag
+takes the last one, exactly as the go command does.
+
+They are accepted by the seven commands that load packages — `generate`, `check`, `graph`,
+`explain`, `why`, `list`, `doctor` — and by no others. `init` and `new` write files without loading
+anything. `migrate` walks the tree with `go/parser` and never evaluates a build constraint at all,
+so a `--tags` there would be a lie: it reads v1 `Register` calls whether or not a tag would have
+excluded the file.
+
+The flags that only change what the compiler or linker *emits* are deliberately absent —
+`-race`, `-cover`, `-trimpath`, `-pgo`. Servo runs neither tool. (`-race` does activate the `race`
+build tag, so `--tags=race` expresses that case explicitly.)
+
+`GOOS` and `GOARCH` have no flag because the go command has none either; set them in the
+environment, as you would for `go build`:
+
+```
+GOOS=linux servo generate
+```
+
+Note what that does *not* do: `GOOS` is not a variant axis. Generating under a different `GOOS`
+rewrites the same `servo_gen.go` in place with the cross-compiled graph, under the same constraint —
+so if your providers differ by platform, that overwrites the graph for your host. See
+[limitations](../limitations.md#build-variants-only-cover-build-tags-not-goosgoarch).
+
+`--modfile` and `--overlay` take paths relative to **your** working directory, not to `--dir`, so
+they behave the way the same flags behave on `go build`.
+
+### `GOFLAGS`
+
+**Servo does not take its tags from `GOFLAGS`, and this is deliberate.** It is the one place where
+"same as the go command" has to yield: `go build` produces a binary you throw away, while
+`servo generate` produces a file you commit. A `GOFLAGS=-tags=prod` in a shell profile or a CI image
+would resolve a different graph and write it into the file named for the *default* configuration —
+prod-only providers under a `//go:build !servoinject` constraint claiming to compile everywhere,
+with nothing in the diff to explain it. What servo commits has to be a function of your repository
+and the flags you actually typed, so pass `--tags` explicitly.
+
+Every other `GOFLAGS` entry still reaches the go command untouched — `-mod`, `-modfile` and the rest
+behave exactly as they would for `go list`, because servo never overrides them.
+
+### Tags servo rejects
+
+A tag that can't distinguish one build from another can't gate a variant, so servo rejects it up
+front rather than letting it fail somewhere unhelpful:
+
+| Rejected | Why |
+| --- | --- |
+| A `GOOS` or `GOARCH` name (`linux`, `arm64`, `js`, …) | Passing one through `-tags` doesn't select a platform, it *adds a second one*, and the build then fails inside the standard library with `GOOS redeclared in this block` and nothing pointing back at servo. Set the environment variable instead |
+| `unix`, `cgo`, `gc`, `gccgo`, `boringcrypto` | The toolchain already sets these for the build they describe, so they're true without being passed and can't distinguish one variant from another. (`race`, `msan` and `asan` are *not* in this group: they're set only when `-race`/`-msan`/`-asan` is passed, so they can gate a variant like any other tag) |
+| `go1.21` and friends | The toolchain sets a tag for its own release and every earlier one |
+| `ignore` | The ecosystem's universal "never build this file" tag, used by the standard library's own generator sources. Passing it doesn't select anything — it compiles every deliberately-excluded file in your module *and* the standard library, and the failure lands somewhere in `$GOROOT` |
+| Anything with a character outside letters, digits, `_` and `.` | No `//go:build` line could name it. The go command accepts such a tag silently, which is exactly why servo has to be the one to say so |
+| An uppercase tag | Servo's own rule, not Go's. Variant file names are derived from the tag set, and `prod` and `Prod` name the same file on a case-insensitive filesystem |
+
+## Build variants
+
+Passing `--tags` changes the graph servo resolves — providers behind `//go:build prod` become
+visible, and providers behind `//go:build !prod` disappear. A generated file describing that graph
+references types that only exist in that configuration, so it must not compile in any other. Servo
+handles this by giving each configuration its own file.
+
+**The generated file's constraint is your spec file's constraint, mirrored.** Servo negates the
+`servoinject` term and leaves everything else exactly as you wrote it, then conjoins the tags the
+graph was resolved under:
+
+| Spec file's constraint | Flags | Generated file | Its constraint |
+| --- | --- | --- | --- |
+| `servoinject` | *(none)* | `servo_gen.go` | `!servoinject` |
+| `servoinject` | `--tags=prod` | `servo.prod_gen.go` | `!servoinject && prod` |
+| `servoinject && !prod` | *(none)* | `servo_gen.go` | `!servoinject && !prod` |
+| `servoinject && prod` | `--tags=prod` | `servo.prod_gen.go` | `!servoinject && prod` |
+| `servoinject && !prod` | `--tags=dev` | `servo.dev_gen.go` | `!servoinject && !prod && dev` |
+
+Servo never invents a negation. If two variants have to exclude each other — a default build and a
+`prod` build, say — you write that in the spec files themselves, in Go's own constraint language:
+
+```go
+// cmd/app/spec.go
+//go:build servoinject && !prod
+
+// cmd/app/spec_prod.go
+//go:build servoinject && prod
+```
+
+Now `servo generate` sees only the first spec and writes `servo_gen.go` gated `!servoinject &&
+!prod`; `servo generate --tags=prod` sees only the second and writes `servo.prod_gen.go` gated
+`!servoinject && prod`. The two coexist, `go build` picks the first, `go build -tags=prod` picks the
+second, and neither run touches the other's file.
+
+This is also why a variant needs its own spec file rather than a flag on one shared spec: a
+`servo.Bind[store.Store, *postgres.PG]()` naming a type that only exists under `prod` cannot
+type-check in the default configuration, so no single spec file could describe both.
+
+**Servo refuses to write two variants that don't exclude each other.** Deriving the constraint from
+your spec file is what frees servo from having to track the variant set, but nothing stops you from
+generating two variants that overlap — the plain `//go:build servoinject` that `servo init`
+scaffolds, generated a second time with `--tags=prod`, gives `!servoinject` beside
+`!servoinject && prod`, and `go build -tags=prod` would compile both. `generate` and `check` both
+detect that and stop, naming the two files and the fix:
+
+```
+servo: servo.prod_gen.go and servo_gen.go would both compile in the same build
+
+  servo_gen.go:      //go:build !servoinject
+  servo.prod_gen.go: //go:build !servoinject && prod
+```
+
+Detecting it is servo's job; resolving it is not. Rewriting the sibling file to insert the
+`&& !prod` that would fix it would make generation depend on which files happen to be in your
+working tree, so servo reports and stops.
+
+**A configuration you never generated has no generated file.** Constraints are ordinary Go, so this
+behaves exactly as hand-written conditional compilation does. Spec files gated `servoinject && prod`
+and `servoinject && dev` with no default leave a plain `go build` with no `New` at all —
+`undefined: New`, the same error a missing `//go:build` case would give you anywhere else. Writing
+the default variant's spec as the catch-all (`servoinject && !prod && !dev`) is what makes an
+unrecognised tag fall back to it. Asking for two variants at once (`go build -tags=prod,dev`) is a different matter: `prod` and `dev`
+gated only against the *default* still overlap each other, so servo refuses to generate the second
+one until each spec excludes all the others — `servoinject && prod && !dev` and
+`servoinject && dev && !prod`. With more than two configurations that is O(n²) terms by hand, which
+is the honest cost of the model; servo will not let you skip it silently.
+
+**Most tag usage needs no variant at all.** If `//go:build prod` and `//go:build !prod` both define
+`func New() *DB`, the resolved graph is identical either way, so one `servo_gen.go` already works.
+You only need a second variant when the graph genuinely differs.
+
+### Variant file names
+
+`servo_gen.go` and `servo_gen_test.go` when there are no tags — unchanged, so nothing moves in an
+existing project. With tags, the canonical (sorted, deduplicated) tag set becomes a dot-separated
+segment: `servo.prod_gen.go`, `servo.integration-prod_gen.go`, and the `servo.prod_gen_test.go`
+override variant alongside.
+
+Both separators are load-bearing, and both are the opposite of the obvious choice:
+
+- **A dot before the tags, not an underscore.** Go derives an *implicit* `GOOS`/`GOARCH` constraint
+  from a file's underscore-separated suffix, so a `servo_gen_linux.go` would be generated,
+  committed, and then silently ignored on every non-Linux machine. `go/build` cuts the name at the
+  first dot before looking for underscores, which makes everything after `servo.` invisible to that
+  rule for any tag, with no list of reserved names to keep current.
+- **A dash between tags, not an underscore.** `_` is legal inside a build tag, so joining with it
+  would map the tag sets `{a_b}` and `{a, b}` to the same file and lose one of them. `-` cannot
+  appear in a tag at all, so the name stays unambiguous.
+
+### Checking variants
+
+`check` and `doctor` inspect the variant matching the flags you give them, so a module with two
+variants gets one run each:
+
+```
+servo check
+servo check --tags=prod
+```
+
+In a multi-injector module, an injector whose spec is gated out of the current configuration gets no
+generated file, so its `main.go` calls a `New` that nothing supplies. `generate` and `check` stay
+quiet about that — excluding an injector from a configuration is a legitimate thing to do — but
+`doctor` reports it, because the alternative is an `undefined: New` from the compiler much later:
+
+```
+$ servo doctor --tags=prod
+  [FAIL] example.com/app/cmd/worker holds a spec file this configuration cannot see, so nothing
+         generates its New — either give it a variant for these flags, or gate the package itself
+         out of this build
+```
+
 ## `generate`
 
 ```
-servo generate [--dir <path>]
+servo generate [--dir <path>] [--tags tag,list] [--mod mode] [--modfile file] [--overlay file]
 ```
 
 Resolves every injector found under `--dir` and writes each one's generated file. **The default
 command.**
 
-For each injector it emits `servo_gen.go` next to that injector's spec file, and additionally
-`servo_gen_test.go` when the spec declares at least one `servo.Override` (see
+For each injector it emits its generated file next to that injector's spec file — `servo_gen.go`,
+or a [variant name](#variant-file-names) when `--tags` is given — and additionally the
+`servo_gen_test.go` override variant when the spec declares at least one `servo.Override` (see
 [Generated API](generated-api.md#the-test-variant)). Both files are written atomically — via a
 temp file in the same directory and a rename — so a concurrent reader never sees a half-written
 file, and a process killed mid-write leaves the previous complete version in place.
@@ -109,11 +290,12 @@ never writes a partial file. See [Diagnostics](diagnostics.md) for every message
 ## `check`
 
 ```
-servo check [--dir <path>]
+servo check [--dir <path>] [--tags tag,list] [--mod mode] [--modfile file] [--overlay file]
 ```
 
-Verifies that every injector's committed `servo_gen.go` is byte-identical to what a fresh
-generation would produce. Never writes anything.
+Verifies that every injector's committed generated file is byte-identical to what a fresh
+generation would produce. Never writes anything. With `--tags` it checks that configuration's
+[variant](#build-variants), so a module with several needs one run per variant.
 
 This is the CI command. A constructor signature change without a matching re-run of
 `servo generate` fails here instead of shipping a stale generated file. It reports every stale
@@ -396,7 +578,7 @@ because someone asking why their constructor wasn't picked up is never asking ab
 ## `init`
 
 ```
-servo init [--dir <path>]
+servo init [--dir <path>] [--tags tag,list]
 ```
 
 Scaffolds `servo_spec.go` in `--dir`, with the build tag, the `go:generate` directive, and the
@@ -424,10 +606,21 @@ the usual case of a spec file landing next to a `cmd/*/main.go`. Prints
 
 It refuses to overwrite: `servo init: <path> already exists`.
 
+With `--tags`, it scaffolds a [variant](#build-variants) instead: `servo init --tags=prod` writes
+`servo_spec_prod.go` gated `//go:build servoinject && prod`, whose `go:generate` line carries the
+same flags. It then names any sibling spec still visible under those tags, since leaving the default
+spec ungated is what makes two variants collide:
+
+```
+servo init: wrote cmd/app/servo_spec_prod.go
+servo init: servo_spec.go is also visible with --tags=prod, so both would generate a file and the two would compile together.
+            Narrow it to `//go:build servoinject && !prod` (or otherwise exclude the new tags) before running servo generate.
+```
+
 ## `doctor`
 
 ```
-servo doctor [--dir <path>]
+servo doctor [--dir <path>] [--tags tag,list] [--mod mode] [--modfile file] [--overlay file]
 ```
 
 Diagnoses setup problems before `go generate` is ever run, across every injector in scope. Every
@@ -457,7 +650,7 @@ What each check means:
 | Module loads | `go/packages` can't load the module at all |
 | Spec file found | No `servo.Build(...)` call, or one in a file without the `servoinject` constraint |
 | No build errors outside the injector(s) | Some *other* package doesn't type-check. Errors inside an injector's own package are deliberately ignored: before the first generation, `main.go` legitimately references a `New` that doesn't exist yet |
-| Generated file present | `servo_gen.go` is missing next to the spec |
+| Generated file present | The generated file — `servo_gen.go`, or the [variant](#build-variants) matching `--tags` — is missing next to the spec |
 | Generated file fresh | Same comparison [`check`](#check) makes |
 | Tracked by git | A `[WARN]`, never a `FAIL` — best-effort, so no git, no repo, or a different VCS just means "can't tell" |
 
@@ -544,6 +737,15 @@ An unknown kind or tool is an error naming the valid set.
 
 ## `servo-vet`
 
+> **Build tags and `servo-vet`.** Run standalone, it analyses only the default configuration, and the
+> `-tags` flag it inherits from `go/analysis` is a documented no-op ("no effect (deprecated)") — so
+> `servo-vet -tags=prod ./...` silently covers nothing extra. To check a tagged configuration, drive
+> it through the go command, which does understand build flags:
+>
+> ```
+> go vet -tags=prod -vettool=$(which servo-vet) ./...
+> ```
+
 ```
 go run github.com/okian/servo/v3/cmd/servo-vet ./...
 ```
@@ -587,8 +789,21 @@ protocol, including `golangci-lint`'s custom-analyzer support and most editor in
 //go:generate go run github.com/okian/servo/v3/cmd/servo generate
 ```
 
+If the injector is a [variant](#build-variants), `servo init --tags=prod` scaffolds it already
+gated — `//go:build servoinject && prod`, with a matching `go:generate` line — and names any
+existing spec that does not yet exclude the new tags, which is the step everyone forgets.
+
 **CI** — run `check`, not `generate`, so a stale file fails the build instead of being quietly
-fixed on the runner.
+fixed on the runner. **A project with variants needs one `check` per configuration**, since each
+variant has its own generated file and `check` only inspects the one its flags select:
+
+```
+servo check
+servo check --tags=prod
+```
+
+[`examples/variants`](https://github.com/okian/servo/tree/master/examples/variants) is a working
+two-variant project, checked both ways in this repository's own CI.
 [`.github/workflows/go.yml`](https://github.com/okian/servo/blob/master/.github/workflows/go.yml)
 is a reference workflow doing exactly that.
 

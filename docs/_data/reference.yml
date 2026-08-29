@@ -27,7 +27,9 @@ sections:
         blurb: Every command, every flag, what it prints, and what it exits with.
         description: >-
           Complete reference for the servo CLI — generate, check, graph,
-          explain, why, list, init, doctor, migrate, new — plus servo-vet.
+          explain, why, list, init, doctor, migrate, new — plus servo-vet,
+          the go build flags servo accepts, and per-configuration build
+          variants.
       - title: Spec file and markers
         url: /reference/spec.html
         blurb: Build, Root, Bind, Override, Scoped, and the build tag that keeps them out of your binary.

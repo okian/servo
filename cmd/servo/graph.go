@@ -3,13 +3,14 @@ package main
 import (
 	"fmt"
 
+	"github.com/okian/servo/v3/internal/load"
 	"github.com/okian/servo/v3/internal/render"
 )
 
 // runGraph exports the resolved graph. JSON is the stable machine format;
 // text/dot/mermaid are for humans and docs.
-func runGraph(dir, format string) error {
-	p, err := buildPipeline(dir)
+func runGraph(cfg load.Config, format string) error {
+	p, err := buildPipeline(cfg)
 	if err != nil {
 		return err
 	}

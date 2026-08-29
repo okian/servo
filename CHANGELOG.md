@@ -35,7 +35,58 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   never the public one, asserted by a test in every variant) and `openapi` (the contract, embedded
   and served with a Swagger UI).
 
+### Added
+- **Build flags, and one generated file per build configuration.** The seven commands that load
+  packages (`generate`, `check`, `graph`, `explain`, `why`, `list`, `doctor`) now accept `--tags`,
+  `--mod`, `--modfile` and `--overlay`, with the same names, syntax and meaning as `go build`.
+  `--tags` changes the graph servo resolves, so providers behind `//go:build prod` participate in
+  it.
+
+  The generated file's build constraint is now the spec file's own constraint with `servoinject`
+  negated — not a fixed `!servoinject` — conjoined with the tags the graph was resolved under. A
+  spec gated `//go:build servoinject && prod` generated with `--tags=prod` writes
+  `servo.prod_gen.go` gated `//go:build !servoinject && prod`, which coexists with the default
+  variant instead of overwriting it. Mutual exclusion between variants comes from constraints you
+  write in your own spec files; servo never invents a negation, so it never needs to know the full
+  variant set. See [Build variants](docs/reference/cli.md#build-variants).
+
+  A generation with no build flags is byte-identical to before: same `servo_gen.go` name, same
+  `//go:build !servoinject`, no committed file moves.
+
+  Servo deliberately does *not* take its tags from `GOFLAGS`, which is the one place this diverges
+  from the go command: `go build` makes a binary you discard, `servo generate` makes a file you
+  commit, so an inherited tag must not change what lands in the diff. Every other `GOFLAGS` entry
+  reaches the go command untouched.
+
+  Generating two variants whose constraints are not mutually exclusive is refused, by `generate`
+  and by `check`, naming both files — servo derives constraints from your spec files and never
+  invents a negation, so it detects the overlap rather than silently resolving it.
+
+  `servo doctor` inventories the generated files beside each spec: it reports one produced by a spec
+  that no longer exists (which nothing else notices — the orphan keeps compiling into whichever
+  build satisfies its constraint and is never regenerated), and lists the variants the current
+  flags did not check, with the command that would. `servo init --tags=prod` scaffolds a variant
+  spec already gated, and names any sibling spec that does not yet exclude the new tags.
+  `examples/variants` is a working two-variant project, built, tested and checked both ways in CI.
+
+  `servo-vet` now refuses `-tags` rather than accepting it silently: it is go/analysis's own
+  documented no-op, so the run would have analysed only the default configuration. The error names
+  the invocation that works, `go vet -tags=... -vettool=$(which servo-vet) ./...`.
+
+  Tags that cannot distinguish one build from another are rejected up front rather than failing
+  somewhere unhelpful: `GOOS`/`GOARCH` names (which break the standard library when passed as
+  tags), the toolchain's own `unix`/`cgo`/`race`/`go1.N` family, tags containing characters no
+  `//go:build` line could name, `ignore` (which compiles every deliberately-excluded file in the
+  module and the standard library), and uppercase tags (whose variant file names would collide on a
+  case-insensitive filesystem).
+
 ### Fixed
+- **A build constraint below the package clause was treated as a build constraint.** `go/build`
+  only reads the file header, so servo could call a spec file "correctly gated" while it compiled
+  into the real binary. Servo now resolves constraints the way `go/build.shouldBuild` does: header
+  only, a `//go:build` line wins outright, and otherwise every `// +build` line is ANDed rather
+  than only the first. `servo-vet` and the generator share the one implementation, so they cannot
+  disagree.
 - **A successful `Acquire` racing `Shutdown` could hand back an instance that was already drained
   and stopped.** The entry loop evicted the moment it saw the scope's quit channel, whatever its
   reference count was, so no check an acquirer made could still hold by the time it returned.

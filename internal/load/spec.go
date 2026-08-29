@@ -26,6 +26,17 @@ type Spec struct {
 	Binds       []BindDecl
 	Overrides   []BindDecl
 	Scopes      []ScopeDecl
+
+	// Variant is the canonical tag set the load ran under, copied from
+	// Loaded.Tags. Empty for a plain `servo generate`, which is what
+	// keeps that case writing servo_gen.go exactly as it always has.
+	Variant []string
+
+	// GeneratedConstraint is the //go:build expression the emitted file
+	// must carry so it compiles in the configuration this spec describes
+	// and no other. Empty only for a Spec built by hand in a test, where
+	// emit falls back to the historical `!servoinject`.
+	GeneratedConstraint string
 }
 
 type RootDecl struct {
@@ -88,6 +99,12 @@ func FindSpecs(l *Loaded) ([]*Spec, error) {
 		if err := checkBuildTag(s); err != nil {
 			return nil, err
 		}
+		s.Variant = l.Tags
+		constraint, err := GeneratedConstraint(s.File, l.Tags)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", s.Pos, err)
+		}
+		s.GeneratedConstraint = constraint
 	}
 
 	sort.Slice(found, func(i, j int) bool { return found[i].InjectorPkg.PkgPath < found[j].InjectorPkg.PkgPath })
@@ -307,23 +324,13 @@ func checkBuildTag(spec *Spec) error {
 
 // FileRequiresBuildTag reports whether file carries a build constraint
 // that can only be satisfied when tag is set. Exported so servo-vet can run
-// the identical check without duplicating constraint-parsing logic.
+// the identical check without duplicating constraint-parsing logic —
+// literally identical: both go through FileConstraint, so the analyzer in
+// your editor and the generator can never disagree about whether a file is
+// gated.
 func FileRequiresBuildTag(file *ast.File, tag string) bool {
-	for _, group := range file.Comments {
-		for _, c := range group.List {
-			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
-				continue
-			}
-			expr, err := constraint.Parse(c.Text)
-			if err != nil {
-				continue
-			}
-			if requiresTag(expr, tag) {
-				return true
-			}
-		}
-	}
-	return false
+	expr, ok := FileConstraint(file)
+	return ok && requiresTag(expr, tag)
 }
 
 // requiresTag reports whether expr can only be true when tag is set, under

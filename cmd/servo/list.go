@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/load"
 )
 
 // runList dumps the candidate index, or with rejected=true, every function
@@ -14,8 +15,8 @@ import (
 // covers the whole transitive dependency graph, including stdlib), but a
 // human asking "why wasn't my function picked up" is never asking about
 // unicode.ToLower — showAll opts back into the full, unfiltered index.
-func runList(dir string, rejected, showAll, jsonOut bool) error {
-	p, err := buildPipeline(dir)
+func runList(cfg load.Config, rejected, showAll, jsonOut bool) error {
+	p, err := buildPipeline(cfg)
 	if err != nil {
 		return err
 	}

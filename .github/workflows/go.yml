@@ -121,6 +121,22 @@ jobs:
       - name: servo check (examples/mocking)
         run: go run ./cmd/servo check --dir examples/mocking
 
+      # examples/variants holds two generated variants of one injector, so
+      # everything is done once per build configuration — which is exactly
+      # what a project using build variants has to do in its own CI.
+      - name: Build and test examples/variants
+        working-directory: examples/variants
+        run: |
+          go build ./...
+          go test -race ./...
+          go build -tags=prod ./...
+          go test -race -tags=prod ./...
+
+      - name: servo check (examples/variants)
+        run: |
+          go run ./cmd/servo check --dir examples/variants
+          go run ./cmd/servo check --dir examples/variants --tags=prod
+
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest

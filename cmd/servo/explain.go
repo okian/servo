@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 
+	"github.com/okian/servo/v3/internal/load"
 	"github.com/okian/servo/v3/internal/resolve"
 )
 
@@ -23,8 +24,8 @@ type explainJSON struct {
 
 // runExplain answers, for one node: which provider was selected and why,
 // its position, direct dependencies, dependents, level, and capabilities.
-func runExplain(dir, query string, jsonOut bool) error {
-	p, err := buildPipeline(dir)
+func runExplain(cfg load.Config, query string, jsonOut bool) error {
+	p, err := buildPipeline(cfg)
 	if err != nil {
 		return err
 	}

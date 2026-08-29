@@ -75,9 +75,15 @@ skipped or the tag was missing. Rather than silently returning a nil app, they f
 build tag is what guarantees they never run: `servo generate` loads your module with
 `-tags=servoinject`, so it sees the spec file, and an ordinary `go build` doesn't.
 
-The generated file carries the mirror-image constraint, `//go:build !servoinject`, so the two files
-are never in the same build at once. That's also why generation never trips over its own previous
-output.
+The generated file carries the mirror-image constraint, so the two files are never in the same
+build at once. That's also why generation never trips over its own previous output.
+
+**Mirror image means your whole constraint, with `servoinject` negated** — not a fixed
+`!servoinject`. A spec gated `//go:build servoinject && !prod` generates a file gated
+`//go:build !servoinject && !prod`. Everything you wrote besides the tag survives untouched, which
+is what lets one injector have several generated files that exclude each other: you express the
+exclusion in your own spec files, and servo carries it across. See
+[Build variants](cli.md#build-variants).
 
 **The check is on meaning, not on text.** Servo parses the constraint and asks whether it can only
 be satisfied when `servoinject` is set, evaluating every *other* tag as true. So

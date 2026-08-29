@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 
 	"github.com/okian/servo/v3/internal/emit"
+	"github.com/okian/servo/v3/internal/load"
 )
 
 // runCheck verifies every injector found within dir's scope matches a fresh
@@ -14,8 +15,8 @@ import (
 // checking the whole module surfaces every drifted injector in one run, the
 // same way `wire ./... && git diff --exit-code` would. Never rewrites
 // anything itself (that's `generate`'s job).
-func runCheck(dir string) error {
-	pipelines, err := buildPipelines(dir)
+func runCheck(cfg load.Config) error {
+	pipelines, err := buildPipelines(cfg)
 	if err != nil {
 		return err
 	}
@@ -42,11 +43,20 @@ func checkOne(p *pipeline) error {
 		return err
 	}
 
-	outPath := filepath.Join(filepath.Dir(p.spec.Pos.Filename), generatedFileName)
+	dir := filepath.Dir(p.spec.Pos.Filename)
+	name := variantFileName(p.spec.Variant, false)
+	// Reported here too, not only by generate: an overlap committed
+	// before this check existed, or produced by an older servo, is
+	// exactly the thing CI should refuse to let past.
+	if err := checkVariantOverlap(dir, name, p.spec.GeneratedConstraint); err != nil {
+		return err
+	}
+
+	outPath := filepath.Join(dir, name)
 	committed, err := os.ReadFile(outPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("servo check: %s does not exist — run `servo generate`", outPath)
+			return fmt.Errorf("servo check: %s does not exist — run %s", outPath, regenerateCommand(p.spec.Variant))
 		}
 		return err
 	}
@@ -54,5 +64,5 @@ func checkOne(p *pipeline) error {
 	if string(committed) == string(fresh) {
 		return nil
 	}
-	return fmt.Errorf("servo check: %s is stale — run `servo generate`\n%s", outPath, unifiedDiff(string(committed), string(fresh), outPath))
+	return fmt.Errorf("servo check: %s is stale — run %s\n%s", outPath, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(fresh), outPath))
 }
