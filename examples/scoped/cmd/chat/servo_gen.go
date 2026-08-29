@@ -25,17 +25,18 @@ package main
 import (
 	"context"
 	"errors"
-	"example.com/servoscoped/api"
-	"example.com/servoscoped/chat"
-	"example.com/servoscoped/logger"
 	"fmt"
-	"github.com/okian/servo/v3/servo"
 	"os"
 	"os/signal"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"example.com/servoscoped/api"
+	"example.com/servoscoped/chat"
+	"example.com/servoscoped/logger"
+	"github.com/okian/servo/v3/servo"
 )
 
 type App struct {

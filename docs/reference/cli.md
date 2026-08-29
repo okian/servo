@@ -366,8 +366,8 @@ api.New                        api/api.go:15:6
 logger.New                     logger/logger.go:10:6
 mockstore.New                  mockstore/mockstore.go:29:6
 postgres.New                   postgres/postgres.go:13:6
-queue.NewOrdersAccount         queue/queue.go:22:6
-queue.NewAuditAccount          queue/queue.go:26:6
+queue.NewOrdersAccount         queue/queue.go:24:6
+queue.NewAuditAccount          queue/queue.go:28:6
 relay.New                      relay/relay.go:24:6
 worker.New                     worker/worker.go:13:6
 ```

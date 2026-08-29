@@ -6,13 +6,12 @@ import (
 	"strings"
 	"testing"
 
-	"example.com/servoorders/config"
 	"example.com/servoorders/observability"
 	"example.com/servoorders/resilience"
 )
 
 func TestRateLimiterAllowsRequestsWithinTheLimit(t *testing.T) {
-	rl := resilience.NewRateLimiter(&config.Config{RateLimitRPS: 1000}, observability.NewMetrics())
+	rl := resilience.NewRateLimiter(&resilience.Config{RPS: 1000}, observability.NewMetrics())
 	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -29,7 +28,7 @@ func TestRateLimiterAllowsRequestsWithinTheLimit(t *testing.T) {
 // limiter ever has, and it's never refilled.
 func TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt(t *testing.T) {
 	metrics := observability.NewMetrics()
-	rl := resilience.NewRateLimiter(&config.Config{RateLimitRPS: 0}, metrics) // burst clamped to 1
+	rl := resilience.NewRateLimiter(&resilience.Config{RPS: 0}, metrics) // burst clamped to 1
 	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

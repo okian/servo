@@ -16,12 +16,25 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// envPrefix is the same one natsbroker uses: both ends of the messaging
+// layer connect to the same server, and each says so for itself rather
+// than sharing a struct to agree on it.
+const envPrefix = "NATS_"
+
+type Config struct {
+	URL string `env:"URL,required"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
 type Notifier struct {
 	url string
 }
 
-func New(cfg *config.Config) *Notifier {
-	return &Notifier{url: cfg.NATSURL}
+func New(cfg *Config) *Notifier {
+	return &Notifier{url: cfg.URL}
 }
 
 // Run connects and subscribes on its own — not in a separate Init — since

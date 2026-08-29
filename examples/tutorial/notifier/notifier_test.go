@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"example.com/servoorders/broker"
-	"example.com/servoorders/config"
 	"github.com/nats-io/nats.go"
 )
 
@@ -32,7 +31,7 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	n := New(&config.Config{NATSURL: url})
+	n := New(&Config{URL: url})
 	go func() { done <- n.Run(ctx) }()
 
 	pub, err := nats.Connect(url)

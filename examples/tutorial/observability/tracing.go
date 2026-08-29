@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"example.com/servoorders/config"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -27,7 +26,7 @@ type Tracer struct {
 // unset, just never exported — tracing is opt-in, not a required
 // dependency this service can't start without. See
 // docs/tutorial/13-observability.md.
-func NewTracer(cfg *config.Config) (*Tracer, error) {
+func NewTracer(cfg *Config) (*Tracer, error) {
 	ctx := context.Background()
 	res, err := resource.New(ctx, resource.WithAttributes(
 		semconv.ServiceName("servoorders"),

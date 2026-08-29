@@ -18,10 +18,10 @@
 //	      capabilities: Runner | binding: sole candidate | worker/worker.go:13:6
 //	[L1] *example.com/servobasic/queue.OrdersAccount
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | queue/queue.go:22:6
+//	      capabilities: none | binding: sole candidate | queue/queue.go:24:6
 //	[L1] *example.com/servobasic/queue.AuditAccount
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | queue/queue.go:26:6
+//	      capabilities: none | binding: sole candidate | queue/queue.go:28:6
 //	[L2] *example.com/servobasic/relay.Relay
 //	      deps: *example.com/servobasic/queue.OrdersAccount, *example.com/servobasic/queue.AuditAccount
 //	      capabilities: Initializer | binding: sole candidate | relay/relay.go:24:6
@@ -30,6 +30,12 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
 	"example.com/servobasic/api"
 	"example.com/servobasic/logger"
 	"example.com/servobasic/mockstore"
@@ -38,11 +44,6 @@ import (
 	"example.com/servobasic/worker"
 	"github.com/okian/servo/v3/servo"
 	"golang.org/x/sync/errgroup"
-	"os"
-	"os/signal"
-	"sync"
-	"syscall"
-	"time"
 )
 
 type TestApp struct {
@@ -175,8 +176,8 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servobasic/api.Server", Level: 2, Deps: []string{"*example.com/servobasic/mockstore.Store"}, Capabilities: []string{"Runner", "Drainer", "Finalizer", "Readier"}, Binding: "sole candidate", Pos: "api/api.go:15:6"},
 		{Type: "*example.com/servobasic/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "logger/logger.go:10:6"},
 		{Type: "*example.com/servobasic/worker.Consumer", Level: 2, Deps: []string{"*example.com/servobasic/logger.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "worker/worker.go:13:6"},
-		{Type: "*example.com/servobasic/queue.OrdersAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "queue/queue.go:22:6"},
-		{Type: "*example.com/servobasic/queue.AuditAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "queue/queue.go:26:6"},
+		{Type: "*example.com/servobasic/queue.OrdersAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "queue/queue.go:24:6"},
+		{Type: "*example.com/servobasic/queue.AuditAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "queue/queue.go:28:6"},
 		{Type: "*example.com/servobasic/relay.Relay", Level: 2, Deps: []string{"*example.com/servobasic/queue.OrdersAccount", "*example.com/servobasic/queue.AuditAccount"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Pos: "relay/relay.go:24:6"},
 	}}
 }

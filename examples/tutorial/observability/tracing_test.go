@@ -6,13 +6,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"example.com/servoorders/config"
 	"example.com/servoorders/observability"
 	"go.opentelemetry.io/otel/trace"
 )
 
 func TestNewTracerWithNoEndpointStillCreatesSpans(t *testing.T) {
-	tracer, err := observability.NewTracer(&config.Config{OTLPEndpoint: ""})
+	tracer, err := observability.NewTracer(&observability.Config{OTLPEndpoint: ""})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
@@ -37,7 +36,7 @@ func TestNewTracerRejectsAnUnreachableEndpointOnlyAtExportTimeNotConstruction(t 
 	// happens asynchronously, in the background, later. So NewTracer must
 	// succeed here even though nothing is listening on this port; this is
 	// worth pinning down since it's easy to assume the opposite.
-	tracer, err := observability.NewTracer(&config.Config{OTLPEndpoint: "127.0.0.1:1"})
+	tracer, err := observability.NewTracer(&observability.Config{OTLPEndpoint: "127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("NewTracer: %v, want it to succeed even with an unreachable endpoint", err)
 	}

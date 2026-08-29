@@ -18,15 +18,16 @@ package main
 import (
 	"context"
 	"errors"
-	"example.com/servobasic/logger"
-	"example.com/servobasic/migrator"
-	"example.com/servobasic/postgres"
-	"github.com/okian/servo/v3/servo"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"example.com/servobasic/logger"
+	"example.com/servobasic/migrator"
+	"example.com/servobasic/postgres"
+	"github.com/okian/servo/v3/servo"
 )
 
 type App struct {

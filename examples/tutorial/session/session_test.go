@@ -8,13 +8,12 @@ import (
 
 	"github.com/okian/servo/v3/servo"
 
-	"example.com/servoorders/config"
 	"example.com/servoorders/session"
 )
 
 func newSession(t *testing.T, id session.UserID, cap int) *session.Session {
 	t.Helper()
-	s := session.New(id, &config.Config{SessionRecent: cap})
+	s := session.New(id, &session.Config{Recent: cap})
 	if err := s.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

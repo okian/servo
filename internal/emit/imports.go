@@ -97,25 +97,54 @@ func sanitizeIdent(s string) string {
 	return out
 }
 
-// RenderImports emits the import block, sorted by path so output is
-// byte-stable regardless of registration order or map iteration.
+// RenderImports emits the import block: standard library first, then
+// everything else after a blank line, each group sorted by path so output
+// is byte-stable regardless of registration order or map iteration.
+//
+// The split is what gofmt's siblings produce for hand-written code, and a
+// generated file that disagrees with them is reported unformatted by any
+// check pointed at it explicitly — which is exactly what a pre-commit hook
+// does with the files a commit touches.
 func (m *ImportManager) RenderImports() string {
 	type entry struct{ path, alias string }
-	entries := make([]entry, 0, len(m.byPath))
+	var std, ext []entry
 	for path, alias := range m.byPath {
-		entries = append(entries, entry{path, alias})
+		if isStdlibPath(path) {
+			std = append(std, entry{path, alias})
+		} else {
+			ext = append(ext, entry{path, alias})
+		}
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].path < entries[j].path })
+	byPath := func(s []entry) {
+		sort.Slice(s, func(i, j int) bool { return s[i].path < s[j].path })
+	}
+	byPath(std)
+	byPath(ext)
 
 	var b strings.Builder
 	b.WriteString("import (\n")
-	for _, e := range entries {
-		if e.alias == "" {
-			fmt.Fprintf(&b, "\t%q\n", e.path)
-		} else {
-			fmt.Fprintf(&b, "\t%s %q\n", e.alias, e.path)
+	write := func(group []entry) {
+		for _, e := range group {
+			if e.alias == "" {
+				fmt.Fprintf(&b, "\t%q\n", e.path)
+			} else {
+				fmt.Fprintf(&b, "\t%s %q\n", e.alias, e.path)
+			}
 		}
 	}
+	write(std)
+	if len(std) > 0 && len(ext) > 0 {
+		b.WriteString("\n")
+	}
+	write(ext)
 	b.WriteString(")\n")
 	return b.String()
+}
+
+// isStdlibPath reports whether path is in the standard library, by the
+// same heuristic the import-organizing tools use: a first segment with no
+// dot in it cannot be a domain, so the path cannot name a module.
+func isStdlibPath(path string) bool {
+	first, _, _ := strings.Cut(path, "/")
+	return !strings.Contains(first, ".")
 }

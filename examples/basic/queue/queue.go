@@ -16,8 +16,10 @@ func (c *Client) Send(msg string) string {
 // nodes — both wrap the same underlying Client, each constructed against
 // a different AWS account's credentials. See relay.Relay for why one
 // component legitimately needs both at once.
-type OrdersAccount struct{ *Client }
-type AuditAccount struct{ *Client }
+type (
+	OrdersAccount struct{ *Client }
+	AuditAccount  struct{ *Client }
+)
 
 func NewOrdersAccount() *OrdersAccount {
 	return &OrdersAccount{Client: &Client{Account: "111111111111"}}

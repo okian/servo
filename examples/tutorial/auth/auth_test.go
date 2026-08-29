@@ -6,11 +6,10 @@ import (
 	"uuid"
 
 	"example.com/servoorders/auth"
-	"example.com/servoorders/config"
 )
 
 func TestIssueThenVerifyRoundTrips(t *testing.T) {
-	issuer := auth.New(&config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour})
+	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
 	userID := uuid.New()
 
 	token, err := issuer.Issue(userID, "alice")
@@ -28,7 +27,7 @@ func TestIssueThenVerifyRoundTrips(t *testing.T) {
 }
 
 func TestVerifyRejectsAnExpiredToken(t *testing.T) {
-	issuer := auth.New(&config.Config{JWTSecret: "test-secret", JWTExpiry: -time.Hour}) // already expired
+	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: -time.Hour}) // already expired
 	token, err := issuer.Issue(uuid.New(), "alice")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -40,8 +39,8 @@ func TestVerifyRejectsAnExpiredToken(t *testing.T) {
 }
 
 func TestVerifyRejectsATokenSignedWithADifferentSecret(t *testing.T) {
-	issuerA := auth.New(&config.Config{JWTSecret: "secret-a", JWTExpiry: time.Hour})
-	issuerB := auth.New(&config.Config{JWTSecret: "secret-b", JWTExpiry: time.Hour})
+	issuerA := auth.New(&auth.Config{Secret: "secret-a", Expiry: time.Hour})
+	issuerB := auth.New(&auth.Config{Secret: "secret-b", Expiry: time.Hour})
 
 	token, err := issuerA.Issue(uuid.New(), "alice")
 	if err != nil {

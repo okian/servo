@@ -24,13 +24,14 @@ package app
 import (
 	"context"
 	"errors"
-	"github.com/okian/servo/v3/servo"
-	"golang.org/x/sync/errgroup"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/okian/servo/v3/servo"
+	"golang.org/x/sync/errgroup"
 )
 
 type App struct {

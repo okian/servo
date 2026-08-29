@@ -16,6 +16,26 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// Config is this package's own configuration, declared here and nowhere
+// else. Adding or removing a setting is a one-file change, and the config
+// package never learns that NATS_URL exists.
+// envPrefix namespaces this package's settings. It is declared here, next
+// to the fields it applies to, so the deployment-facing names and the
+// struct that consumes them cannot drift apart.
+const envPrefix = "NATS_"
+
+type Config struct {
+	URL string `env:"URL,required"`
+}
+
+// NewConfig is the sole candidate for *Config: servo resolves every
+// parameter by type, so the narrow type needs a provider of its own. It
+// takes a config.Source rather than reading the environment, so this
+// package assumes nothing about where values come from.
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
 type Publisher struct {
 	url  string
 	conn *nats.Conn
@@ -23,8 +43,8 @@ type Publisher struct {
 
 var _ broker.EventPublisher = (*Publisher)(nil)
 
-func New(cfg *config.Config) *Publisher {
-	return &Publisher{url: cfg.NATSURL}
+func New(cfg *Config) *Publisher {
+	return &Publisher{url: cfg.URL}
 }
 
 func (p *Publisher) Init(context.Context) error {

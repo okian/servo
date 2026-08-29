@@ -25,8 +25,19 @@ type Issuer struct {
 	expiry time.Duration
 }
 
-func New(cfg *config.Config) *Issuer {
-	return &Issuer{secret: []byte(cfg.JWTSecret), expiry: cfg.JWTExpiry}
+const envPrefix = "JWT_"
+
+type Config struct {
+	Secret string        `env:"SECRET,required"`
+	Expiry time.Duration `env:"EXPIRY" envDefault:"1h"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(cfg *Config) *Issuer {
+	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}
 }
 
 type tokenClaims struct {

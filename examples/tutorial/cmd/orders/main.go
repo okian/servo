@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"example.com/servoorders/api"
 	"example.com/servoorders/config"
 	"example.com/servoorders/observability"
 	"github.com/okian/servo/v3/servo"
@@ -18,21 +19,30 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// A second, independent config.New() call — cheap (it's just an env
-	// parse) and deliberate. See newAdminServer's comment for why the
-	// admin server can't be wired through the graph like everything else.
-	cfg, err := config.New()
+	// Logging is configured before anything else has a chance to log, and
+	// the admin listener's address is read here rather than taken from the
+	// graph — see newAdminServer's comment for why that one piece of
+	// wiring cannot go through servo. Both parse from the same Source the
+	// graph will use; it is an in-memory map, so reading it twice is free.
+	src := config.NewEnv()
+
+	obsCfg, err := observability.NewConfig(src)
 	if err != nil {
 		log.Fatal(err)
 	}
-	observability.ConfigureLogging(cfg) // before anything else has a chance to log
+	observability.ConfigureLogging(obsCfg)
+
+	apiCfg, err := api.NewConfig(src)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	app, err := New(ctx)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	admin := newAdminServer(cfg.AdminAddr, app, app.server.MetricsHandler())
+	admin := newAdminServer(apiCfg.AdminAddr, app, app.server.MetricsHandler())
 	go func() {
 		if err := admin.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Print(err)
@@ -58,7 +68,8 @@ func main() {
 func newAdminServer(addr string, app interface {
 	Health(context.Context) servo.Report
 	Ready(context.Context) servo.Report
-}, metricsHandler http.Handler) *http.Server {
+}, metricsHandler http.Handler,
+) *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", reportHandler(app.Health))
 	mux.HandleFunc("GET /readyz", reportHandler(app.Ready))

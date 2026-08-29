@@ -9,7 +9,6 @@ import (
 	"uuid"
 
 	"example.com/servoorders/cache"
-	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
 )
 
@@ -23,7 +22,7 @@ func testCache(t *testing.T) *Cache {
 		t.Skip("TEST_REDIS_ADDR not set; see docs/tutorial/06-caching-layer.md")
 	}
 
-	c := New(&config.Config{RedisAddr: addr})
+	c := New(&Config{Addr: addr})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := c.Init(ctx); err != nil {

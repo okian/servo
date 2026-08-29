@@ -89,6 +89,7 @@ func ptrKey(pkg *types.Package, name string) graph.Key {
 }
 
 func namedType(pkg *types.Package, name string) types.Type { return pkg.Scope().Lookup(name).Type() }
+
 func ptrType(pkg *types.Package, name string) types.Type {
 	return types.NewPointer(pkg.Scope().Lookup(name).Type())
 }

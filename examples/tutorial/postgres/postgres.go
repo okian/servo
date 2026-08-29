@@ -28,8 +28,18 @@ var (
 	_ repository.UserRepository  = (*Store)(nil)
 )
 
-func New(cfg *config.Config) (*Store, error) {
-	pool, err := pgxpool.New(context.Background(), cfg.PostgresDSN)
+const envPrefix = "POSTGRES_"
+
+type Config struct {
+	DSN string `env:"DSN,required"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(cfg *Config) (*Store, error) {
+	pool, err := pgxpool.New(context.Background(), cfg.DSN)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: %w", err)
 	}

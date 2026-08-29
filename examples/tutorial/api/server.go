@@ -29,8 +29,24 @@ type Server struct {
 	sessions session.Sessions
 }
 
+// Config carries the two listen addresses. AdminAddr is here rather than
+// in its own package because it belongs to the same concern — serving
+// HTTP — even though the admin listener itself is wired in main rather
+// than through the graph; see newAdminServer.
+//
+// No prefix: HTTP_ADDR and ADMIN_ADDR are spelled that way in every
+// deployment already.
+type Config struct {
+	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
+	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, "")
+}
+
 func New(
-	cfg *config.Config,
+	cfg *Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,

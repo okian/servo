@@ -1,52 +1,93 @@
-// Package config loads and validates the service's runtime configuration
-// from environment variables. It has no lifecycle capabilities of its own —
-// New either returns a complete, valid Config or an error before anything
-// else in the graph is constructed, since every other component depends on
-// it directly or transitively.
+// Package config supplies configuration values without knowing what any
+// of them are.
+//
+// It deliberately declares no settings of its own. Each package owns the
+// fields it needs, on its own Config type, and fills them by asking a
+// Source — so adding or removing a setting is a change to exactly one
+// package, and this one never grows a field list that every component
+// must agree on.
 package config
 
 import (
-	"fmt"
-	"time"
+	"os"
+	"strings"
 
 	"github.com/caarlos0/env/v11"
 )
 
-type Config struct {
-	HTTPAddr string `env:"HTTP_ADDR" envDefault:":8080"`
-
-	// AdminAddr serves /healthz and /readyz (chapter 10), and /metrics
-	// (chapter 13) — deliberately a separate listener from HTTPAddr; see
-	// docs/tutorial/10-api-layer.md for why.
-	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
-
-	PostgresDSN string `env:"POSTGRES_DSN,required"`
-	RedisAddr   string `env:"REDIS_ADDR,required"`
-	NATSURL     string `env:"NATS_URL,required"`
-
-	// JWTSecret has no default on purpose — see docs/tutorial/03-configuration.md's
-	// do's and don'ts. A missing secret must fail startup, never silently
-	// fall back to something guessable.
-	JWTSecret string        `env:"JWT_SECRET,required"`
-	JWTExpiry time.Duration `env:"JWT_EXPIRY" envDefault:"1h"`
-
-	LogLevel     string `env:"LOG_LEVEL" envDefault:"info"`
-	OTLPEndpoint string `env:"OTLP_ENDPOINT" envDefault:""`
-
-	RateLimitRPS float64 `env:"RATE_LIMIT_RPS" envDefault:"50"`
-
-	// SessionRecent caps the per-user recently-viewed list. The linger
-	// window and instance cap for that scope are *not* here: both are
-	// baked into the generated code from servo.Scoped's arguments, which
-	// the spec file declares as constants — see
-	// docs/tutorial/12-scoped-instances.md.
-	SessionRecent int `env:"SESSION_RECENT" envDefault:"10"`
+// Source is where configuration values come from.
+//
+// It is an interface, and it deliberately says nothing about which
+// settings exist: a component declares the fields it needs on its own
+// Config type and asks a Source to fill them, so adding or removing a
+// setting touches only the package that owns it. This package never
+// learns what those fields are.
+//
+// It is also why no component calls os.Getenv itself. A package that
+// reads the environment directly assumes there is one, which makes it
+// awkward to test and impossible to feed from anywhere else. Taking a
+// Source as an ordinary constructor parameter leaves both open.
+type Source interface {
+	// Values returns every key the source knows about. Callers must not
+	// mutate the result.
+	Values() map[string]string
 }
 
-func New() (*Config, error) {
-	cfg := &Config{}
-	if err := env.Parse(cfg); err != nil {
-		return nil, fmt.Errorf("config: %w", err)
+// Env is the Source backed by the process environment. It is read once,
+// at construction, so nothing built later can observe it changing.
+type Env struct{ values map[string]string }
+
+var _ Source = (*Env)(nil)
+
+func NewEnv() *Env {
+	environ := os.Environ()
+	values := make(map[string]string, len(environ))
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			values[k] = v
+		}
 	}
-	return cfg, nil
+	return &Env{values: values}
+}
+
+func (e *Env) Values() map[string]string { return e.values }
+
+// Parse fills a package's own config type from src. It is generic so that
+// the type stays in the package that declares it: this function never
+// names a field, and never needs changing when one is added.
+//
+// prefix namespaces the keys, which is what lets two packages each
+// declare a field called URL without agreeing on anything — natsbroker
+// asks for "NATS_", redis for "REDIS_". A missing value is reported under
+// the full prefixed name, so the error names the variable an operator has
+// to set. Pass "" for settings that are genuinely app-wide.
+//
+//
+
+// Parse fills a package's own config type from src. It is generic so that
+// the type stays in the package that declares it: this function never
+// names a field, and never needs changing when one is added.
+//
+// prefix namespaces the keys, which is what lets two packages each
+// declare a field called URL without agreeing on anything — natsbroker
+// asks for "NATS_", redis for "REDIS_". A missing value is reported under
+// the full prefixed name, so the error names the variable an operator has
+// to set. Pass "" for settings that are genuinely app-wide.
+//
+//	type Config struct {
+//	    URL string `env:"URL,required"`
+//	}
+//
+//	func NewConfig(src config.Source) (*Config, error) {
+//	    return config.Parse[Config](src, "NATS_")
+//	}
+func Parse[T any](src Source, prefix string) (*T, error) {
+	cfg, err := env.ParseAsWithOptions[T](env.Options{
+		Environment: src.Values(),
+		Prefix:      prefix,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &cfg, nil
 }

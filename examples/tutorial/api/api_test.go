@@ -14,7 +14,6 @@ import (
 	"example.com/servoorders/api"
 	"example.com/servoorders/auth"
 	"example.com/servoorders/cache"
-	"example.com/servoorders/config"
 	"example.com/servoorders/domain"
 	"example.com/servoorders/mocks"
 	"example.com/servoorders/observability"
@@ -33,12 +32,12 @@ import (
 // because it keys itself off the same ScopeKey method the real accessor
 // calls.
 type fakeSessions struct {
-	cfg *config.Config
+	cfg *session.Config
 	mu  sync.Mutex
 	by  map[session.UserID]*session.Session
 }
 
-func newFakeSessions(cfg *config.Config) *fakeSessions {
+func newFakeSessions(cfg *session.Config) *fakeSessions {
 	return &fakeSessions{cfg: cfg, by: map[session.UserID]*session.Session{}}
 }
 
@@ -87,19 +86,22 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	orderCache.EXPECT().Set(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
-	// RateLimitRPS is set explicitly (rather than relying on Config's own
-	// envDefault) because a bare &config.Config{} literal skips
-	// caarlos0/env's tag processing entirely — every field not set here
-	// is the Go zero value, not the configured default. A zero
-	// RateLimitRPS would mean the rate limiter allows exactly one request
-	// per test, ever; see TestRateLimiterRejectsRequestsOverTheLimit for
-	// the test that actually wants that.
-	cfg := &config.Config{JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000, SessionRecent: 10}
-	issuer := auth.New(cfg)
+	// Each component gets its own narrow config, built as a literal. RPS
+	// is set explicitly (rather than relying on the envDefault) because a
+	// bare struct literal skips caarlos0/env's tag processing entirely —
+	// every field not set here is the Go zero value, not the configured
+	// default. A zero RPS would mean the rate limiter allows exactly one
+	// request per test, ever; see
+	// TestRateLimiterRejectsRequestsOverTheLimit for the test that
+	// actually wants that.
+	authCfg := &auth.Config{Secret: "test-secret", Expiry: time.Hour}
+	limitCfg := &resilience.Config{RPS: 1000}
+	sessionCfg := &session.Config{Recent: 10}
+	issuer := auth.New(authCfg)
 	orders := service.New(repo, orderCache, pub)
 	authSvc := service.NewAuthService(users, issuer)
 	metrics := observability.NewMetrics()
-	tracer, err := observability.NewTracer(cfg)
+	tracer, err := observability.NewTracer(&observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
@@ -112,7 +114,7 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	users.EXPECT().GetByUsername(gomock.Any(), "alice").Return(testUser, nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound).AnyTimes()
 
-	srv := api.New(cfg, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(cfg, metrics), newFakeSessions(cfg))
+	srv := api.New(&api.Config{}, orders, authSvc, issuer, metrics, tracer, resilience.NewRateLimiter(limitCfg, metrics), newFakeSessions(sessionCfg))
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, repo, issuer
@@ -244,16 +246,17 @@ func TestGetOrderReturns403ForAnotherUsersOrder(t *testing.T) {
 // so if Run ever again relies on Stop to make it return, it will time out.
 func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	cfg := &config.Config{HTTPAddr: "127.0.0.1:0", JWTSecret: "test-secret", JWTExpiry: time.Hour, RateLimitRPS: 1000}
-	issuer := auth.New(cfg)
+	apiCfg := &api.Config{HTTPAddr: "127.0.0.1:0"}
+	limitCfg := &resilience.Config{RPS: 1000}
+	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
 	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl))
 	authSvc := service.NewAuthService(mocks.NewMockUserRepository(ctrl), issuer)
-	tracer, err := observability.NewTracer(cfg)
+	tracer, err := observability.NewTracer(&observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
 	testMetrics := observability.NewMetrics()
-	srv := api.New(cfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(cfg, testMetrics), newFakeSessions(cfg))
+	srv := api.New(apiCfg, orders, authSvc, issuer, testMetrics, tracer, resilience.NewRateLimiter(limitCfg, testMetrics), newFakeSessions(&session.Config{Recent: 10}))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)

@@ -45,7 +45,7 @@ type Sessions interface {
 // looked at recently, plus a count of how much work they've caused.
 type Session struct {
 	id  UserID
-	cfg *config.Config
+	cfg *Config
 
 	mu     sync.Mutex
 	recent []uuid.UUID
@@ -56,7 +56,17 @@ type Session struct {
 // other singleton. The config does not vary with the user, so it stays one
 // shared instance rather than being rebuilt per session — servo works that
 // out from the dependency edges, not from an annotation.
-func New(id UserID, cfg *config.Config) *Session {
+const envPrefix = "SESSION_"
+
+type Config struct {
+	Recent int `env:"RECENT" envDefault:"10"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(id UserID, cfg *Config) *Session {
 	return &Session{id: id, cfg: cfg}
 }
 
@@ -88,8 +98,8 @@ func (s *Session) RecordView(id uuid.UUID) {
 
 	s.views++
 	s.recent = append([]uuid.UUID{id}, s.deduped(id)...)
-	if len(s.recent) > s.cfg.SessionRecent {
-		s.recent = s.recent[:s.cfg.SessionRecent]
+	if len(s.recent) > s.cfg.Recent {
+		s.recent = s.recent[:s.cfg.Recent]
 	}
 }
 

@@ -27,8 +27,18 @@ type Cache struct {
 
 var _ cache.OrderCache = (*Cache)(nil)
 
-func New(cfg *config.Config) *Cache {
-	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.RedisAddr})}
+const envPrefix = "REDIS_"
+
+type Config struct {
+	Addr string `env:"ADDR,required"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func New(cfg *Config) *Cache {
+	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.Addr})}
 }
 
 func (c *Cache) Init(ctx context.Context) error {

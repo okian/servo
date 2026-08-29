@@ -20,10 +20,20 @@ type RateLimiter struct {
 	rejections prometheus.Counter
 }
 
-func NewRateLimiter(cfg *config.Config, metrics *observability.Metrics) *RateLimiter {
-	burst := max(int(cfg.RateLimitRPS), 1)
+const envPrefix = "RATE_LIMIT_"
+
+type Config struct {
+	RPS float64 `env:"RPS" envDefault:"50"`
+}
+
+func NewConfig(src config.Source) (*Config, error) {
+	return config.Parse[Config](src, envPrefix)
+}
+
+func NewRateLimiter(cfg *Config, metrics *observability.Metrics) *RateLimiter {
+	burst := max(int(cfg.RPS), 1)
 	return &RateLimiter{
-		limiter:    rate.NewLimiter(rate.Limit(cfg.RateLimitRPS), burst),
+		limiter:    rate.NewLimiter(rate.Limit(cfg.RPS), burst),
 		rejections: metrics.NewCounter("orders_rate_limit_rejections_total", "Total requests rejected by the rate limiter."),
 	}
 }
