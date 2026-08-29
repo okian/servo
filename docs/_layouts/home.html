@@ -38,24 +38,42 @@ layout: default
       <p class="section-lede">
         Nothing imports servo. A component joins the lifecycle by <strong>having a
         method</strong>, not by registering for one — detection is structural, and it
-        happens at generation time. Construction order comes from the parameter types;
+        happens at generation time. Each package declares the settings it needs and
+        nobody else's. Construction order comes from the parameter types;
         <strong>shutdown order is that, reversed</strong>.
       </p>
       <div class="split">
         <figure>
           <figcaption>What you write</figcaption>
 {% highlight go %}
+// config/config.go — reads the environment
+// once; every package parses its own slice
+// of it off this
+func NewEnv() *Env
+
 // logger/logger.go
-func New() *Logger
+type Config struct {
+    Level string `env:"LEVEL" envDefault:"info"`
+}
+func NewConfig(config.Source) (*Config, error)
+func New(cfg *Config) *Logger
 func (l *Logger) Stop(context.Context) error
 
 // postgres/postgres.go
-func New(log *logger.Logger) (*DB, error)
+type Config struct {
+    DSN string `env:"DSN,required"`
+}
+func NewConfig(config.Source) (*Config, error)
+func New(cfg *Config, log *logger.Logger) (*DB, error)
 func (d *DB) Init(context.Context) error
 func (d *DB) Stop(context.Context) error
 
 // api/api.go
-func New(db *postgres.DB) *Server
+type Config struct {
+    Addr string `env:"ADDR" envDefault:":8080"`
+}
+func NewConfig(config.Source) (*Config, error)
+func New(cfg *Config, db *postgres.DB) *Server
 func (s *Server) Run(context.Context) error
 func (s *Server) Stop(context.Context) error
 
@@ -72,16 +90,40 @@ servo.Build(
 func New(ctx context.Context) (*App, error) {
     a := &App{}
 
-    log := logger.New()
+    env := config.NewEnv()
+    a.env = env
+
+    loggerConfig, err := logger.NewConfig(env)
+    if err != nil {
+        return nil, err
+    }
+    a.loggerConfig = loggerConfig
+
+    log := logger.New(loggerConfig)
     a.log = log
 
-    db, err := postgres.New(log)
+    postgresConfig, err := postgres.NewConfig(env)
     if err != nil {
         _ = a.stopLog(ctx) // unwind what exists
         return nil, err
     }
+    a.postgresConfig = postgresConfig
+
+    db, err := postgres.New(postgresConfig, log)
+    if err != nil {
+        _ = a.stopLog(ctx)
+        return nil, err
+    }
     a.db = db
-    a.server = api.New(db)
+
+    apiConfig, err := api.NewConfig(env)
+    if err != nil {
+        _ = a.stopDb(ctx)
+        _ = a.stopLog(ctx)
+        return nil, err
+    }
+    a.apiConfig = apiConfig
+    a.server = api.New(apiConfig, db)
 
     // Init before anything serves, concurrent
     // within a level. A failure rolls the
