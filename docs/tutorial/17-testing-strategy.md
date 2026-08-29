@@ -231,7 +231,7 @@ $ go test ./api/... -v -count=1
 === RUN   TestAdminEndpointsAreNotOnThePublicListener
 --- PASS: TestAdminEndpointsAreNotOnThePublicListener (0.06s)
 PASS
-ok  	example.com/servoorders/api	0.969s
+ok  	example.com/servoorders/internal/api	0.969s
 ```
 
 No request logs appear between the `--- PASS` lines, and that is deliberate: the fixture passes a
@@ -246,31 +246,31 @@ real infrastructure, so nothing here needs Docker running:
 ```
 $ make test
 go test ./...
-?   	example.com/servoorders/admin	[no test files]
-ok  	example.com/servoorders/api	1.054s
-ok  	example.com/servoorders/auth	0.606s
-?   	example.com/servoorders/broker	[no test files]
-?   	example.com/servoorders/cache	[no test files]
+?   	example.com/servoorders/internal/admin	[no test files]
+ok  	example.com/servoorders/internal/api	1.054s
+ok  	example.com/servoorders/internal/auth	0.606s
+?   	example.com/servoorders/internal/broker	[no test files]
+?   	example.com/servoorders/internal/cache	[no test files]
 ok  	example.com/servoorders/cmd/orders	0.583s
 ok  	example.com/servoorders/cmd/ordersgin	1.185s
 ok  	example.com/servoorders/cmd/ordersgrpc	0.873s
-ok  	example.com/servoorders/config	0.500s
-?   	example.com/servoorders/domain	[no test files]
-ok  	example.com/servoorders/ginapi	1.480s
-ok  	example.com/servoorders/grpcapi	0.645s
-?   	example.com/servoorders/grpcapi/ordersv1	[no test files]
-?   	example.com/servoorders/migrations	[no test files]
-?   	example.com/servoorders/mocks	[no test files]
-ok  	example.com/servoorders/natsbroker	0.505s
-ok  	example.com/servoorders/notifier	0.344s
-ok  	example.com/servoorders/observability	0.569s
-?   	example.com/servoorders/openapi	[no test files]
-ok  	example.com/servoorders/postgres	0.522s
-ok  	example.com/servoorders/redis	0.508s
-?   	example.com/servoorders/repository	[no test files]
-ok  	example.com/servoorders/resilience	0.384s
-ok  	example.com/servoorders/service	0.719s
-ok  	example.com/servoorders/session	0.297s
+ok  	example.com/servoorders/internal/config	0.500s
+?   	example.com/servoorders/internal/domain	[no test files]
+ok  	example.com/servoorders/internal/ginapi	1.480s
+ok  	example.com/servoorders/internal/grpcapi	0.645s
+?   	example.com/servoorders/internal/grpcapi/ordersv1	[no test files]
+?   	example.com/servoorders/internal/migrations	[no test files]
+?   	example.com/servoorders/internal/mocks	[no test files]
+ok  	example.com/servoorders/internal/natsbroker	0.505s
+ok  	example.com/servoorders/internal/notifier	0.344s
+ok  	example.com/servoorders/internal/observability	0.569s
+?   	example.com/servoorders/internal/openapi	[no test files]
+ok  	example.com/servoorders/internal/postgres	0.522s
+ok  	example.com/servoorders/internal/redis	0.508s
+?   	example.com/servoorders/internal/repository	[no test files]
+ok  	example.com/servoorders/internal/resilience	0.384s
+ok  	example.com/servoorders/internal/service	0.719s
+ok  	example.com/servoorders/internal/session	0.297s
 ```
 
 Notice `postgres`, `redis`, and `natsbroker` all say `ok`, not `[no test files]` — they have test
@@ -297,7 +297,7 @@ go test ./... -v
 === RUN   TestGetByUsernameUnknownReturnsErrNotFound
 --- PASS: TestGetByUsernameUnknownReturnsErrNotFound (0.01s)
 PASS
-ok  	example.com/servoorders/postgres	0.229s
+ok  	example.com/servoorders/internal/postgres	0.229s
 === RUN   TestGetOnEmptyKeyReturnsErrMiss
 --- PASS: TestGetOnEmptyKeyReturnsErrMiss (0.01s)
 === RUN   TestSetThenGetRoundTrips
@@ -305,7 +305,7 @@ ok  	example.com/servoorders/postgres	0.229s
 === RUN   TestInvalidateRemovesTheKey
 --- PASS: TestInvalidateRemovesTheKey (0.00s)
 PASS
-ok  	example.com/servoorders/redis	0.165s
+ok  	example.com/servoorders/internal/redis	0.165s
 ```
 
 Same command, same test binaries, same `go test ./...` — the only thing that changed is three

@@ -19,7 +19,7 @@ import (
 	"time"
 	"uuid"
 
-	"example.com/servoorders/config"
+	"example.com/servoorders/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -198,7 +198,7 @@ $ go test ./auth/... -v
 === RUN   TestHashPasswordThenCheckPasswordRoundTrips
 --- PASS: TestHashPasswordThenCheckPasswordRoundTrips (0.17s)
 PASS
-ok  	example.com/servoorders/auth	0.496s
+ok  	example.com/servoorders/internal/auth	0.496s
 ```
 
 ## Add the domain error a failed login needs
@@ -230,9 +230,9 @@ import (
 	"errors"
 	"fmt"
 
-	"example.com/servoorders/auth"
-	"example.com/servoorders/domain"
-	"example.com/servoorders/repository"
+	"example.com/servoorders/internal/auth"
+	"example.com/servoorders/internal/domain"
+	"example.com/servoorders/internal/repository"
 )
 
 type AuthService struct {
@@ -334,7 +334,7 @@ $ go test ./service/... -run TestLogin -v
 === RUN   TestLoginFailsWithUnknownUsernameTheSameWayAsWrongPassword
 --- PASS: TestLoginFailsWithUnknownUsernameTheSameWayAsWrongPassword (0.00s)
 PASS
-ok  	example.com/servoorders/service	0.546s
+ok  	example.com/servoorders/internal/service	0.546s
 ```
 
 The middleware that actually extracts a Bearer token from a request and calls `Verify` on it

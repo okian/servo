@@ -21,9 +21,9 @@ import (
 	"fmt"
 	"uuid"
 
-	"example.com/servoorders/cache"
-	"example.com/servoorders/domain"
-	"example.com/servoorders/redis"
+	"example.com/servoorders/internal/cache"
+	"example.com/servoorders/internal/domain"
+	"example.com/servoorders/internal/redis"
 	"github.com/sony/gobreaker/v2"
 )
 
@@ -171,7 +171,7 @@ $ go test ./resilience/... -v
 === RUN   TestRateLimiterRejectsRequestsOverTheLimit
 --- PASS: TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt (0.00s)
 PASS
-ok  	example.com/servoorders/resilience	0.312s
+ok  	example.com/servoorders/internal/resilience	0.312s
 ```
 
 ## See it against a real Redis
@@ -235,7 +235,7 @@ package resilience
 import (
 	"net/http"
 
-	"example.com/servoorders/config"
+	"example.com/servoorders/internal/config"
 	"golang.org/x/time/rate"
 )
 
@@ -457,11 +457,11 @@ your own code, or a test — still passes the old argument count. That's `servo_
 comment header confirming the shape actually resolved:
 
 ```
-//	[L3] *example.com/servoorders/redis.Cache
-//	      deps: *example.com/servoorders/redis.Config
+//	[L3] *example.com/servoorders/internal/redis.Cache
+//	      deps: *example.com/servoorders/internal/redis.Config
 //	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | redis/redis.go:40:6
-//	[L4] *example.com/servoorders/resilience.CircuitBreakerCache
-//	      deps: *example.com/servoorders/redis.Cache
+//	[L4] *example.com/servoorders/internal/resilience.CircuitBreakerCache
+//	      deps: *example.com/servoorders/internal/redis.Cache
 //	      capabilities: none | binding: explicit bind | resilience/breaker.go:38:6
 ```
 

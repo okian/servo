@@ -216,7 +216,7 @@ That last one is the guarantee that makes every other package's tests trustworth
 
 ```
 $ go test ./config/...
-ok  	example.com/servoorders/config	0.104s
+ok  	example.com/servoorders/internal/config	0.104s
 ```
 
 ## The trade this design makes

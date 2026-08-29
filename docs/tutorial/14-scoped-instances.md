@@ -234,19 +234,19 @@ in `handlers.go` for direct `s.sessions.RecordView(...)` / `s.sessions.Recent()`
 ```
 example.com/servoorders/cmd/orders: servo: 1 diagnostic(s):
 
-api/server.go:49:6: servo: *example.com/servoorders/session.Session is scoped, but *example.com/servoorders/api.Server is a singleton that depends on it
-  needed by *example.com/servoorders/api.Server  api/server.go:49:6
+api/server.go:49:6: servo: *example.com/servoorders/internal/session.Session is scoped, but *example.com/servoorders/internal/api.Server is a singleton that depends on it
+  needed by *example.com/servoorders/internal/api.Server  api/server.go:49:6
   root                                           cmd/orders/spec.go:23:3
 
   A singleton is constructed once and held for the life of the process, so it
-  would capture whichever *example.com/servoorders/session.Session happened to be built first and hand that same
+  would capture whichever *example.com/servoorders/internal/session.Session happened to be built first and hand that same
   one to every caller afterwards, whatever key they present. Nothing about the
   running program would say so.
 
   Two ways out:
-    - depend on the accessor instead: change api.New's parameter from *example.com/servoorders/session.Session to example.com/servoorders/session.Sessions,
+    - depend on the accessor instead: change api.New's parameter from *example.com/servoorders/internal/session.Session to example.com/servoorders/internal/session.Sessions,
       and call Acquire(ctx) per request
-    - make *example.com/servoorders/api.Server scoped too, by giving it a dependency on example.com/servoorders/session.UserID
+    - make *example.com/servoorders/internal/api.Server scoped too, by giving it a dependency on example.com/servoorders/internal/session.UserID
 ```
 
 (Absolute paths shortened. `examples/diagnostics/widening` is the same mistake as a permanently
@@ -266,13 +266,13 @@ in [chapter 20](20-troubleshooting.md) and in the
 ```
 $ servo graph --dir examples/tutorial/cmd/orders
 ...
-══ example.com/servoorders/session.UserID ══
+══ example.com/servoorders/internal/session.UserID ══
   linger: 5m0s   max: 50000
-  accessors: example.com/servoorders/session.Sessions
-  borrows:   *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
+  accessors: example.com/servoorders/internal/session.Sessions
+  borrows:   *example.com/servoorders/internal/session.Config, *example.com/servoorders/internal/observability.Logger
 ── Scope level 1 ──
-  *example.com/servoorders/session.Session
-      deps: example.com/servoorders/session.UserID, *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
+  *example.com/servoorders/internal/session.Session
+      deps: example.com/servoorders/internal/session.UserID, *example.com/servoorders/internal/session.Config, *example.com/servoorders/internal/observability.Logger
       capabilities: Initializer, Flusher, Finalizer
       binding: sole candidate
       pos: session/session.go:70:6
@@ -289,13 +289,13 @@ Read the last three lines of the scope header carefully, because they're the who
 
 ```
 $ servo explain --dir examples/tutorial/cmd/orders session.Session
-*example.com/servoorders/session.Session
+*example.com/servoorders/internal/session.Session
   provider:     session.New (session/session.go:70:6)
   binding:      sole candidate
-  lifetime:     scoped — one per example.com/servoorders/session.UserID, linger 5m0s, max 50000
+  lifetime:     scoped — one per example.com/servoorders/internal/session.UserID, linger 5m0s, max 50000
   level:        1
-  depends on:   example.com/servoorders/session.UserID, *example.com/servoorders/session.Config, *example.com/servoorders/observability.Logger
-  depended on:  (acquired via example.com/servoorders/session.Sessions)
+  depends on:   example.com/servoorders/internal/session.UserID, *example.com/servoorders/internal/session.Config, *example.com/servoorders/internal/observability.Logger
+  depended on:  (acquired via example.com/servoorders/internal/session.Sessions)
   capabilities: Initializer, Flusher, Finalizer
 ```
 

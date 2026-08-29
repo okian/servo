@@ -236,7 +236,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"example.com/servoorders/config"
+	"example.com/servoorders/internal/config"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"

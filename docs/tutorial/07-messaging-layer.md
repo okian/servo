@@ -16,7 +16,7 @@ package broker
 import (
 	"context"
 
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/domain"
 )
 
 const OrderPlacedSubject = "orders.placed"
@@ -63,10 +63,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"example.com/servoorders/broker"
-	"example.com/servoorders/observability"
-	"example.com/servoorders/config"
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/broker"
+	"example.com/servoorders/internal/observability"
+	"example.com/servoorders/internal/config"
+	"example.com/servoorders/internal/domain"
 	"github.com/nats-io/nats.go"
 )
 
@@ -153,9 +153,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"example.com/servoorders/broker"
-	"example.com/servoorders/config"
-	"example.com/servoorders/observability"
+	"example.com/servoorders/internal/broker"
+	"example.com/servoorders/internal/config"
+	"example.com/servoorders/internal/observability"
 	"github.com/nats-io/nats.go"
 )
 
@@ -193,21 +193,19 @@ func (n *Notifier) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("notifier: connect: %w", err)
 	}
-	defer conn.Drain()
-
 	sub, err := conn.Subscribe(broker.OrderPlacedSubject, func(msg *nats.Msg) {
-		var event broker.OrderPlacedEvent
-		if err := json.Unmarshal(msg.Data, &event); err != nil {
-			n.log.ErrorContext(ctx, "notifier: malformed event", "error", err)
-			return
-		}
-		n.log.InfoContext(ctx, "order placed",
-			"order_id", event.OrderID, "user_id", event.UserID, "item", event.Item)
+		n.inFlight.Add(1)
+		defer n.inFlight.Done()
+		n.handle(ctx, msg)
 	})
 	if err != nil {
+		conn.Close()
 		return fmt.Errorf("notifier: subscribe: %w", err)
 	}
-	defer sub.Unsubscribe()
+
+	n.mu.Lock()
+	n.conn, n.sub = conn, sub
+	n.mu.Unlock()
 
 	<-ctx.Done()
 	return nil
@@ -217,6 +215,88 @@ func (n *Notifier) Run(ctx context.Context) error {
 `Run` blocking on `<-ctx.Done()` is the standard shape for anything servo will detect as a
 `Runner` — it returns when, and only when, the context it was given is cancelled, which is exactly
 what lets servo's generated shutdown code wait for it to actually stop.
+
+Notice what `Run` does **not** do: it tears nothing down. No `defer sub.Unsubscribe()`, no
+`defer conn.Close()`. That is deliberate, and it is the setup for the next two methods.
+
+## Stopping a consumer without losing messages
+
+This is the one component in the tutorial that shows the difference between `Drain` and `Stop`, so
+it is worth doing properly.
+
+servo runs every `Runner` to completion *before* it calls `Shutdown`. If `Run` closed its own
+subscription on the way out, there would be nothing left for the shutdown phases to do and the
+distinction below would be decoration. Leaving the subscription open is what makes it real:
+
+```go
+// Drain stops consuming and waits for what is already being consumed.
+func (n *Notifier) Drain(ctx context.Context) error {
+	n.mu.Lock()
+	sub := n.sub
+	n.mu.Unlock()
+	if sub == nil {
+		return nil // Run never got as far as subscribing
+	}
+
+	if err := sub.Unsubscribe(); err != nil && !errors.Is(err, nats.ErrConnectionClosed) {
+		return fmt.Errorf("notifier: unsubscribe: %w", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		n.inFlight.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("notifier: handlers still running at drain deadline: %w", ctx.Err())
+	}
+}
+
+// Stop releases the connection, after Drain has finished with it.
+func (n *Notifier) Stop(context.Context) error {
+	n.mu.Lock()
+	conn := n.conn
+	n.mu.Unlock()
+	if conn == nil {
+		return nil
+	}
+	conn.Close()
+	return nil
+}
+```
+
+Two halves, and the second is the one people leave out. `Unsubscribe` removes interest, so the
+server sends nothing further — but at the moment shutdown begins there may be handlers midway
+through, and returning right there abandons their work with no error anywhere. `inFlight` is a
+`sync.WaitGroup` the subscription callback increments; waiting on it is what "drained" actually
+means. The wait is bounded by the context servo passes, which carries the
+[stop budget](../reference/lifecycle.md#the-stop-budget), so a handler that never returns is
+reported rather than waited on forever.
+
+`Stop` then closes the connection. Splitting them is not ceremony: they answer different questions —
+`Drain` asks "is the work finished", `Stop` asks "is the socket closed" — and servo runs them in
+that order, each under its own budget.
+
+### About acks
+
+Core NATS, which is what we are using, is **at-most-once and has no acknowledgement**. A message is
+delivered once; whether the handler succeeds, fails, or panics, the server will not send it again.
+That is precisely why `Drain` matters here — the only chance to finish that work is before the
+process exits.
+
+If you need redelivery, that is JetStream, and the handler would end in `msg.Ack()` on success and
+`msg.Nak()` on a failure worth retrying. **The shape above does not change.** You still want
+in-flight handlers to finish before shutdown, `Drain` is still what waits for them, and an
+unacknowledged message at that point is one the broker will redeliver — which is the same
+correctness argument arriving from the other direction.
+
+The one case with no good answer either way is a message that will never parse. `handle` logs it
+and moves on rather than retrying, because a payload that is malformed now will be malformed on
+every redelivery, and a consumer that keeps retrying it stops consuming anything else.
 
 ## The trade-off we're accepting here
 
@@ -248,11 +328,11 @@ $ TEST_NATS_URL=nats://localhost:4222 go test ./natsbroker/... ./notifier/... -v
 === RUN   TestHealthReflectsConnectionState
 --- PASS: TestHealthReflectsConnectionState (0.00s)
 PASS
-ok  	example.com/servoorders/natsbroker	0.160s
+ok  	example.com/servoorders/internal/natsbroker	0.160s
 === RUN   TestRunLogsReceivedEvents
 --- PASS: TestRunLogsReceivedEvents (0.05s)
 PASS
-ok  	example.com/servoorders/notifier	0.201s
+ok  	example.com/servoorders/internal/notifier	0.201s
 ```
 
 The notifier test is worth a look before you write it, because it has to solve a real timing

@@ -18,7 +18,7 @@ import (
 	"errors"
 	"uuid"
 
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/domain"
 )
 
 var ErrMiss = errors.New("cache: miss")
@@ -52,9 +52,9 @@ import (
 	"time"
 	"uuid"
 
-	"example.com/servoorders/cache"
-	"example.com/servoorders/config"
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/cache"
+	"example.com/servoorders/internal/config"
+	"example.com/servoorders/internal/domain"
 	goredis "github.com/redis/go-redis/v9"
 )
 
@@ -168,7 +168,7 @@ $ TEST_REDIS_ADDR=localhost:6379 go test ./redis/... -v
 === RUN   TestInvalidateRemovesTheKey
 --- PASS: TestInvalidateRemovesTheKey (0.00s)
 PASS
-ok  	example.com/servoorders/redis	0.174s
+ok  	example.com/servoorders/internal/redis	0.174s
 ```
 
 (`make test-integration` runs this alongside Postgres and NATS's own tests together — shown

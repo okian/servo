@@ -9,8 +9,8 @@ import (
 	"testing"
 	"uuid"
 
-	"example.com/servoorders/auth"
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/auth"
+	"example.com/servoorders/internal/domain"
 	"go.uber.org/mock/gomock"
 )
 

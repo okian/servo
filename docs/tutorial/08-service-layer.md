@@ -22,11 +22,11 @@ import (
 	"time"
 	"uuid"
 
-	"example.com/servoorders/broker"
-	"example.com/servoorders/observability"
-	"example.com/servoorders/cache"
-	"example.com/servoorders/domain"
-	"example.com/servoorders/repository"
+	"example.com/servoorders/internal/broker"
+	"example.com/servoorders/internal/observability"
+	"example.com/servoorders/internal/cache"
+	"example.com/servoorders/internal/domain"
+	"example.com/servoorders/internal/repository"
 )
 
 type OrderService struct {
@@ -291,7 +291,7 @@ $ go test ./service/... -v
 === RUN   TestGetOrderPassesThroughNotFound
 --- PASS: TestGetOrderPassesThroughNotFound (0.00s)
 PASS
-ok  	example.com/servoorders/service	0.127s
+ok  	example.com/servoorders/internal/service	0.127s
 ```
 
 That `ERROR` line in the middle isn't a failure — it's `slog`'s default logger, doing exactly what

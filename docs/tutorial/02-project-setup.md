@@ -28,55 +28,57 @@ needs it. Keep this page open as a map for "where does this belong":
 servoorders/
   go.mod
   Makefile                 local dev commands (below)
-  config/                  typed configuration                               chapter 3
-  domain/                  core types, no dependency on anything else here   chapter 4
-  repository/              OrderRepository, UserRepository interfaces        chapter 5
-  postgres/                Postgres implementation of both                   chapter 5
-  migrations/              embedded SQL, applied on startup                  chapter 5
-  cache/                   OrderCache interface                              chapter 6
-  redis/                   Redis implementation                              chapter 6
-  broker/                  EventPublisher interface                          chapter 7
-  natsbroker/              NATS implementation                               chapter 7
-  notifier/                a subscriber consuming events                     chapter 7
-  service/                 OrderService: the business logic                  chapter 8
-  auth/                    JWT issuing and verification                      chapter 9
-  api/                     HTTP server, router, handlers                     chapter 10
   cmd/orders/              spec.go + main.go — the injector                  chapter 13
-  session/                 per-user state, one instance per logged-in user   chapter 14
-  observability/           logging, metrics, tracing setup                   chapter 15
-  resilience/              circuit breaker, rate limiting                    chapter 16
-  mocks/                   generated mocks for tests                         chapter 8 onward
-  deploy/                  docker-compose.yml, Dockerfile                    chapter 19
-  openapi/                 API contract, embedded and served                 chapter 10
-  admin/                   health/readiness/metrics, on their own port       chapter 15
-  ginapi/                  the same API in Gin                               chapter 11
   cmd/ordersgin/           its injector                                      chapter 11
-  grpcapi/                 gRPC and REST sharing one port                    chapter 12
   cmd/ordersgrpc/          its injector                                      chapter 12
+  deploy/                  docker-compose.yml, Dockerfile                    chapter 19
+  internal/
+    config/                typed configuration                               chapter 3
+    domain/                core types, no dependency on anything else here   chapter 4
+    repository/            OrderRepository, UserRepository interfaces        chapter 5
+    postgres/              Postgres implementation of both                   chapter 5
+    migrations/            embedded SQL, applied on startup                  chapter 5
+    cache/                 OrderCache interface                              chapter 6
+    redis/                 Redis implementation                              chapter 6
+    broker/                EventPublisher interface                          chapter 7
+    natsbroker/            NATS implementation                               chapter 7
+    notifier/              a subscriber consuming events                     chapter 7
+    service/               OrderService: the business logic                  chapter 8
+    auth/                  JWT issuing and verification                      chapter 9
+    api/                   HTTP server, router, handlers                     chapter 10
+    session/               per-user state, one instance per logged-in user   chapter 14
+    observability/         logging, metrics, tracing setup                   chapter 15
+    resilience/            circuit breaker, rate limiting                    chapter 16
+    mocks/                 generated mocks for tests                         chapter 8 onward
+    openapi/               API contract, embedded and served                 chapter 10
+    admin/                 health/readiness/metrics, on their own port       chapter 15
+    ginapi/                the same API in Gin                               chapter 11
+    grpcapi/               gRPC and REST sharing one port                    chapter 12
 ```
 
-Every package here is flat, with no `internal/` nesting. That is a choice made for this tutorial,
-not a recommendation: `example.com/servoorders/postgres` is shorter than
-`example.com/servoorders/internal/postgres`, and that difference shows up in every import block,
-every diagnostic and every generated file you are about to read.
+Every package here lives under `internal/`, with `cmd/` holding the entry points. That is the
+ordinary shape for a Go application, and it is worth knowing what it buys, because the mechanism is
+often confused with an unrelated one.
 
-**For a real application, `internal/` is the better default.** It is worth being clear about why,
-because the two mechanisms are often confused. Unexported identifiers hide *symbols* within a
-package; `internal/` restricts who may *import the package at all*, and it is the only thing in Go
-that does. A flat layout leaves every package in the module publicly importable the moment the
-module is fetchable — by another repository, or more likely by a sibling module in the same
-monorepo — and "nobody will import it" is a policy nothing enforces.
+Unexported identifiers hide *symbols* within a package. `internal/` restricts who may *import the
+package at all*, and it is the only thing in Go that does: a package under `internal/` is importable
+only by code rooted at the directory containing that `internal/`. A flat layout leaves every package
+publicly importable the moment the module is fetchable — by another repository, or more likely by a
+sibling module in the same monorepo — and "nobody will import it" is a policy nothing enforces.
 
-The usual shape for an application is `cmd/` for entry points and `internal/` for everything else,
-with the top level reserved for packages you genuinely intend others to use. servo is indifferent
-either way: it resolves providers under `internal/` exactly as it does anywhere else, and a spec
-file in `cmd/` may import its own module's `internal/` packages, since the restriction is scoped to
-the directory containing `internal/`. If you would rather follow the convention while working
-through this, move each package under `internal/` and add that segment to the imports — nothing
-else in the tutorial changes.
+So `internal/` is the default worth reaching for in an application, and the top level is where you
+put the handful of packages you genuinely intend other people to use. servo is indifferent either
+way: it resolves providers under `internal/` exactly as it does anywhere else, and a spec file in
+`cmd/` may import its own module's `internal/` packages, since the restriction is scoped to the
+directory containing `internal/`.
+
+The cost is one path segment in every import — `example.com/servoorders/internal/postgres` rather
+than `example.com/servoorders/postgres` — which is why plenty of small services skip it. That is a
+defensible trade to make deliberately, and a bad one to make by not thinking about it.
 
 servo's own [`internal/` layout](https://github.com/okian/servo/blob/master/ARCHITECTURE.md) is
-worth a look for what that looks like in a module that really is imported by other people.
+worth a look for the other half of the picture: a module that really is imported by other people,
+where what sits at the top level is a deliberate, small public API.
 
 ## Install what you'll need
 

@@ -8,7 +8,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"example.com/servoorders/admin"
+	"example.com/servoorders/internal/admin"
 )
 
 func main() {

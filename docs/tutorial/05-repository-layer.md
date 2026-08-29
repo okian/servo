@@ -16,7 +16,7 @@ import (
 	"context"
 	"uuid"
 
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/domain"
 )
 
 type OrderRepository interface {
@@ -50,10 +50,10 @@ import (
 	"fmt"
 	"uuid"
 
-	"example.com/servoorders/config"
-	"example.com/servoorders/domain"
-	"example.com/servoorders/migrations"
-	"example.com/servoorders/repository"
+	"example.com/servoorders/internal/config"
+	"example.com/servoorders/internal/domain"
+	"example.com/servoorders/internal/migrations"
+	"example.com/servoorders/internal/repository"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -348,9 +348,9 @@ $ make test-integration
 === RUN   TestNewAppliesDefaultsAndParsesTypedFields
 --- PASS: TestNewAppliesDefaultsAndParsesTypedFields (0.00s)
 PASS
-ok  	example.com/servoorders/config	0.351s
-?   	example.com/servoorders/domain	[no test files]
-?   	example.com/servoorders/migrations	[no test files]
+ok  	example.com/servoorders/internal/config	0.351s
+?   	example.com/servoorders/internal/domain	[no test files]
+?   	example.com/servoorders/internal/migrations	[no test files]
 === RUN   TestCreateAndGetOrder
 --- PASS: TestCreateAndGetOrder (0.02s)
 === RUN   TestGetMissingOrderReturnsErrNotFound
@@ -362,8 +362,8 @@ ok  	example.com/servoorders/config	0.351s
 === RUN   TestGetByUsernameUnknownReturnsErrNotFound
 --- PASS: TestGetByUsernameUnknownReturnsErrNotFound (0.01s)
 PASS
-ok  	example.com/servoorders/postgres	0.376s
-?   	example.com/servoorders/repository	[no test files]
+ok  	example.com/servoorders/internal/postgres	0.376s
+?   	example.com/servoorders/internal/repository	[no test files]
 ```
 
 The postgres tests are worth writing yourself, in `postgres/postgres_test.go` — but first, a small
@@ -395,7 +395,7 @@ Without `make up` first, the same command doesn't fail — it just quietly finds
 
 ```
 $ go test ./postgres/...
-ok  	example.com/servoorders/postgres	0.174s
+ok  	example.com/servoorders/internal/postgres	0.174s
 ```
 
 Add `-v` to see why it was that fast:

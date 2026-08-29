@@ -32,7 +32,7 @@ import (
 	"time"
 	"uuid"
 
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/domain"
 )
 
 type loginRequest struct {
@@ -115,8 +115,8 @@ import (
 	"net/http"
 	"strings"
 
-	"example.com/servoorders/auth"
-	"example.com/servoorders/observability"
+	"example.com/servoorders/internal/auth"
+	"example.com/servoorders/internal/observability"
 )
 
 type contextKey int
@@ -211,7 +211,7 @@ import (
 	"strconv"
 	"uuid"
 
-	"example.com/servoorders/domain"
+	"example.com/servoorders/internal/domain"
 )
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -376,10 +376,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"example.com/servoorders/auth"
-	"example.com/servoorders/config"
-	"example.com/servoorders/observability"
-	"example.com/servoorders/service"
+	"example.com/servoorders/internal/auth"
+	"example.com/servoorders/internal/config"
+	"example.com/servoorders/internal/observability"
+	"example.com/servoorders/internal/service"
 )
 
 type Server struct {
@@ -544,6 +544,44 @@ it, in dependency order.
 That is the whole of it, and it is the same three lines for the two transports in the next
 two chapters.
 
+## What `app.Ready` actually reports
+
+`Health` and `Ready` are two different questions, and an orchestrator does two very different
+things with the answers. `Health` means "this process is not broken" — a failure gets the container
+restarted. `Ready` means "send me traffic" — a failure only takes the instance out of the load
+balancer, and is expected to be temporary. Conflating them is how a slow warm-up turns into a
+restart loop.
+
+This server has an honest answer to the second question, and giving it requires one change to
+`Run`. `ListenAndServe` hides the moment the port is bound inside itself, so bind explicitly:
+
+```go
+func (s *Server) Run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.http.Addr)
+	if err != nil {
+		return fmt.Errorf("api: listen: %w", err)
+	}
+	s.ready.Store(true)
+	// ... serve on ln, return when ctx is done
+}
+
+// Ready reports whether this server is accepting connections yet.
+func (s *Server) Ready(context.Context) error {
+	if !s.ready.Load() {
+		return errors.New("api: not accepting connections yet")
+	}
+	return nil
+}
+```
+
+`ready` is an `atomic.Bool` on the struct: written by `Run`, read by whatever goroutine serves the
+probe. The window it describes is real — between the graph finishing construction and `Run` binding
+the port, the process is perfectly healthy and cannot serve a single request. Routing traffic there
+produces connection refused for no reason at all.
+
+That is the whole of `Readier`. Nothing calls it for you: servo emits `app.Ready(ctx)`, and you
+decide when it runs — which is what the next section wires up.
+
 ## Health and readiness live outside the graph
 
 `GET /healthz` and `GET /readyz` need `app.Health(ctx)` and `app.Ready(ctx)` — but those are
@@ -686,7 +724,7 @@ And the admin port:
 
 ```
 $ curl -s http://localhost:8081/healthz
-{"clean":true,"nodes":[{"name":"*example.com/servoorders/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/natsbroker.Publisher","status":"ok"}]}
+{"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/internal/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/internal/natsbroker.Publisher","status":"ok"}]}
 ```
 
 `/readyz` responds too, but with an empty node list (`{"clean":true,"nodes":null}`) — nothing in
