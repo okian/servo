@@ -68,7 +68,7 @@ though: real Postgres, real Redis, real NATS, a real JWT, not simplified stand-i
 
 ## Technology choices
 
-| Concern | Choice | Why (briefly — see [chapter 20](20-alternatives-and-further-reading.md) for alternatives) |
+| Concern | Choice | Why (briefly — see [chapter 19](19-alternatives-and-further-reading.md) for alternatives) |
 |---|---|---|
 | Dependency injection | servo | The subject of this tutorial |
 | HTTP | `net/http` (stdlib) | Go 1.22+'s router is enough for five routes; no framework opinion to explain |

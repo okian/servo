@@ -211,7 +211,7 @@ everything visible in one file, nothing to look up in someone else's documentati
 what it does. (A tool like [`golang-migrate`](https://github.com/golang-migrate/migrate) or
 [`goose`](https://github.com/pressly/goose) is genuinely the better choice once a team has more
 than a handful of migrations, or needs to roll one back in production — see
-[chapter 20](20-alternatives-and-further-reading.md#migrations) for when to make that switch.)
+[chapter 19](19-alternatives-and-further-reading.md#migrations) for when to make that switch.)
 
 Create `migrations/migrations.go`:
 

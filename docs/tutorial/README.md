@@ -95,7 +95,7 @@ you — nothing here is assembled by hand.
 | 7 | [Messaging layer](07-messaging-layer.md) | NATS, publish/subscribe, delivery guarantees |
 | 8 | [Service layer](08-service-layer.md) | Business logic, orchestration, domain errors |
 | 9 | [Authentication](09-authentication.md) | JWT issue/verify, password hashing, middleware |
-| 10 | [API layer](10-api-layer.md) | Routing, DTOs, validation, error mapping |
+| 10 | [API layer](10-api-layer.md) | Routing, DTOs, error mapping — in net/http, Gin, or gRPC |
 | 11 | [Wiring with servo](11-wiring-with-servo.md) | The spec file, capabilities, `servo generate` |
 | 12 | [Scoped instances](12-scoped-instances.md) | One session per user, instead of one per process |
 | 13 | [Observability](13-observability.md) | Structured logs, metrics, tracing, health checks |
@@ -104,8 +104,7 @@ you — nothing here is assembled by hand.
 | 16 | [CI/CD](16-cicd.md) | GitHub Actions: lint, test, build, `servo check` |
 | 17 | [Running and deployment](17-running-and-deployment.md) | Docker Compose, Dockerfile, env reference |
 | 18 | [Troubleshooting](18-troubleshooting.md) | Every diagnostic from every chapter, organized by symptom |
-| 19 | [Transport choices](19-transport-choices.md) | The same service layer behind Gin, and behind gRPC on one port with REST |
-| 20 | [Alternatives and further reading](20-alternatives-and-further-reading.md) | Other valid choices at every layer |
+| 19 | [Alternatives and further reading](19-alternatives-and-further-reading.md) | Other valid choices at every layer |
 
 Read them in order the first time through — each one assumes the code from the previous chapters
 already exists. After that, they stand alone well enough to use as reference.

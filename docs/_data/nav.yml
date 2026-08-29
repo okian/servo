@@ -1,5 +1,5 @@
 # Drives the sidebar, the landing-page chapter grid, and prev/next links.
-# Kept here rather than in each chapter's front matter so the 20 tutorial
+# Kept here rather than in each chapter's front matter so the 19 tutorial
 # files stay plain markdown that reads correctly in GitHub's file browser.
 # Order in this file is the reading order; prev/next is derived by flattening
 # every section's chapters in sequence. `numeral` is the part's roman number,
@@ -113,10 +113,6 @@ sections:
         url: /tutorial/18-troubleshooting.html
         blurb: Every diagnostic from every chapter, gathered and reorganized by symptom.
       - num: 19
-        title: Transport choices
-        url: /tutorial/19-transport-choices.html
-        blurb: The same service layer behind Gin, and behind gRPC sharing one port with REST.
-      - num: 20
         title: Alternatives and further reading
-        url: /tutorial/20-alternatives-and-further-reading.html
+        url: /tutorial/19-alternatives-and-further-reading.html
         blurb: The option each chapter didn't pick, and the case where it would win.

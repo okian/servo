@@ -265,7 +265,7 @@ that actually protects the process — a burst of traffic from anywhere gets thr
 means one aggressive client can use up budget that a well-behaved client needed. A real
 multi-tenant service usually wants a bucket per client, keyed by API key or IP, which trades this
 simplicity for needing an eviction strategy so that map of limiters doesn't grow without bound;
-see [chapter 20](20-alternatives-and-further-reading.md#per-client-rate-limiting).
+see [chapter 19](19-alternatives-and-further-reading.md#per-client-rate-limiting).
 
 ## A wiring mistake worth walking through, not just avoiding
 

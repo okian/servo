@@ -1,4 +1,4 @@
-# 20. Alternatives and further reading
+# 19. Alternatives and further reading
 
 Every earlier chapter picked one option at each layer and ran with it, because a tutorial that
 paused to weigh every alternative in depth at the point it arose would never finish building
@@ -366,4 +366,4 @@ levels, built and deployed by CI, documented with a real OpenAPI contract. If yo
 going rather than stop here, the sections above point at concrete next features — an idempotency
 key, a real order-status state machine, per-client rate limiting — that would each extend the real
 codebase in `examples/tutorial/` rather than a hypothetical one, using exactly the layers and
-patterns the last nineteen chapters already established. Go build the next thing on top of it.
+patterns the last eighteen chapters already established. Go build the next thing on top of it.

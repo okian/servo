@@ -220,5 +220,6 @@ job is to get you to the right one fast, not to repeat it.
 
 ## Next
 
-[Chapter 19: Transport choices](19-transport-choices.md) — the same service layer behind Gin, and
-behind gRPC and REST sharing one port.
+[Chapter 19: Alternatives and further reading](19-alternatives-and-further-reading.md) — the
+choices this tutorial made at every layer, what the real alternatives were, and when you'd actually
+want them instead.

@@ -234,7 +234,7 @@ and publish them, marking each sent only after a confirmed publish. That gets yo
 delivery — at the cost of a background poller, and the possibility that a consumer sees the same
 event twice, which any real at-least-once consumer has to be built to tolerate (idempotent
 processing, keyed by `OrderID`). We're not building an outbox in this tutorial — see
-[chapter 20](20-alternatives-and-further-reading.md#the-outbox-pattern) for what it would take —
+[chapter 19](19-alternatives-and-further-reading.md#the-outbox-pattern) for what it would take —
 because the failure mode being visible and understood is more valuable here than the machinery to
 eliminate it.
 

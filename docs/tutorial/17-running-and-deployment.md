@@ -8,10 +8,9 @@ variable the service reads, and the two real infrastructure problems most likely
 first time you actually try this: a full disk, and a runtime image with no shell to debug from.
 
 Everything here uses `cmd/orders`, the `net/http` transport. The Gin and gRPC binaries from
-[chapter 19](19-transport-choices.md) are built and run identically — `make run-gin`,
+[chapter 10](10-api-layer.md#pick-one-transport) are built and run identically — `make run-gin`,
 `make run-grpc`, or swap the path in the `Dockerfile`'s `go build` line — and read the same
-environment variables, since the settings that differ between them are the two listen addresses
-they all share.
+environment variables.
 
 ## The Dockerfile
 
@@ -363,7 +362,7 @@ single up-front parse.
   each service into a `Deployment` (or a `StatefulSet` for Postgres), the health checks into
   `livenessProbe`/`readinessProbe` hitting the same `/healthz`/`/readyz` this service already
   exposes, and `JWT_SECRET` into a `Secret` mounted as an environment variable rather than written
-  into a manifest. [Chapter 20](20-alternatives-and-further-reading.md) goes further into what
+  into a manifest. [Chapter 19](19-alternatives-and-further-reading.md) goes further into what
   changes at that scale.
 - **A registry and a real image tag instead of a local-only build.** Nothing here pushes an image
   anywhere — chapter 16's `docker-build` job proves the image builds, and that's the limit of what
