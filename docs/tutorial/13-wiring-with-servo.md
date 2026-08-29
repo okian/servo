@@ -1,4 +1,4 @@
-# 11. Wiring with servo
+# 13. Wiring with servo
 
 Nine packages exist now, each with its own constructor, and nothing connecting them yet — no
 `main.go` that constructs a logger-shaped thing then a database then a cache then a service then a
@@ -90,8 +90,8 @@ exists, starting with a resolved-graph comment that's worth reading end to end b
 below it.
 
 This is the committed file from `examples/tutorial`, which is the *finished* service, so a few
-entries come from chapters you haven't reached yet — `observability` (chapter 13), `resilience`
-(chapter 14), and the `session` scope at the bottom (chapter 12). Generate it yourself at this
+entries come from chapters you haven't reached yet — `observability` (chapter 15), `resilience`
+(chapter 16), and the `session` scope at the bottom (chapter 14). Generate it yourself at this
 point and you'll get the same shape with those omitted:
 
 ```
@@ -594,5 +594,5 @@ exactly the way `main.go` wires it for real, running in well under a second, wit
 
 ## Next
 
-[Chapter 12: Scoped instances](12-scoped-instances.md) — the one thing in this graph that shouldn't
+[Chapter 14: Scoped instances](14-scoped-instances.md) — the one thing in this graph that shouldn't
 be built once and held forever.

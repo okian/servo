@@ -38,7 +38,7 @@ func (m *Metrics) Handler() http.Handler {
 // NewCounter registers a counter into this same registry, for any other
 // component (resilience.RateLimiter, for one) that wants its own metric on
 // the same /metrics endpoint without either package needing a shared
-// global — see docs/tutorial/14-resilience.md.
+// global — see docs/tutorial/16-resilience.md.
 func (m *Metrics) NewCounter(name, help string) prometheus.Counter {
 	c := prometheus.NewCounter(prometheus.CounterOpts{Name: name, Help: help})
 	m.registry.MustRegister(c)
@@ -49,7 +49,7 @@ func (m *Metrics) NewCounter(name, help string) prometheus.Counter {
 // e.g. "GET /orders/{id}") rather than r.URL.Path (e.g. "/orders/<uuid>").
 // A label with one distinct value per order ID is exactly the unbounded
 // cardinality that turns a small Prometheus instance into a struggling one
-// — see docs/tutorial/13-observability.md.
+// — see docs/tutorial/15-observability.md.
 func (m *Metrics) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()

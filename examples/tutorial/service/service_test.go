@@ -20,7 +20,7 @@ import (
 // redis, and natsbroker directly. gomock.NewController(t) here, with a
 // real *testing.T, is simpler than servotest.PanicReporter's zero-arg
 // pattern; that pattern only earns its keep once a mock has to be
-// constructed from inside servo's generated graph (chapter 11), where no
+// constructed from inside servo's generated graph (chapter 13), where no
 // *testing.T is reachable at all.
 
 func TestCreateOrderPersistsCachesAndPublishes(t *testing.T) {

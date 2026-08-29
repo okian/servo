@@ -253,7 +253,7 @@ ignorant.
 - **Config looks right locally but wrong in Docker or CI** — almost always a variable set in your
   shell that never reached the container or job. `docker compose`'s `environment:` block and the CI
   workflow's `env:` block are the two places it has to be set; see
-  [chapter 16](16-cicd.md) and [chapter 17](17-running-and-deployment.md).
+  [chapter 18](18-cicd.md) and [chapter 19](19-running-and-deployment.md).
 
 ## Do's and don'ts
 

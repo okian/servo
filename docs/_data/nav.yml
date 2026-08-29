@@ -1,5 +1,5 @@
 # Drives the sidebar, the landing-page chapter grid, and prev/next links.
-# Kept here rather than in each chapter's front matter so the 19 tutorial
+# Kept here rather than in each chapter's front matter so the 21 tutorial
 # files stay plain markdown that reads correctly in GitHub's file browser.
 # Order in this file is the reading order; prev/next is derived by flattening
 # every section's chapters in sequence. `numeral` is the part's roman number,
@@ -50,7 +50,9 @@ sections:
 
   - title: Reaching the outside
     numeral: III
-    summary: Making the service callable, and knowing who is calling it.
+    summary: >-
+      Making the service callable, knowing who is calling it, and what swapping
+      the transport underneath actually costs.
     chapters:
       - num: 9
         title: Authentication
@@ -60,59 +62,67 @@ sections:
         title: API layer
         url: /tutorial/10-api-layer.html
         blurb: Everything assembled so far, finally reachable over HTTP.
+      - num: 11
+        title: Gin as the transport
+        url: /tutorial/11-gin-transport.html
+        blurb: The same API in Gin — route groups instead of per-handler wrappers.
+      - num: 12
+        title: gRPC as the transport
+        url: /tutorial/12-grpc-transport.html
+        blurb: The same API again over gRPC, sharing a single port with REST.
 
   - title: Wiring it together
     numeral: IV
     summary: Where servo itself enters the picture.
     chapters:
-      - num: 11
+      - num: 13
         title: Wiring with servo
-        url: /tutorial/11-wiring-with-servo.html
+        url: /tutorial/13-wiring-with-servo.html
         blurb: Nine packages, nine constructors, and nothing connecting them — until now.
-      - num: 12
+      - num: 14
         title: Scoped instances
-        url: /tutorial/12-scoped-instances.html
+        url: /tutorial/14-scoped-instances.html
         blurb: The one thing in the graph that isn't built once and held forever.
 
   - title: Running it for real
     numeral: V
     summary: What a service needs before anyone should depend on it.
     chapters:
-      - num: 13
+      - num: 15
         title: Observability
-        url: /tutorial/13-observability.html
+        url: /tutorial/15-observability.html
         blurb: Turning a running black box into something you can actually watch.
-      - num: 14
+      - num: 16
         title: Resilience
-        url: /tutorial/14-resilience.html
+        url: /tutorial/16-resilience.html
         blurb: Failure handling, fallbacks, and a circuit breaker that means it.
 
   - title: Shipping
     numeral: VI
     summary: From a laptop to a pipeline to a deployed container.
     chapters:
-      - num: 15
-        title: Testing strategy
-        url: /tutorial/15-testing-strategy.html
-        blurb: How the tests written along the way fit into three distinct levels.
-      - num: 16
-        title: CI/CD
-        url: /tutorial/16-cicd.html
-        blurb: Turning every check you were running by hand into a pipeline.
       - num: 17
+        title: Testing strategy
+        url: /tutorial/17-testing-strategy.html
+        blurb: How the tests written along the way fit into four distinct levels.
+      - num: 18
+        title: CI/CD
+        url: /tutorial/18-cicd.html
+        blurb: Turning every check you were running by hand into a pipeline.
+      - num: 19
         title: Running and deployment
-        url: /tutorial/17-running-and-deployment.html
+        url: /tutorial/19-running-and-deployment.html
         blurb: Leaving `go run` behind for a real container and a real deployment.
 
-  - title: Reference
+  - title: Appendices
     numeral: VII
     summary: What to reach for when something breaks, or when a choice needs revisiting.
     chapters:
-      - num: 18
+      - num: 20
         title: Troubleshooting
-        url: /tutorial/18-troubleshooting.html
+        url: /tutorial/20-troubleshooting.html
         blurb: Every diagnostic from every chapter, gathered and reorganized by symptom.
-      - num: 19
+      - num: 21
         title: Alternatives and further reading
-        url: /tutorial/19-alternatives-and-further-reading.html
+        url: /tutorial/21-alternatives-and-further-reading.html
         blurb: The option each chapter didn't pick, and the case where it would win.

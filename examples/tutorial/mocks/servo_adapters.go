@@ -14,7 +14,7 @@ import (
 // (or this package) importing gomock. The constructors stay zero-arg,
 // since a real *testing.T can't be a constructor parameter servo would
 // know how to satisfy — that's the whole reason PanicReporter exists. See
-// docs/tutorial/11-wiring-with-servo.md.
+// docs/tutorial/13-wiring-with-servo.md.
 
 type OrderRepositoryForServo struct {
 	*MockOrderRepository

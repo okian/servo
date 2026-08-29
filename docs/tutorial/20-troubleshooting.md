@@ -1,4 +1,4 @@
-# 18. Troubleshooting
+# 20. Troubleshooting
 
 Every chapter from 2 through 17 ended with its own `## Diagnostics` section, scoped to whatever
 that chapter had just built. That's the right place to *learn* why something fails — the
@@ -28,10 +28,10 @@ job is to get you to the right one fast, not to repeat it.
   (`"1h30m"`), not a bare number. See [chapter 3](03-configuration.md).
 - **`servo: N diagnostic(s)` listing two implementers of the same interface** — a mock and a real
   implementation coexisting with no explicit `Bind`. Add the `servo.Bind[...]()` the message
-  suggests. See [chapter 11](11-wiring-with-servo.md).
+  suggests. See [chapter 13](13-wiring-with-servo.md).
 - **`servo check` reports drift right after editing `servo_gen.go` by hand** — expected; that file
   is generated and marked `DO NOT EDIT`. Change the source and regenerate. See [chapter
-  11](11-wiring-with-servo.md).
+  13](13-wiring-with-servo.md).
 
 ## A dependency won't connect
 
@@ -45,10 +45,10 @@ job is to get you to the right one fast, not to repeat it.
   7](07-messaging-layer.md).
 - **`could not create directory ".../pg_wal": No space left on device`**, or `docker build`/`docker
   compose up --build` failing the same way — Docker Desktop's own VM disk is full, usually from
-  *other* projects' volumes, not your host disk. See [chapter 17](17-running-and-deployment.md)'s
+  *other* projects' volumes, not your host disk. See [chapter 19](19-running-and-deployment.md)'s
   full walkthrough of diagnosing and safely reclaiming this.
 - **The `orders` container fails to start even though `postgres`/`redis`/`nats` all show `Up`** —
-  check for `(healthy)` specifically, not just `Up`. See [chapter 17](17-running-and-deployment.md).
+  check for `(healthy)` specifically, not just `Up`. See [chapter 19](19-running-and-deployment.md).
 
 ## Requests return the wrong status code
 
@@ -77,7 +77,7 @@ job is to get you to the right one fast, not to repeat it.
   10](10-api-layer.md) for the exact bug this tutorial shipped and fixed once.
 - **A test calling `TestApp.Run` hangs or fails to connect** — `notifier` isn't behind an
   overridden interface, so `Run` still tries to reach real NATS. Test the HTTP surface via
-  `app.server.Handler()` instead. See [chapter 11](11-wiring-with-servo.md).
+  `app.server.Handler()` instead. See [chapter 13](13-wiring-with-servo.md).
 
 ## Data looks wrong, stale, or missing
 
@@ -96,7 +96,7 @@ job is to get you to the right one fast, not to repeat it.
 - **`servo: X is scoped, but Y is a singleton that depends on it`** — a component took the scoped
   type directly instead of the accessor interface. It compiles and every single-user test passes;
   in production the first user's session becomes everyone's. Take `session.Sessions` and
-  `Acquire(ctx)` per request. See [chapter 12](12-scoped-instances.md#the-diagnostic-on-purpose).
+  `Acquire(ctx)` per request. See [chapter 14](14-scoped-instances.md#the-diagnostic-on-purpose).
 - **`servo: X.ScopeKey must not name its receiver`** — write `func (*Session) ScopeKey(...)`.
   servo calls it on a typed nil, before any instance exists to call it on.
 - **`servo: X declares a ScopeKey method but no servo.Scoped declares it`** — the method is there,
@@ -137,50 +137,50 @@ job is to get you to the right one fast, not to repeat it.
 - **A test fails on its second HTTP call, never its first, only after an unrelated change** — a
   `&resilience.Config{}` literal in the test is missing `RPS`. A struct literal skips
   `caarlos0/env` entirely, so the zero value (which clamps the rate limiter's burst to 1) applies
-  instead of the configured default. See [chapter 14](14-resilience.md) and [chapter
-  15](15-testing-strategy.md).
+  instead of the configured default. See [chapter 16](16-resilience.md) and [chapter
+  17](17-testing-strategy.md).
 - **`t.Setenv(k, "")` doesn't produce the "required environment variable" error you expected** — an
   empty string still counts as a value for `,required` purposes. Use `os.Unsetenv` instead. See
-  [chapter 15](15-testing-strategy.md).
+  [chapter 17](17-testing-strategy.md).
 - **A `NewTestApp`-based test returns an unexpected `500` instead of an obvious failure** — a
   `PanicReporter` panic raised *inside* a request handler is still caught by `recoverMiddleware` and
   turned into an ordinary `500`; check the logs for `"msg":"api: panic recovered"`. See [chapter
-  11](11-wiring-with-servo.md).
+  13](13-wiring-with-servo.md).
 - **A `NewTestApp`-based test crashes the whole process with a stack trace mentioning
   `servotest.PanicReporter`** — the same kind of panic, but firing *outside* any request (typically
   during `t.Cleanup`'s `ctrl.Finish()`), so nothing catches it. The panic message names the exact
-  mock and method. See [chapter 11](11-wiring-with-servo.md).
+  mock and method. See [chapter 13](13-wiring-with-servo.md).
 
 ## Tests pass when they shouldn't
 
 - **`postgres`/`redis`/`natsbroker` tests report `ok`, but nobody's sure they ran anything real** —
   they skip via `t.Skip` when their `TEST_*` environment variable is unset, and a skip still reports
   `ok`. Confirm the variable is actually set — locally via `make up` plus `make test-integration`,
-  in CI via the `services:` block. See [chapter 15](15-testing-strategy.md) and [chapter
-  16](16-cicd.md).
+  in CI via the `services:` block. See [chapter 17](17-testing-strategy.md) and [chapter
+  18](18-cicd.md).
 
 ## Observability isn't showing what's expected
 
 - **No traces show up in Jaeger despite `OTLPEndpoint` being set correctly** — the SDK batches
   spans and exports on an interval, not immediately; give it several seconds, and double-check
   you're pointed at Jaeger's OTLP port (`4318`), not its UI port (`16686`). See [chapter
-  13](13-observability.md).
+  15](15-observability.md).
 - **`/metrics` shows a metric with far more label values than expected** — a label built from
   something request-specific (a raw path, an ID) instead of a bounded set. `route` here is safe
   because `r.Pattern` only ever takes one of a handful of registered values. See [chapter
-  13](13-observability.md).
+  15](15-observability.md).
 - **Log lines are plain text instead of JSON, right at process startup** — anything logged before
   `ConfigureLogging` runs uses the unconfigured default handler. See [chapter
-  13](13-observability.md).
+  15](15-observability.md).
 
 ## Resilience mechanisms misbehave
 
 - **A request hangs instead of failing fast when a dependency is down** — check the circuit
   breaker's `ReadyToTrip` is actually reachable; a custom `IsSuccessful`/`IsExcluded` can
-  accidentally classify every real failure as a non-failure. See [chapter 14](14-resilience.md).
+  accidentally classify every real failure as a non-failure. See [chapter 16](16-resilience.md).
 - **The circuit breaker "flaps"** (rapidly opens and closes) — `ReadyToTrip`'s threshold is
   probably tuned tighter than the dependency's real, normal error rate. See [chapter
-  14](14-resilience.md).
+  16](16-resilience.md).
 
 ## CI is red for a reason that isn't a real application bug
 
@@ -189,37 +189,37 @@ job is to get you to the right one fast, not to repeat it.
   `examples/tutorial/.golangci.yml` excludes exactly this set. If you see this on a *fresh* call
   site not already in that file, decide whether it's genuinely another safe-to-ignore case or an
   error your code should actually be handling before excluding it too. See [chapter
-  16](16-cicd.md).
+  18](18-cicd.md).
 - **The workflow doesn't trigger on a PR that clearly touches `examples/tutorial/`** — check the
-  `paths:` filter against the actual changed files. See [chapter 16](16-cicd.md).
+  `paths:` filter against the actual changed files. See [chapter 18](18-cicd.md).
 - **`integration-test` fails immediately on every single test, not intermittently** — a `ports:`
   mapping and a test's `TEST_*` variable disagreeing on the port number, not a real connectivity
-  problem. See [chapter 16](16-cicd.md).
+  problem. See [chapter 18](18-cicd.md).
 - **A service container's health check never passes, and the job times out** — confirm the
   `--health-cmd` binary actually exists in that exact image tag; a slimmer or different image might
-  not ship it. See [chapter 16](16-cicd.md).
+  not ship it. See [chapter 18](18-cicd.md).
 - **`servo check` fails only in CI, never locally** — someone hand-edited `servo_gen.go` after
   generating it, and committed both. Regenerate; don't adjust the check. See [chapter
-  16](16-cicd.md).
+  18](18-cicd.md).
 - **`docker-build` fails with a missing-module error `go build` doesn't reproduce locally** — the
   CI job's build context is already the repository root, so this isn't the wrong-directory problem
   a manual `docker build` can hit (see "Docker and deployment" below for that one). Check whether
   `.dockerignore` (or its absence) is excluding something the multi-stage build's `COPY . .` needs.
-  See [chapter 16](16-cicd.md).
+  See [chapter 18](18-cicd.md).
 
 ## Docker and deployment
 
 - **`docker exec -it <container> sh` fails with `executable file not found`** — this is
   `distroless/static`'s entire point: no shell shipped. Debug via `docker compose logs` and `curl`
   instead, or temporarily swap the final `FROM` to a `debian:12-slim` base — never as something
-  that ships. See [chapter 17](17-running-and-deployment.md).
+  that ships. See [chapter 19](19-running-and-deployment.md).
 - **`docker build -f examples/tutorial/deploy/Dockerfile .` fails with a missing-module error** —
   unlike the CI entry above, this is almost always the build context itself: run it from the
   repository root, not from inside `examples/tutorial/`. See [chapter
-  17](17-running-and-deployment.md).
+  19](19-running-and-deployment.md).
 
 ## Next
 
-[Chapter 19: Alternatives and further reading](19-alternatives-and-further-reading.md) — the
+[Chapter 21: Alternatives and further reading](21-alternatives-and-further-reading.md) — the
 choices this tutorial made at every layer, what the real alternatives were, and when you'd actually
 want them instead.

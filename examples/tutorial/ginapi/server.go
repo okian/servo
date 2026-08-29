@@ -33,7 +33,7 @@ type Server struct {
 	// sessions is the scope accessor, not a session. Holding a *Session
 	// here would pin one user's session for the life of the process, and
 	// `servo generate` refuses to emit that — see
-	// docs/tutorial/12-scoped-instances.md.
+	// docs/tutorial/14-scoped-instances.md.
 	sessions session.Sessions
 }
 
@@ -100,7 +100,7 @@ func New(
 	//
 	// Order matches api/server.go: metrics sits directly against the
 	// router, tracer outside it, and the limiter outermost of the three so
-	// a rejected request costs no span — see docs/tutorial/14-resilience.md.
+	// a rejected request costs no span — see docs/tutorial/16-resilience.md.
 	var handler http.Handler = r
 	handler = metrics.Middleware(handler)
 	handler = tracer.Middleware(handler)

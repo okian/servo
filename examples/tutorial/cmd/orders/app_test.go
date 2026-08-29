@@ -22,7 +22,7 @@ import (
 // docs/tutorial/07-messaging-layer.md), so it isn't one of the four
 // interfaces Override replaced, and Run would still try to reach real
 // NATS. Testing the HTTP surface directly through app.server.Handler()
-// sidesteps that entirely — see docs/tutorial/11-wiring-with-servo.md.
+// sidesteps that entirely — see docs/tutorial/13-wiring-with-servo.md.
 func TestFullAPIFlowWithMockedInfrastructure(t *testing.T) {
 	// Config itself isn't one of the four overridden interfaces — it's a
 	// concrete type nothing stands in for — so every required field still

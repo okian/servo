@@ -34,12 +34,6 @@ of the graph that is not built once and held for the life of the process. It has
 write, its own marker, its own generated code, and its own diagnostics.
 → [Scoped instances](scopes.md)
 
-Two pages sit beside the tutorial rather than describing servo itself: the API layer
-[chapter 10](../tutorial/10-api-layer.md) builds on `net/http`, implemented again in Gin and again
-over gRPC. They are here because they answer "what would it cost to switch", which is a reference
-question.
-→ [Gin as the transport](transport-gin.md), [gRPC as the transport](transport-grpc.md)
-
 ## Find it by question
 
 | You want to know | Page |
@@ -54,8 +48,6 @@ question.
 | How to get one instance per tenant, room, or region | [Scoped instances](scopes.md) |
 | Why a singleton can't depend on a scoped type | [Scoped instances](scopes.md#diagnostics) |
 | When a scoped instance is actually torn down | [Scoped instances](scopes.md#lifetimes) |
-| How to use Gin instead of `net/http` | [Gin as the transport](transport-gin.md) |
-| How to serve gRPC and REST on one port | [gRPC as the transport](transport-grpc.md) |
 | The seven lifecycle methods and when each is called | [Lifecycle](lifecycle.md#the-seven-capabilities) |
 | What happens when a component refuses to stop | [Lifecycle](lifecycle.md#the-stop-budget) |
 | The signature of every method on the generated `App` | [Generated API](generated-api.md) |
@@ -72,7 +64,9 @@ three mock-library integrations,
 [`examples/scoped`](https://github.com/okian/servo/tree/master/examples/scoped) for keyed,
 refcounted instances and the race suite that gates them,
 [`examples/diagnostics`](https://github.com/okian/servo/tree/master/examples/diagnostics) for
-permanently broken fixtures that each print one diagnostic, and
+permanently broken fixtures that each print one diagnostic,
+[`examples/variants`](https://github.com/okian/servo/tree/master/examples/variants) for one
+injector resolved into two graphs behind a build tag, and
 [`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) for the
 service the tutorial builds.
 

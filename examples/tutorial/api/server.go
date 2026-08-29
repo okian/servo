@@ -26,7 +26,7 @@ type Server struct {
 	// sessions is the scope accessor, not a session. Holding a *Session
 	// here would pin one user's session for the life of the process, and
 	// `servo generate` refuses to emit that — see
-	// docs/tutorial/12-scoped-instances.md.
+	// docs/tutorial/14-scoped-instances.md.
 	sessions session.Sessions
 }
 
@@ -80,7 +80,7 @@ func New(
 	// on that fork, not on whatever *http.Request an outer middleware is
 	// still holding. Metrics outside tracer would read an empty Pattern on
 	// every request, not just rejected ones — see
-	// docs/tutorial/14-resilience.md. limiter sits outside tracer so a
+	// docs/tutorial/16-resilience.md. limiter sits outside tracer so a
 	// rejected request costs no span; it counts its own rejections
 	// directly (see resilience.RateLimiter) rather than trying to route
 	// them through requests_total, which a rejected request never reaches
@@ -107,7 +107,7 @@ func (s *Server) Handler() http.Handler {
 // binary (or a normal one and a NewTestApp one) never collide trying to
 // register the same metric name twice. main.go reaches for this directly
 // (app.server.MetricsHandler()) since /metrics lives on the admin server,
-// not this one — see package admin and docs/tutorial/13-observability.md.
+// not this one — see package admin and docs/tutorial/15-observability.md.
 func (s *Server) MetricsHandler() http.Handler {
 	return s.metrics.Handler()
 }

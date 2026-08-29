@@ -1,7 +1,7 @@
-# 13. Observability
+# 15. Observability
 
 The service works end to end now — including the one per-user piece
-[chapter 12](12-scoped-instances.md) added — but from the outside, a running instance is a black
+[chapter 14](14-scoped-instances.md) added — but from the outside, a running instance is a black
 box: there's no way to tell whether it's healthy, slow, or actually doing what a request asked for
 without attaching a debugger. This chapter adds the three tools that answer those questions in
 production: structured logs for "what happened," metrics for "how much and how fast," and traces
@@ -348,7 +348,9 @@ func (t *Tracer) Middleware(next http.Handler) http.Handler {
 
 ## Wire both into api.Server
 
-`New` grows two more parameters, and the middleware chain grows two more layers:
+`New` grows two more parameters — `sessions` and `log` are already there, from
+[chapter 14](14-scoped-instances.md) and [chapter 10](10-api-layer.md) — and the middleware
+chain grows two more layers:
 
 ```go
 func New(
@@ -358,13 +360,15 @@ func New(
 	issuer *auth.Issuer,
 	metrics *observability.Metrics,
 	tracer *observability.Tracer,
+	sessions session.Sessions,
+	log *observability.Logger,
 ) *Server {
 	// ... routes unchanged ...
 
-	handler := loggingMiddleware(mux)
+	handler := loggingMiddleware(log, mux)
 	handler = metrics.Middleware(handler)
 	handler = tracer.Middleware(handler)
-	handler = recoverMiddleware(handler)
+	handler = recoverMiddleware(log, handler)
 
 	s.http = &http.Server{Addr: cfg.HTTPAddr, Handler: handler}
 	return s
@@ -477,5 +481,5 @@ UUID baked into a hundred different span names.
 
 ## Next
 
-[Chapter 14: Resilience](14-resilience.md) — a circuit breaker around the cache, and a rate
+[Chapter 16: Resilience](16-resilience.md) — a circuit breaker around the cache, and a rate
 limiter in front of the API.

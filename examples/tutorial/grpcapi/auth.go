@@ -58,7 +58,7 @@ func authInterceptor(issuer *auth.Issuer) grpc.UnaryServerInterceptor {
 		// Both go in for the same reason they do in the HTTP variants:
 		// the claims are what handlers read, and the session key is what
 		// servo's generated accessor reads — see
-		// docs/tutorial/12-scoped-instances.md.
+		// docs/tutorial/14-scoped-instances.md.
 		ctx = context.WithValue(ctx, claimsKey, claims)
 		ctx = session.WithUser(ctx, session.UserID(claims.UserID.String()))
 		return handler(ctx, req)

@@ -1,13 +1,19 @@
-# Gin as the transport
+# 11. Gin as the transport
 
-[Chapter 10](../tutorial/10-api-layer.md) builds the API layer on the standard library's
-`net/http`. This page is the same API in [Gin](https://github.com/gin-gonic/gin) — same routes,
+[Chapter 10](10-api-layer.md) built the API layer on the standard library's
+`net/http`. This chapter is the same API in [Gin](https://github.com/gin-gonic/gin) — same routes,
 same JSON, same status codes — and exists so you can see exactly what changing HTTP frameworks
 costs.
 
 The answer is: one package and one line in the spec file. The service layer, the repository, the
-cache, the broker, the session scope and every test below the transport are untouched. Read
-chapter 10 first — the DTOs and the domain-error mapping are shared, and this page assumes them.
+cache, the broker, the session scope and every test below the transport are untouched. This
+chapter assumes chapter 10 — the DTOs and the domain-error mapping are shared rather than
+repeated here.
+
+This chapter and the next are the one pair you can skip. The service is complete without them and
+[chapter 13](13-wiring-with-servo.md) picks up from chapter 10 either way; read them when you want
+to see how little a transport swap actually disturbs. The spec file they each change by one line
+is the subject of chapter 13, so if that section reads ahead of you, come back to it after.
 
 The working code is [`examples/tutorial/ginapi`](https://github.com/okian/servo/tree/master/examples/tutorial/ginapi),
 wired by `cmd/ordersgin`.
@@ -38,7 +44,7 @@ Four things in there are decisions, not boilerplate.
 
 **`gin.New()`, not `gin.Default()`.** `Default` installs Gin's own `Logger` and `Recovery`
 middleware, which write their own text format straight to stdout. This service emits structured
-JSON through the injected logger ([chapter 13](../tutorial/13-observability.md)), and a second format
+JSON through the injected logger ([chapter 15](15-observability.md)), and a second format
 interleaved with the first makes both harder to consume. `ginapi/middleware.go` reimplements both
 against `*observability.Logger`.
 
@@ -69,7 +75,7 @@ type loginRequest struct {
 
 so `c.ShouldBindJSON` rejects an empty username before the handler runs. Note what is *not* tagged:
 `createOrderRequest.Quantity` has no `binding:"min=1"`, even though the domain requires a positive
-quantity. That rule lives in `domain` ([chapter 4](../tutorial/04-domain-layer.md)) and duplicating it here
+quantity. That rule lives in `domain` ([chapter 4](04-domain-layer.md)) and duplicating it here
 would mean two places to change it, one of which the tests below the transport never exercise.
 
 The middleware chain keeps chapter 10's layering, with Gin as the innermost handler:
@@ -105,7 +111,7 @@ $ make run-gin
 
 ## See also
 
-- [gRPC as the transport](transport-grpc.md) — the same API again, over gRPC, sharing one port
-  with REST.
-- [Chapter 10: API layer](../tutorial/10-api-layer.md) — the `net/http` version, and the DTOs and
+- [Chapter 12: gRPC as the transport](12-grpc-transport.md) — the same API again, over gRPC,
+  sharing one port with REST.
+- [Chapter 10: API layer](10-api-layer.md) — the `net/http` version, and the DTOs and
   error mapping all three share.

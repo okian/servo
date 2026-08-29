@@ -8,7 +8,7 @@ import "github.com/okian/servo/v3/servo"
 `Report` in their own code.
 
 This package is two unrelated halves. The **markers** (`Build`, `Root`, `Bind`, `Override`) are read
-as syntax by `servo generate` and panic if they ever execute. The **runtime** — around 200 lines —
+as syntax by `servo generate` and panic if they ever execute. The **runtime** — around 430 lines —
 is what generated code actually calls at run time. It imports nothing outside the standard library,
 and neither it nor any generated output imports `reflect`.
 

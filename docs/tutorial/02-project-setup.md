@@ -41,18 +41,18 @@ servoorders/
   service/                 OrderService: the business logic                  chapter 8
   auth/                    JWT issuing and verification                      chapter 9
   api/                     HTTP server, router, handlers                     chapter 10
-  cmd/orders/              spec.go + main.go — the injector                  chapter 11
-  session/                 per-user state, one instance per logged-in user   chapter 12
-  observability/           logging, metrics, tracing setup                   chapter 13
-  resilience/              circuit breaker, rate limiting                    chapter 14
+  cmd/orders/              spec.go + main.go — the injector                  chapter 13
+  session/                 per-user state, one instance per logged-in user   chapter 14
+  observability/           logging, metrics, tracing setup                   chapter 15
+  resilience/              circuit breaker, rate limiting                    chapter 16
   mocks/                   generated mocks for tests                         chapter 8 onward
-  deploy/                  docker-compose.yml, Dockerfile                    chapter 17
+  deploy/                  docker-compose.yml, Dockerfile                    chapter 19
   openapi/                 API contract, embedded and served                 chapter 10
-  admin/                   health/readiness/metrics, on their own port       chapter 13
-  ginapi/                  the same API in Gin                               reference
-  cmd/ordersgin/           its injector                                      reference
-  grpcapi/                 gRPC and REST sharing one port                    reference
-  cmd/ordersgrpc/          its injector                                      reference
+  admin/                   health/readiness/metrics, on their own port       chapter 15
+  ginapi/                  the same API in Gin                               chapter 11
+  cmd/ordersgin/           its injector                                      chapter 11
+  grpcapi/                 gRPC and REST sharing one port                    chapter 12
+  cmd/ordersgrpc/          its injector                                      chapter 12
 ```
 
 Every package here is flat, with no `internal/` nesting. That is a choice made for this tutorial,
@@ -82,9 +82,9 @@ worth a look for what that looks like in a module that really is imported by oth
 
 | Tool | You'll use it for | Install |
 |---|---|---|
-| `servo` | Generating and checking the wiring (chapter 11) | `go install github.com/okian/servo/v3/cmd/servo@latest` |
+| `servo` | Generating and checking the wiring (chapter 13) | `go install github.com/okian/servo/v3/cmd/servo@latest` |
 | Docker + `docker compose` | Running Postgres, Redis, NATS locally | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| `golangci-lint` | The CI lint step (chapter 16) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
+| `golangci-lint` | The CI lint step (chapter 18) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 
 You can actually skip installing `servo` globally — every command in this tutorial works equally
 well as `go run github.com/okian/servo/v3/cmd/servo <command>`, and that's what the Makefile below
@@ -97,7 +97,7 @@ Add a `Makefile` at the root now. You'll be reaching for these commands from cha
 it's one less thing to assemble under pressure later:
 
 ```makefile
-.PHONY: up down test test-integration run generate check
+.PHONY: up down test test-integration run run-gin run-grpc generate check
 
 up:
 	docker compose -f deploy/docker-compose.yml up -d
@@ -116,6 +116,15 @@ test-integration:
 
 run:
 	go run ./cmd/orders
+
+# The same service layer behind two other transports, built in chapters 11
+# and 12. Neither binary exists yet; the targets go in now so the Makefile
+# gets written once.
+run-gin:
+	go run ./cmd/ordersgin
+
+run-grpc:
+	go run ./cmd/ordersgrpc
 
 generate:
 	go run github.com/okian/servo/v3/cmd/servo generate

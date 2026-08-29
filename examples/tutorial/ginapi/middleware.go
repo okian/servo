@@ -43,7 +43,7 @@ func requireAuth(issuer *auth.Issuer) gin.HandlerFunc {
 		// The claims are what handlers read; the session key is what
 		// servo's generated accessor reads. Both are set at the one point
 		// in the request where the user's identity is first known — see
-		// docs/tutorial/12-scoped-instances.md.
+		// docs/tutorial/14-scoped-instances.md.
 		c.Set(claimsKey, claims)
 		c.Request = c.Request.WithContext(
 			session.WithUser(c.Request.Context(), session.UserID(claims.UserID.String())),

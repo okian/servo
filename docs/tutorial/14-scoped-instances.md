@@ -1,4 +1,4 @@
-# 12. Scoped instances
+# 14. Scoped instances
 
 Every component in the last chapter's graph is built once, in `New`, and held until the process
 exits. That is the right answer for a connection pool, a JWT issuer, a metrics registry — anything
@@ -258,8 +258,8 @@ hand-written registry beside servo gives you the map and the timer; nothing give
 
 Three more diagnostics guard the neighbouring mistakes — a nested scope, a `ScopeKey` whose own
 dependencies are scoped, and a `ScopeKey` method with no `servo.Scoped` declaring it. All four are
-in [chapter 18](18-troubleshooting.md) and in the
-[Scoped instances reference](https://okian.github.io/servo/reference/scopes.html).
+in [chapter 20](20-troubleshooting.md) and in the
+[Scoped instances reference](../reference/scopes.md).
 
 ## What came out
 
@@ -473,5 +473,5 @@ so eviction happens the instant the last holder releases, instead of five minute
 
 ## Next
 
-[Chapter 13: Observability](13-observability.md) — structured logs, metrics, and tracing, now that
+[Chapter 15: Observability](15-observability.md) — structured logs, metrics, and tracing, now that
 there's a fully wired app, sessions and all, to instrument.

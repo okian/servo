@@ -23,17 +23,7 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
-## [3.2.0] - 2026-08-29
-
-### Added
-- **Gin and gRPC as transport choices in `examples/tutorial`.** The same service layer now sits
-  behind three transports, each its own injector: `api`/`cmd/orders` (`net/http`),
-  `ginapi`/`cmd/ordersgin` (Gin), and `grpcapi`/`cmd/ordersgrpc`, which serves gRPC and REST on a
-  single port. New chapter 19 covers what differs between them and what deliberately does not; the
-  old chapter 19 is now 20.
-- `examples/tutorial` gains packages `admin` (health, readiness and metrics on their own listener,
-  never the public one, asserted by a test in every variant) and `openapi` (the contract, embedded
-  and served with a Swagger UI).
+## [Unreleased]
 
 ### Added
 - **Build flags, and one generated file per build configuration.** The seven commands that load
@@ -80,6 +70,15 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   module and the standard library), and uppercase tags (whose variant file names would collide on a
   case-insensitive filesystem).
 
+### Changed
+- **The Gin and gRPC transports are tutorial chapters again, not reference pages.** They walk
+  through rebuilding one chapter's code in another framework, against the tutorial's own
+  module — a tutorial's job, not a lookup surface's. `docs/reference/transport-gin.md` and
+  `docs/reference/transport-grpc.md` are now `docs/tutorial/11-gin-transport.md` and
+  `docs/tutorial/12-grpc-transport.md`, sitting directly after the API layer they re-implement.
+  Chapters 11 through 19 shift to 13 through 21; the tutorial is 21 chapters. Both new chapters
+  are optional — chapter 13 follows on from chapter 10 whether or not you read them.
+
 ### Fixed
 - **A build constraint below the package clause was treated as a build constraint.** `go/build`
   only reads the file header, so servo could call a spec file "correctly gated" while it compiled
@@ -87,6 +86,35 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   only, a `//go:build` line wins outright, and otherwise every `// +build` line is ANDed rather
   than only the first. `servo-vet` and the generator share the one implementation, so they cannot
   disagree.
+- **Tutorial code blocks that had drifted from `examples/tutorial`.** Chapter 10's `api.New` took
+  no logger while both middlewares require one, so the printed
+  `recoverMiddleware(loggingMiddleware(mux))` passed one argument to a two-argument function and
+  could not compile; its `api/middleware.go` block imported `log/slog`, which nothing in it used,
+  instead of the `observability` package it names. Chapters 15 and 16 reprinted `api.New` without
+  `sessions` (added in chapter 14) or `log`, and chapter 16's router dropped the `GET /me/recent`
+  route chapter 14 has the reader build. Chapter 16's constructor now matches `api/server.go`
+  parameter for parameter and route for route.
+- **Tutorial figures that no longer matched the module.** Chapter 17 claimed 43 tests across 14
+  files while its own diagram summed to 52 across 15; the real count is 64 across 19 files that
+  declare tests, retiered as 33/9, 17/3, 3/3 and 11/4. Chapter 1's endpoint table was missing
+  `GET /me/recent` and the two contract routes. Chapter 2's Makefile lacked the `run-gin` and
+  `run-grpc` targets that chapters 11, 12 and 19 tell the reader to run. Chapter 10 said the
+  OpenAPI handler is mounted on the public listener without ever showing the two lines that
+  mount it.
+
+## [3.2.0] - 2026-08-29
+
+### Added
+- **Gin and gRPC as transport choices in `examples/tutorial`.** The same service layer now sits
+  behind three transports, each its own injector: `api`/`cmd/orders` (`net/http`),
+  `ginapi`/`cmd/ordersgin` (Gin), and `grpcapi`/`cmd/ordersgrpc`, which serves gRPC and REST on a
+  single port. New chapter 19 covers what differs between them and what deliberately does not; the
+  old chapter 19 is now 20.
+- `examples/tutorial` gains packages `admin` (health, readiness and metrics on their own listener,
+  never the public one, asserted by a test in every variant) and `openapi` (the contract, embedded
+  and served with a Swagger UI).
+
+### Fixed
 - **A successful `Acquire` racing `Shutdown` could hand back an instance that was already drained
   and stopped.** The entry loop evicted the moment it saw the scope's quit channel, whatever its
   reference count was, so no check an acquirer made could still hold by the time it returned.

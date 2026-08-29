@@ -6,16 +6,18 @@ middleware that runs on every request. By the end, `curl` will be able to log in
 and read it back — for real, against everything built in chapters 5 through 9.
 
 This chapter uses the standard library's `net/http`, which needs no dependency and is enough for
-everything here. If you would rather use a router, or need gRPC, two companion pages implement the
-identical API without touching anything below the transport:
+everything here. If you would rather use a router, or need gRPC, the next two chapters implement
+the identical API without touching anything below the transport:
 
-- [**Gin as the transport**](../reference/transport-gin.md) — route groups and binding-tag
+- [**Chapter 11: Gin as the transport**](11-gin-transport.md) — route groups and binding-tag
   validation instead of per-handler wrappers.
-- [**gRPC as the transport**](../reference/transport-grpc.md) — and serving gRPC and REST from a
+- [**Chapter 12: gRPC as the transport**](12-grpc-transport.md) — and serving gRPC and REST from a
   single port.
 
-Read this chapter either way. The request shapes, the domain-error mapping and the middleware
-reasoning are the same in all three, and both pages assume them.
+Both are optional: the service is complete with `net/http` alone, and
+[chapter 13](13-wiring-with-servo.md) follows on from this one whether you read them or not. The
+request shapes, the domain-error mapping and the middleware reasoning are the same in all three,
+and both chapters assume this one.
 
 ## Define the request and response shapes first
 
@@ -84,7 +86,7 @@ The transport is where a `domain` sentinel error becomes a status the caller und
 **nothing below it knows what a status is**. That is why [chapter 4](04-domain-layer.md) defines
 `ErrNotFound` and `ErrForbidden` rather than constants named after HTTP codes: the service layer
 would otherwise have to know it is being called over HTTP — which, on the
-[gRPC transport](../reference/transport-grpc.md), it is not.
+[gRPC transport](12-grpc-transport.md), it is not.
 
 | Domain error | HTTP status | gRPC code |
 | --- | --- | --- |
@@ -110,11 +112,11 @@ package api
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"strings"
 
 	"example.com/servoorders/auth"
+	"example.com/servoorders/observability"
 )
 
 type contextKey int
@@ -191,7 +193,7 @@ func (w *statusWriter) WriteHeader(status int) {
 
 `statusWriter` exists because `http.ResponseWriter` doesn't expose what status code a handler
 already wrote — wrapping it is the standard way to capture that for logging. This logging is
-intentionally bare-bones; [chapter 13](13-observability.md) replaces it with something that
+intentionally bare-bones; [chapter 15](15-observability.md) replaces it with something that
 correlates each line to a trace, using the same wrapper.
 
 ## Write the handlers
@@ -376,6 +378,7 @@ import (
 
 	"example.com/servoorders/auth"
 	"example.com/servoorders/config"
+	"example.com/servoorders/observability"
 	"example.com/servoorders/service"
 )
 
@@ -388,7 +391,7 @@ type Server struct {
 // HTTPAddr and AdminAddr take no prefix: both are spelled that way in
 // every deployment already. AdminAddr belongs to this package because it
 // is the same concern — serving HTTP — even though main binds that
-// listener rather than the graph; see chapter 13.
+// listener rather than the graph; see chapter 15.
 type Config struct {
 	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
 	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
@@ -398,7 +401,13 @@ func NewConfig(src config.Source) (*Config, error) {
 	return config.Parse[Config](src, "")
 }
 
-func New(cfg *Config, orders *service.OrderService, authSvc *service.AuthService, issuer *auth.Issuer) *Server {
+func New(
+	cfg *Config,
+	orders *service.OrderService,
+	authSvc *service.AuthService,
+	issuer *auth.Issuer,
+	log *observability.Logger,
+) *Server {
 	s := &Server{orders: orders, auth: authSvc}
 
 	mux := http.NewServeMux()
@@ -409,7 +418,7 @@ func New(cfg *Config, orders *service.OrderService, authSvc *service.AuthService
 
 	s.http = &http.Server{
 		Addr:    cfg.HTTPAddr,
-		Handler: recoverMiddleware(loggingMiddleware(mux)),
+		Handler: recoverMiddleware(log, loggingMiddleware(log, mux)),
 	}
 	return s
 }
@@ -418,7 +427,7 @@ func New(cfg *Config, orders *service.OrderService, authSvc *service.AuthService
 `"POST /auth/login"` — method and pattern in one string — is Go 1.22+'s stdlib
 `http.ServeMux`. It's enough for four routes with no path-parameter conflicts, so there's no
 third-party router to introduce or explain; see
-[chapter 19](19-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
+[chapter 21](21-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
 
 ## Run and Stop — and a bug worth hitting on purpose
 
@@ -518,7 +527,7 @@ it.
 
 Nothing in `api/` imports servo, and nothing has to. The server is an ordinary constructor taking
 ordinary dependencies, so naming it as a root is the entire integration —
-`cmd/orders/spec.go`, covered properly in [chapter 11](11-wiring-with-servo.md):
+`cmd/orders/spec.go`, covered properly in [chapter 13](13-wiring-with-servo.md):
 
 ```go
 servo.Build(
@@ -532,7 +541,8 @@ a repository and a cache, and so on down. `Run` and `Stop` are found structurall
 implement, no registration — so the generated `App.Run` starts this server and `App.Shutdown` stops
 it, in dependency order.
 
-That is the whole of it, and it is the same three lines for the two transports below.
+That is the whole of it, and it is the same three lines for the two transports in the next
+two chapters.
 
 ## Health and readiness live outside the graph
 
@@ -570,7 +580,7 @@ func New(addr string, app Checker, metrics http.Handler) *http.Server {
 }
 ```
 
-The `metrics` handler is [chapter 13](13-observability.md)'s; it is on this listener for exactly
+The `metrics` handler is [chapter 15](15-observability.md)'s; it is on this listener for exactly
 the same reason the health routes are. Everything served here describes the service's internals —
 `/healthz` names every component in the graph along with its status — which is why the deployment
 binds this listener to the cluster network and never to the internet.
@@ -621,7 +631,7 @@ wired in `main` rather than by the graph, but the address belongs to the same co
 
 That separation is the point, and it is worth stating plainly: `/healthz` and `/readyz` enumerate
 every component in the graph by name along with its status, and `/metrics` ([chapter
-13](13-observability.md)) exposes request rates, latencies and error counts per route. Together
+15](15-observability.md)) exposes request rates, latencies and error counts per route. Together
 they describe the shape and health of the system precisely enough to be worth hiding, so the
 deployment binds this listener to the cluster network and no ingress rule points at it.
 
@@ -682,7 +692,7 @@ $ curl -s http://localhost:8081/healthz
 `/readyz` responds too, but with an empty node list (`{"clean":true,"nodes":null}`) — nothing in
 this graph implements `Readier` yet, so there's nothing distinct from `Health` for it to report.
 That's not a bug to fix; it's what "no component needs a separately-meaningful readiness signal"
-honestly looks like. [Chapter 11](11-wiring-with-servo.md) covers every capability this graph
+honestly looks like. [Chapter 13](13-wiring-with-servo.md) covers every capability this graph
 actually uses, side by side.
 
 ## Write it down: openapi/openapi.yaml
@@ -785,7 +795,13 @@ file to forget to copy into the image.
 
 It is mounted on the **public** listener, beside the API it describes, which is a deliberate split
 from the three endpoints above: the contract tells a caller how to use endpoints they are already
-allowed to reach, while health and metrics describe the service's internals.
+allowed to reach, while health and metrics describe the service's internals. Two more lines at the
+top of `api.New`'s mux, above the routes it documents:
+
+```go
+mux.Handle("GET /openapi.yaml", openapi.Handler())
+mux.Handle("GET /swagger/", openapi.Handler())
+```
 
 That is a defensible default and not the only one. Publishing the UI publishes your full endpoint
 list, DTO shapes and auth scheme — fine for a public API, not fine for an internal one whose
@@ -807,8 +823,8 @@ air-gapped network should vendor the assets and serve them from `openapi/`.
   value must be exactly `Bearer <token>`, one space, case-sensitive on `Bearer`. A common mistake:
   sending just the raw token with no `Bearer ` prefix at all.
 - **A panic in one handler seems to take the whole server down anyway** — confirm
-  `recoverMiddleware` is actually the outermost layer (`recoverMiddleware(loggingMiddleware(mux))`,
-  not the other way around) — a panic inside `loggingMiddleware` itself, outside the `recover`,
+  `recoverMiddleware` is actually the outermost layer
+  (`recoverMiddleware(log, loggingMiddleware(log, mux))`, not the other way around) — a panic inside `loggingMiddleware` itself, outside the `recover`,
   would still escape.
 
 ## Do's and don'ts
@@ -827,5 +843,5 @@ air-gapped network should vendor the assets and serve them from `openapi/`.
 
 ## Next
 
-[Chapter 11: Wiring with servo](11-wiring-with-servo.md) — putting every layer built so far into
+[Chapter 13: Wiring with servo](13-wiring-with-servo.md) — putting every layer built so far into
 one spec file and letting `servo generate` do the rest.

@@ -4,7 +4,7 @@
 // concurrent request that user has in flight, and torn down once they've
 // been quiet for a while.
 //
-// See docs/tutorial/12-scoped-instances.md.
+// See docs/tutorial/14-scoped-instances.md.
 package session
 
 import (

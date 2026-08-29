@@ -25,7 +25,7 @@ concrete thing that satisfies it. A few concrete payoffs, not abstract ones:
 
 - The service layer's business logic can be unit-tested against a fake repository, with no
   database, no network call, and no test flakiness from either — see
-  [chapter 15](15-testing-strategy.md).
+  [chapter 17](17-testing-strategy.md).
 - Swapping Postgres for something else touches the `postgres` package and nothing that imports
   `repository`'s interfaces, because nothing else was ever allowed to import `postgres` directly.
 - A bug report that says "orders sometimes have the wrong quantity" has exactly one layer where
@@ -47,7 +47,7 @@ functions, tell it which types are your graph's roots, and it resolves the depen
 detects capabilities (does this type need to connect to something on startup? disconnect on
 shutdown? report its own health?) structurally, and emits one plain Go file that does the
 construction, startup, and shutdown — checked by the compiler, steppable in a debugger, reviewable
-in a pull request like any other generated code. [Chapter 11](11-wiring-with-servo.md) is where
+in a pull request like any other generated code. [Chapter 13](13-wiring-with-servo.md) is where
 this actually happens, once there's a real graph worth wiring.
 
 ## The service you're about to build
@@ -63,12 +63,14 @@ though: real Postgres, real Redis, real NATS, a real JWT, not simplified stand-i
 | `POST /orders` | Bearer JWT | Create an order for the authenticated user |
 | `GET /orders/{id}` | Bearer JWT | Fetch one order (cached; 403 if it isn't yours) |
 | `GET /orders` | Bearer JWT | List the authenticated user's orders, paginated |
+| `GET /me/recent` | Bearer JWT | Orders this user viewed recently, from a per-user session scope |
+| `GET /openapi.yaml` / `GET /swagger/` | none | The API contract, embedded in the binary, and a UI for it |
 | `GET /healthz` / `GET /readyz` | none | Liveness / readiness, from servo's capability system |
 | `GET /metrics` | none | Prometheus scrape endpoint |
 
 ## Technology choices
 
-| Concern | Choice | Why (briefly — see [chapter 19](19-alternatives-and-further-reading.md) for alternatives) |
+| Concern | Choice | Why (briefly — see [chapter 21](21-alternatives-and-further-reading.md) for alternatives) |
 |---|---|---|
 | Dependency injection | servo | The subject of this tutorial |
 | HTTP | `net/http` (stdlib) | Go 1.22+'s router is enough for five routes; no framework opinion to explain |
@@ -104,7 +106,7 @@ If you're deciding whether to reach for this shape at all:
 - **A service that's mostly a thin proxy** to another API doesn't need a repository layer at all;
   forcing one in adds a file with no logic in it.
 - **A service under real, sustained load** benefits from this shape specifically *because* it makes
-  the resilience and observability chapters ([13](13-observability.md), [14](14-resilience.md))
+  the resilience and observability chapters ([13](15-observability.md), [14](16-resilience.md))
   possible to reason about — they hook in at layer boundaries.
 
 ## Next

@@ -1,11 +1,14 @@
-# gRPC as the transport, sharing one port with REST
+# 12. gRPC as the transport
 
-[Chapter 10](../tutorial/10-api-layer.md) builds the API layer on `net/http`. This page serves the
-same service layer over gRPC — and serves gRPC and REST from a **single port**, which is the part
-worth reading even if you already know gRPC.
+[Chapter 10](10-api-layer.md) built the API layer on `net/http`, and
+[chapter 11](11-gin-transport.md) rebuilt it in Gin. This chapter serves the same service layer
+over gRPC — and serves gRPC and REST from a **single port**, which is the part worth reading even
+if you already know gRPC.
 
-Read chapter 10 first: the DTOs, the domain-error mapping and the session scope are shared, and
-this page assumes them. The working code is
+It assumes chapter 10: the DTOs, the domain-error mapping and the session scope are shared rather
+than repeated here. As in chapter 11, the spec-file change at the end belongs to
+[chapter 13](13-wiring-with-servo.md), so come back to it if you are reading in order. The working
+code is
 [`examples/tutorial/grpcapi`](https://github.com/okian/servo/tree/master/examples/tutorial/grpcapi),
 wired by `cmd/ordersgrpc`.
 
@@ -37,7 +40,7 @@ gRPC method's full name (`/ordersv1.Orders/GetOrder`) *is* its wire identity. Re
 breaks every client, and it should look like it breaks every client.
 
 The generated `.pb.go` files are committed, exactly like the `gomock` mocks from
-[chapter 8](../tutorial/08-service-layer.md), so cloning this repository and running `go test ./...` doesn't
+[chapter 8](08-service-layer.md), so cloning this repository and running `go test ./...` doesn't
 first require installing `protoc` and two plugins. Regenerate with:
 
 ```
@@ -118,7 +121,7 @@ header` and the server appears to be fine.
 ## Authentication is an interceptor
 
 The third shape for the same idea. `net/http` wraps each handler,
-[Gin](transport-gin.md) uses a route group, and gRPC uses a unary interceptor that sees every call
+[Gin](11-gin-transport.md) uses a route group, and gRPC uses a unary interceptor that sees every call
 and decides per method — `grpcapi/auth.go`:
 
 ```go
@@ -141,7 +144,7 @@ name means adding an unauthenticated method is a deliberate edit here — the op
 
 The last two lines are the same two lines as the HTTP transports, for the same reason: the claims
 are what handlers read, and the session key is what servo's generated accessor reads
-([chapter 12](../tutorial/12-scoped-instances.md)). The scope has nothing to do with the transport, which is
+([chapter 14](14-scoped-instances.md)). The scope has nothing to do with the transport, which is
 why `GetOrder` records a view identically in all three.
 
 The error mapping changes vocabulary but not structure — `codes.NotFound` where HTTP said 404,
@@ -191,7 +194,7 @@ both protocols.
 
 ## See also
 
-- [Gin as the transport](transport-gin.md) — the same API in Gin, if you want a router rather than
-  a second protocol.
-- [Chapter 10: API layer](../tutorial/10-api-layer.md) — the `net/http` version, and the DTOs and
+- [Chapter 11: Gin as the transport](11-gin-transport.md) — the same API in Gin, if you want a
+  router rather than a second protocol.
+- [Chapter 10: API layer](10-api-layer.md) — the `net/http` version, and the DTOs and
   error mapping all three share.

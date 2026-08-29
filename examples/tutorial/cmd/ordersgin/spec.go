@@ -27,7 +27,7 @@ func wire() {
 		// alive across the gap between two requests from the same person;
 		// Max is the cap that stops an unauthenticated flood from
 		// allocating without bound. See
-		// docs/tutorial/12-scoped-instances.md.
+		// docs/tutorial/14-scoped-instances.md.
 		servo.Scoped[*session.Session, session.Sessions](
 			servo.Linger(5*time.Minute),
 			servo.Max(50_000),
@@ -38,13 +38,13 @@ func wire() {
 		servo.Bind[broker.EventPublisher, *natsbroker.Publisher](),
 
 		// The service layer gets the circuit-breaker-wrapped cache, not
-		// redis.Cache directly — see docs/tutorial/14-resilience.md for
+		// redis.Cache directly — see docs/tutorial/16-resilience.md for
 		// why CircuitBreakerCache depends on *redis.Cache concretely
 		// rather than on cache.OrderCache itself.
 		servo.Bind[cache.OrderCache, *resilience.CircuitBreakerCache](),
 
 		// NewTestApp substitutes all four real infrastructure dependencies
-		// with mocks — see docs/tutorial/11-wiring-with-servo.md.
+		// with mocks — see docs/tutorial/13-wiring-with-servo.md.
 		servo.Override[repository.OrderRepository, *mocks.OrderRepositoryForServo](),
 		servo.Override[repository.UserRepository, *mocks.UserRepositoryForServo](),
 		servo.Override[cache.OrderCache, *mocks.OrderCacheForServo](),

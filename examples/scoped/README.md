@@ -86,6 +86,6 @@ the full 200-run soak nightly.
 ## Further reading
 
 - [Scoped instances](https://okian.github.io/servo/reference/scopes.html) — the reference page
-- [Tutorial chapter 12](https://okian.github.io/servo/tutorial/12-scoped-instances.html) — a
+- [Tutorial chapter 14](https://okian.github.io/servo/tutorial/14-scoped-instances.html) — a
   per-user session scope built from scratch
 - [Limitations](https://okian.github.io/servo/limitations.html) — what scopes deliberately do not do

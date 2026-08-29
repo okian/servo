@@ -70,7 +70,7 @@ func (f *fakeSessions) Stats() servo.ScopeStats {
 // of postgres/redis/natsbroker. servo is not involved at all here: this is
 // plain Go construction, the same three lines main.go's generated New would
 // otherwise write for us. That's deliberate — servo.Override and a real
-// NewTestApp don't show up until chapter 11; this chapter proves the HTTP
+// NewTestApp don't show up until chapter 13; this chapter proves the HTTP
 // contract on its own first.
 func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, *auth.Issuer) {
 	t.Helper()

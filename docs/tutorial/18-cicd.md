@@ -1,4 +1,4 @@
-# 16. CI/CD
+# 18. CI/CD
 
 Every check so far has been something you ran by hand: `go build`, `make test`, `make
 test-integration`, `docker build`. That's fine while you're the only one running them, but it stops
@@ -126,7 +126,7 @@ build-and-unit-test:
     # integration test (see e.g. postgres/postgres_test.go) skips itself
     # when its env var isn't set, rather than failing, so this step only
     # ever exercises the mock-backed unit tests. See
-    # docs/tutorial/15-testing-strategy.md for why the split matters:
+    # docs/tutorial/17-testing-strategy.md for why the split matters:
     # this job has no services: block at all, so a test that forgot to
     # skip would fail here with a connection error, not silently pass.
     - name: Unit test
@@ -150,7 +150,7 @@ than checking `gofmt`'s exit code, which is 0 regardless of whether it found any
 Second, `servo check` runs with `working-directory: .`, overriding the job's own default of
 `examples/tutorial`, because `cmd/servo` is a binary that lives in the *root* module, not this
 one — the same pattern `go.yml` already uses for `examples/basic` and `examples/mocking`. This step
-is the CI enforcement of the warning chapter 11 raised when introducing `servo generate`: if
+is the CI enforcement of the warning chapter 13 raised when introducing `servo generate`: if
 `cmd/orders/servo_gen.go` doesn't match what `servo generate` would produce right now — because a
 constructor's signature changed and nobody re-ran it — this fails the build instead of shipping a
 stale generated file.
@@ -159,7 +159,7 @@ stale generated file.
 variables set, and this job declares no `services:` block at all. That's deliberate, and it's a
 real safety property, not just tidiness: if a test in `postgres/` or `redis/` ever forgot to check
 its environment variable and skip, it would fail *here*, with a connection error, rather than
-silently passing by accident because some service happened to be reachable. Chapter 15 calls this
+silently passing by accident because some service happened to be reachable. Chapter 17 calls this
 out as a real diagnostic to watch for — this job is what makes it visible in the first place.
 
 ### `integration-test`
@@ -231,7 +231,7 @@ package would reliably fail on a cold runner. `pg_isready` and `redis-cli ping` 
 respective official images, so no extra installation is needed; `nc -z localhost 4222` stands in
 for NATS the same way it does in `deploy/docker-compose.yml`'s own healthcheck, since the
 `nats:2-alpine` image ships busybox's `nc` but nothing NATS-specific for health checking. This is
-the exact same problem chapter 17's `depends_on: condition: service_healthy` solves for local
+the exact same problem chapter 19's `depends_on: condition: service_healthy` solves for local
 `docker compose up` — CI and local dev hit the same race for the same underlying reason, and both
 fix it the same way.
 
@@ -264,7 +264,7 @@ docker-build:
       run: docker build -f examples/tutorial/deploy/Dockerfile -t servoorders:ci .
 ```
 
-This builds the same image chapter 17 builds and runs locally, from the same repo-root context, for
+This builds the same image chapter 19 builds and runs locally, from the same repo-root context, for
 the same reason (the `replace` directive in `examples/tutorial/go.mod` needs `../..` — the servo
 repository itself — inside the build context). It doesn't push anywhere: this workflow has no
 registry credentials configured, and a tutorial has nothing to publish. Its job is narrower than
@@ -288,8 +288,8 @@ $ echo $?
 
 No output and a `0` exit code is actionlint's way of saying the workflow is clean. Beyond syntax,
 every individual command this workflow runs was already run for real, outside of CI, earlier in
-this tutorial: `go build`/`go vet`/`go test` in chapter 15, `servo check` in chapter 11, the exact
-`docker build` invocation in chapter 17. The workflow's job is to run those same, already-proven
+this tutorial: `go build`/`go vet`/`go test` in chapter 17, `servo check` in chapter 13, the exact
+`docker build` invocation in chapter 19. The workflow's job is to run those same, already-proven
 commands automatically — it doesn't introduce a single command that hasn't already been verified to
 work on this exact codebase.
 
@@ -345,7 +345,7 @@ work on this exact codebase.
   that only runs on changes to one small module doesn't run often enough for the caching to pay for
   its own added complexity (a cache key strategy, occasional stale-cache debugging). A workflow that
   runs on every push to a large, frequently-changed module would likely find the trade worthwhile.
-- **testcontainers-go instead of a `services:` block** (see also chapter 15's alternatives) — would
+- **testcontainers-go instead of a `services:` block** (see also chapter 17's alternatives) — would
   let `integration-test` collapse into the same job as unit tests, since the containers would be
   started by the test process itself rather than declared at the job level. Trades a `services:`
   block most Go developers can read at a glance for a dependency on the Docker socket being
@@ -361,6 +361,6 @@ work on this exact codebase.
 
 ## Next
 
-[Chapter 17: Running and deployment](17-running-and-deployment.md) — the `Dockerfile` and
-`docker-compose.yml` this chapter's `docker-build` job and chapter 15's `make up` both depend on,
+[Chapter 19: Running and deployment](19-running-and-deployment.md) — the `Dockerfile` and
+`docker-compose.yml` this chapter's `docker-build` job and chapter 17's `make up` both depend on,
 and a full environment variable reference for running the service anywhere.

@@ -47,7 +47,7 @@ services:
       - "4318:4318"   # OTLP over HTTP -- what OTLPEndpoint points at
 
   # orders is the service itself, built from the same Dockerfile a reader
-  # would build by hand (chapter 17). Its build context is the repo root,
+  # would build by hand (chapter 19). Its build context is the repo root,
   # not this directory — see deploy/Dockerfile's own top comment for why —
   # so this compose file must also be invoked with that in mind; `make up`
   # does this for you (see the Makefile) rather than a bare `docker compose

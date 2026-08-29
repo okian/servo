@@ -28,7 +28,7 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 	// The logger is injected, not global, so the buffer has to be injected
 	// too. Swapping slog's package-level default would capture nothing:
 	// the Notifier writes to whatever it was handed — see
-	// docs/tutorial/13-observability.md for why it takes one at all.
+	// docs/tutorial/15-observability.md for why it takes one at all.
 	var logs bytes.Buffer
 	capture := &observability.Logger{Logger: slog.New(slog.NewTextHandler(&logs, nil))}
 

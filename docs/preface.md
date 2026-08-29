@@ -206,7 +206,7 @@ constructors, one spec file, and the generated result.
 
 **If you have an afternoon:** the [tutorial](tutorial/) builds a real order-management service from
 an empty directory. Postgres, Redis, NATS, JWT auth, metrics, tracing, tests, CI, a container.
-servo itself doesn't show up until chapter 11, and that's deliberate — the wiring problem is a lot
+servo itself doesn't show up until chapter 13, and that's deliberate — the wiring problem is a lot
 more convincing once you've got nine packages sitting there needing to be wired.
 
 **If you're choosing between tools:** [How servo compares](comparison.md) puts it side by side with

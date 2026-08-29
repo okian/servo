@@ -38,7 +38,7 @@ type Server struct {
 	auth    *service.AuthService
 	metrics *observability.Metrics
 	// sessions is the scope accessor, not a session — see
-	// docs/tutorial/12-scoped-instances.md.
+	// docs/tutorial/14-scoped-instances.md.
 	sessions session.Sessions
 }
 

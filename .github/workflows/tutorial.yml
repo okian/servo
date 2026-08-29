@@ -64,7 +64,7 @@ jobs:
       # integration test (see e.g. postgres/postgres_test.go) skips itself
       # when its env var isn't set, rather than failing, so this step only
       # ever exercises the mock-backed unit tests. See
-      # docs/tutorial/15-testing-strategy.md for why the split matters:
+      # docs/tutorial/17-testing-strategy.md for why the split matters:
       # this job has no services: block at all, so a test that forgot to
       # skip would fail here with a connection error, not silently pass.
       - name: Unit test
@@ -76,8 +76,9 @@ jobs:
       # change without a re-run of `servo generate` fails the build
       # instead of shipping a stale generated file. There are three —
       # cmd/orders, cmd/ordersgin and cmd/ordersgrpc, one per transport
-      # (docs/tutorial/19-transport-choices.md) — and `check` covers all
-      # of them in one pass. Run from the repo root, same as go.yml does
+      # (docs/tutorial/11-gin-transport.md and 12-grpc-transport.md) — and
+      # `check` covers all of them in one pass. Run from the repo root, same
+      # as go.yml does
       # for examples/basic and examples/mocking, since cmd/servo is a
       # root-module binary.
       - name: servo check

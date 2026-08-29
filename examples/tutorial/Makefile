@@ -19,8 +19,9 @@ test-integration:
 	go test ./... -v
 
 # Three transports over the same service layer — see
-# docs/tutorial/19-transport-choices.md. Each is its own injector, so
-# `generate` and `check` below cover all three at once.
+# docs/tutorial/10-api-layer.md, 11-gin-transport.md and
+# 12-grpc-transport.md. Each is its own injector, so `generate` and `check`
+# below cover all three at once.
 run:
 	go run ./cmd/orders
 

@@ -1,4 +1,4 @@
-# 14. Resilience
+# 16. Resilience
 
 [Chapter 6](06-caching-layer.md) already made the service layer tolerate a broken cache: any
 `Get` error other than `cache.ErrMiss` gets logged and treated as a fallback to Postgres. That's
@@ -265,7 +265,7 @@ that actually protects the process — a burst of traffic from anywhere gets thr
 means one aggressive client can use up budget that a well-behaved client needed. A real
 multi-tenant service usually wants a bucket per client, keyed by API key or IP, which trades this
 simplicity for needing an eviction strategy so that map of limiters doesn't grow without bound;
-see [chapter 19](19-alternatives-and-further-reading.md#per-client-rate-limiting).
+see [chapter 21](21-alternatives-and-further-reading.md#per-client-rate-limiting).
 
 ## A wiring mistake worth walking through, not just avoiding
 
@@ -405,7 +405,8 @@ limiter, it's a burst of one silently breaking the second HTTP call any other te
 ## Wire it into api.Server
 
 `New` gains one more parameter, and the middleware chain gets one more layer, in the order the
-walkthrough above landed on:
+walkthrough above landed on. This is the finished constructor: it matches `api/server.go` in
+`examples/tutorial`, routes included.
 
 ```go
 func New(
@@ -416,14 +417,20 @@ func New(
 	metrics *observability.Metrics,
 	tracer *observability.Tracer,
 	limiter *resilience.RateLimiter,
+	sessions session.Sessions,
+	log *observability.Logger,
 ) *Server {
-	s := &Server{orders: orders, auth: authSvc, metrics: metrics}
+	s := &Server{orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
 
 	mux := http.NewServeMux()
+	mux.Handle("GET /openapi.yaml", openapi.Handler())
+	mux.Handle("GET /swagger/", openapi.Handler())
+
 	mux.HandleFunc("POST /auth/login", s.handleLogin)
 	mux.HandleFunc("POST /orders", requireAuth(issuer, s.handleCreateOrder))
 	mux.HandleFunc("GET /orders/{id}", requireAuth(issuer, s.handleGetOrder))
 	mux.HandleFunc("GET /orders", requireAuth(issuer, s.handleListOrders))
+	mux.HandleFunc("GET /me/recent", requireAuth(issuer, s.handleRecent))
 
 	// Outermost first: recover must see a panic from anything below it.
 	// Metrics has to sit directly against logging/mux, not further out —
@@ -434,11 +441,11 @@ func New(
 	// costs no span; it counts its own rejections directly rather than
 	// trying to route them through requests_total, which a rejected
 	// request never reaches anyway.
-	handler := loggingMiddleware(mux)
+	handler := loggingMiddleware(log, mux)
 	handler = metrics.Middleware(handler)
 	handler = tracer.Middleware(handler)
 	handler = limiter.Middleware(handler)
-	handler = recoverMiddleware(handler)
+	handler = recoverMiddleware(log, handler)
 
 	s.http = &http.Server{Addr: cfg.HTTPAddr, Handler: handler}
 	return s
@@ -493,5 +500,5 @@ of its own, purely logic wrapping logic.
 
 ## Next
 
-[Chapter 15: Testing strategy](15-testing-strategy.md) — pulling together the unit, integration,
+[Chapter 17: Testing strategy](17-testing-strategy.md) — pulling together the unit, integration,
 and API-level tests written across every chapter so far into one coherent picture.

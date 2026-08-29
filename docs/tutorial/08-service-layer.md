@@ -46,10 +46,10 @@ func New(
 }
 ```
 
-`*observability.Logger` is built in [chapter 13](13-observability.md) and threaded through here
+`*observability.Logger` is built in [chapter 15](15-observability.md) and threaded through here
 because everything that logs takes one, rather than reaching for the package-level `slog`
 functions. That is a deliberate choice with a real argument behind it — see
-[Why the logger is a node](13-observability.md#why-the-logger-is-a-node-and-not-a-call-at-the-top-of-main)
+[Why the logger is a node](15-observability.md#why-the-logger-is-a-node-and-not-a-call-at-the-top-of-main)
 — and it is why this constructor has a parameter it does not appear to use until the error paths
 below.
 
@@ -217,7 +217,7 @@ func TestCreateOrderPersistsCachesAndPublishes(t *testing.T) {
 code running inside servo's generated graph — is simpler than the `servotest.PanicReporter`
 pattern servo's mocking examples use. That pattern earns its keep specifically when a mock has to
 be constructed *inside* the graph itself, with no `*testing.T` reachable at all; you'll see exactly
-that situation in [chapter 11](11-wiring-with-servo.md#capabilities-side-by-side). Here, testing
+that situation in [chapter 13](13-wiring-with-servo.md#capabilities-side-by-side). Here, testing
 `OrderService` directly, the simple form is all you need.
 
 The next two tests are where mocks genuinely earn their keep over a real database — proving a
@@ -297,7 +297,7 @@ ok  	example.com/servoorders/service	0.127s
 That `ERROR` line in the middle isn't a failure — it's `slog`'s default logger, doing exactly what
 `CreateOrder` told it to do when the mock publisher returned an error. The test still passes,
 because it's checking the return value, not the absence of a log line. [Chapter
-13](13-observability.md) is where that logger stops being the unconfigured default and starts
+15](15-observability.md) is where that logger stops being the unconfigured default and starts
 looking like something you'd actually want in production.
 
 ## Diagnostics
@@ -328,7 +328,7 @@ looking like something you'd actually want in production.
   cancellation — dropping it anywhere in this chain means a client that gave up waiting doesn't
   actually stop work from happening on their behalf.
 - **Don't** test `OrderService` by spinning up real Postgres/Redis/NATS. That's what
-  [chapter 15](15-testing-strategy.md)'s integration and API tiers are for — a unit test that needs
+  [chapter 17](17-testing-strategy.md)'s integration and API tiers are for — a unit test that needs
   Docker running isn't a unit test anymore, and the whole reason to write interfaces in chapters 5
   through 7 was to make this layer testable without any of that.
 

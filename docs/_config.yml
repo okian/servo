@@ -22,7 +22,7 @@ go_module: github.com/okian/servo/v3
 # No `theme:` — the site uses its own layouts in _layouts/ and stylesheet in
 # assets/css/. A supported Pages theme would fight them for the body element.
 
-# Layouts are applied by path so the 19 tutorial chapters, their README, and
+# Layouts are applied by path so the 21 tutorial chapters, their README, and
 # the reference pages stay plain markdown with no front matter, and keep
 # rendering correctly in GitHub's own file browser. jekyll-optional-front-matter (on by default for
 # Pages) is what lets front-matter-less files be processed as pages at all.

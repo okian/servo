@@ -24,7 +24,7 @@ import (
 // for cache.OrderCache, servo would have to resolve that right back to
 // itself — a cycle with no real dependency underneath it. Depending on the
 // concrete type it wraps is what breaks that; see
-// docs/tutorial/14-resilience.md.
+// docs/tutorial/16-resilience.md.
 type CircuitBreakerCache struct {
 	// Stored as the interface, not *redis.Cache, purely so this package's
 	// own tests can substitute a mock by constructing this struct directly
