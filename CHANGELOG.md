@@ -23,7 +23,17 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
-## [Unreleased]
+## [3.2.0] - 2026-08-29
+
+### Added
+- **Gin and gRPC as transport choices in `examples/tutorial`.** The same service layer now sits
+  behind three transports, each its own injector: `api`/`cmd/orders` (`net/http`),
+  `ginapi`/`cmd/ordersgin` (Gin), and `grpcapi`/`cmd/ordersgrpc`, which serves gRPC and REST on a
+  single port. New chapter 19 covers what differs between them and what deliberately does not; the
+  old chapter 19 is now 20.
+- `examples/tutorial` gains packages `admin` (health, readiness and metrics on their own listener,
+  never the public one, asserted by a test in every variant) and `openapi` (the contract, embedded
+  and served with a Swagger UI).
 
 ### Fixed
 - **A successful `Acquire` racing `Shutdown` could hand back an instance that was already drained
@@ -101,10 +111,6 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
 - `examples/diagnostics` gains a `noscopekey/` fixture for the reverse undeclared case — a
   `servo.Scoped` declaration whose type has no `ScopeKey` method. Its wording was pinned only by a
   resolver unit test, and it is the half a new user meets first.
-
-## [3.2.0] - 2026-08-28
-
-### Changed
 - **Go 1.27 is now the floor.** `go.mod` declares `go 1.27.0`, raised from `go 1.25.0`, as do all
   five example modules. What a consumer still on 1.25 or 1.26 sees depends on their `GOTOOLCHAIN`:
   under the default `auto`, Go downloads and switches to 1.27 for them and the upgrade is
