@@ -133,18 +133,46 @@ jobs:
         with:
           go-version: '1.27'
 
+      # Downloaded and verified here rather than through upstream's
+      # install.sh, which is currently broken for this release: the
+      # checksums file lists both `<tarball>` and `<tarball>.sbom.json`,
+      # and install.sh's unanchored match picks the SBOM's hash as the
+      # expected value for the tarball, so it always reports a mismatch.
+      # The `$` below anchors on end-of-line, which is the whole fix.
+      - name: Install golangci-lint
+        env:
+          GOLANGCI_VERSION: 2.13.2
+        run: |
+          set -euo pipefail
+          tarball="golangci-lint-${GOLANGCI_VERSION}-linux-amd64.tar.gz"
+          base="https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}"
+          curl -sSfL -O "${base}/${tarball}"
+          curl -sSfL -O "${base}/golangci-lint-${GOLANGCI_VERSION}-checksums.txt"
+
+          # Fail loudly if the anchored match finds nothing: piping an empty
+          # line list straight into sha256sum would verify nothing at all.
+          line=$(grep " ${tarball}$" "golangci-lint-${GOLANGCI_VERSION}-checksums.txt")
+          [ -n "$line" ] || { echo "::error::no checksum entry for ${tarball}"; exit 1; }
+          printf '%s\n' "$line" | sha256sum -c -
+
+          mkdir -p "$HOME/.local/bin"
+          tar xzf "${tarball}" --strip-components=1 -C "$HOME/.local/bin" \
+            "golangci-lint-${GOLANGCI_VERSION}-linux-amd64/golangci-lint"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/golangci-lint" version
+
       # Every module, not just the root one: the example modules are what a
       # reader copies from, and two unchecked-error failures sat in
       # examples/basic precisely because nothing here looked at them.
+      #
+      # Every module is linted before the job fails, so one broken module
+      # does not hide another.
       - name: Lint every module
         run: |
-          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-            | sh -s -- -b "$(go env GOPATH)/bin" v2.13.2
-          lint="$(go env GOPATH)/bin/golangci-lint"
           fail=0
           for dir in . examples/basic examples/mocking examples/scoped examples/diagnostics examples/tutorial; do
             echo "--- $dir ---"
-            (cd "$dir" && "$lint" run --timeout=5m ./...) || fail=1
+            (cd "$dir" && golangci-lint run --timeout=5m ./...) || fail=1
           done
           exit $fail
 
