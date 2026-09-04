@@ -50,12 +50,12 @@ parameter. `redis`, from [chapter 6](06-caching-layer.md), in full:
 package redis
 
 //servo:config prefix=REDIS
-type Config struct {
-	Addr string `config:"addr,required"`
+type config struct {
+	addr string `config:"addr,required"`
 }
 
-func New(cfg Config) *Cache {
-	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.Addr})}
+func New(cfg config) *Cache {
+	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.addr})}
 }
 ```
 
@@ -82,9 +82,9 @@ not grow a validation language.
 
 ### The prefix is what makes the field names free
 
-`redis.Config` calls its setting `addr`, not `redis_addr`. So does `natsbroker.Config` call its
+redis's `config` calls its setting `addr`, not `redis_addr`. So does `natsbroker.Config` call its
 setting `url`, not `nats_url`. Neither has to know about the other, because the prefix namespaces
-them: `REDIS_ADDR` and `NATS_URL` on the wire, plain `Addr` and `URL` in Go. The prefix sits in
+them: `REDIS_ADDR` and `NATS_URL` on the wire, plain `addr` and `URL` in Go. The prefix sits in
 the directive, directly above the fields it applies to, so the deployment-facing names and the
 struct that consumes them cannot drift apart — and `grep NATS_` still finds the code that reads it.
 
@@ -139,9 +139,13 @@ Three properties are worth noticing, because no runtime reflection library can o
   unsupported field type, or a `default=1x` that doesn't parse as a duration fails
   `servo generate` with a position — never a 3am page.
 - **The struct can be entirely unexported.** The loader lives in the same package, so a config
-  type and every one of its fields can be private to the package that owns them. This service
-  keeps its `Config` types exported because tests in other packages construct them, but nothing
-  requires that.
+  type and every one of its fields can be private to the package that owns them — `redis` above
+  and `postgres` are exactly that, and the injector still passes their values through, by
+  inference, without ever naming the type. This service exports a `Config` only where something
+  outside the package genuinely constructs it: `natsbroker`'s because the notifier borrows it
+  ([chapter 7](07-messaging-layer.md)), the rest because their tests deliberately live in external
+  test packages ([chapter 17](17-testing-strategy.md)) and build literals like
+  `auth.Config{Secret: ...}`. Visibility is a per-package decision, exactly like any other.
 - **`secret` means what it says.** The parse-failure path for `JWT_SECRET` reports
   `(value redacted: secret)` where any other field would quote the value it rejected, so a
   malformed secret can't leak into a log line.
@@ -153,7 +157,7 @@ drift. And a typo'd directive (`//servo:confg`) is just a comment to the compile
 ## Configuration is an ordinary part of the graph
 
 A config type is a node like any other: it sits at level 0, everything that takes it sits above
-it, and `servo explain redis.Config` answers for it the way it answers for anything else. Which
+it, and `servo explain redis.config` answers for it the way it answers for anything else. Which
 means the generator can also do something genuinely new — print the operator's manual for a
 binary without running it:
 
@@ -169,9 +173,9 @@ configuration for example.com/servoorders/cmd/orders
   NATS_URL          string          required      Config.URL
   OBS_LOG_LEVEL     string          default info  Config.LogLevel
   OBS_OTLP_ENDPOINT string          zero value    Config.OTLPEndpoint
-  POSTGRES_DSN      string          required      Config.DSN
+  POSTGRES_DSN      string          required      config.dsn
   RATE_LIMIT_RPS    float64         default 50    Config.RPS
-  REDIS_ADDR        string          required      Config.Addr
+  REDIS_ADDR        string          required      config.addr
   SESSION_RECENT    int             default 10    Config.Recent
 ```
 

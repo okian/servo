@@ -66,12 +66,12 @@ type Cache struct {
 var _ cache.OrderCache = (*Cache)(nil)
 
 //servo:config prefix=REDIS
-type Config struct {
-	Addr string `config:"addr,required"`
+type config struct {
+	addr string `config:"addr,required"`
 }
 
-func New(cfg Config) *Cache {
-	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.Addr})}
+func New(cfg config) *Cache {
+	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.addr})}
 }
 ```
 

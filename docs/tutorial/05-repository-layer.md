@@ -67,12 +67,12 @@ var (
 )
 
 //servo:config prefix=POSTGRES
-type Config struct {
-	DSN string `config:"dsn,required"`
+type config struct {
+	dsn string `config:"dsn,required"`
 }
 
-func New(cfg Config) (*Store, error) {
-	pool, err := pgxpool.New(context.Background(), cfg.DSN)
+func New(cfg config) (*Store, error) {
+	pool, err := pgxpool.New(context.Background(), cfg.dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
@@ -83,7 +83,10 @@ func New(cfg Config) (*Store, error) {
 The `//servo:config` directive is [chapter 3](03-configuration.md)'s whole mechanism in one
 comment: `servo generate` writes this package's loader beside it, `New` receives a filled struct,
 and a deployment without `POSTGRES_DSN` fails at startup naming the variable. Nothing here imports
-a config package, because there isn't one.
+a config package, because there isn't one — and note that `config` and its `dsn` field are
+entirely unexported. Nothing outside this package constructs or reads them; the injector receives
+the value from the generated loader by inference and passes it straight to `New` without ever
+naming the type. Settings can be as private as any other implementation detail.
 
 The two `var _ repository.X = (*Store)(nil)` lines aren't runtime code — they're compile-time
 assertions. If `Store` ever stops satisfying either interface, the build fails right here, with a

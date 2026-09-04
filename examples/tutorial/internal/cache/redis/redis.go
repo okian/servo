@@ -26,17 +26,19 @@ type Cache struct {
 
 var _ cache.OrderCache = (*Cache)(nil)
 
-// Config's generated loader reads REDIS_ADDR — the directive's prefix
+// config's generated loader reads REDIS_ADDR — the directive's prefix
 // plus the tag name, uppercased — and a deployment missing it fails at
-// startup naming the variable.
+// startup naming the variable. Unexported, like postgres's: nothing
+// outside this package constructs or reads it, so nothing about it needs
+// to be public.
 //
 //servo:config prefix=REDIS
-type Config struct {
-	Addr string `config:"addr,required"`
+type config struct {
+	addr string `config:"addr,required"`
 }
 
-func New(cfg Config) *Cache {
-	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.Addr})}
+func New(cfg config) *Cache {
+	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.addr})}
 }
 
 func (c *Cache) Init(ctx context.Context) error {

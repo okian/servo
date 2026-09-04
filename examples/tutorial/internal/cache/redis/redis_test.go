@@ -22,7 +22,7 @@ func testCache(t *testing.T) *Cache {
 		t.Skip("TEST_REDIS_ADDR not set; see docs/tutorial/06-caching-layer.md")
 	}
 
-	c := New(Config{Addr: addr})
+	c := New(config{addr: addr})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := c.Init(ctx); err != nil {

@@ -99,12 +99,12 @@ point and you'll get the same shape with those omitted:
 //	      servo:config (prefix JWT)  internal/auth/auth.go:34:6
 //	[L0] example.com/servoorders/internal/broker/natsbroker.Config
 //	      servo:config (prefix NATS)  internal/broker/natsbroker/natsbroker.go:29:6
-//	[L0] example.com/servoorders/internal/cache/redis.Config
-//	      servo:config (prefix REDIS)  internal/cache/redis/redis.go:34:6
+//	[L0] example.com/servoorders/internal/cache/redis.config
+//	      servo:config (prefix REDIS)  internal/cache/redis/redis.go:36:6
 //	[L0] example.com/servoorders/internal/observability.Config
 //	      servo:config (prefix OBS)  internal/observability/logging.go:19:6
-//	[L0] example.com/servoorders/internal/repository/postgres.Config
-//	      servo:config (prefix POSTGRES)  internal/repository/postgres/postgres.go:38:6
+//	[L0] example.com/servoorders/internal/repository/postgres.config
+//	      servo:config (prefix POSTGRES)  internal/repository/postgres/postgres.go:44:6
 //	[L0] example.com/servoorders/internal/resilience.Config
 //	      servo:config (prefix RATE_LIMIT)  internal/resilience/ratelimit.go:26:6
 //	[L0] example.com/servoorders/internal/session.Config
@@ -121,11 +121,11 @@ point and you'll get the same shape with those omitted:
 //	      deps: example.com/servoorders/internal/broker/natsbroker.Config, *example.com/servoorders/internal/observability.Logger
 //	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | internal/broker/notifier/notifier.go:42:6
 //	[L1] *example.com/servoorders/internal/repository/postgres.Store
-//	      deps: example.com/servoorders/internal/repository/postgres.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | internal/repository/postgres/postgres.go:42:6
+//	      deps: example.com/servoorders/internal/repository/postgres.config
+//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | internal/repository/postgres/postgres.go:48:6
 //	[L1] *example.com/servoorders/internal/cache/redis.Cache
-//	      deps: example.com/servoorders/internal/cache/redis.Config
-//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | internal/cache/redis/redis.go:38:6
+//	      deps: example.com/servoorders/internal/cache/redis.config
+//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | internal/cache/redis/redis.go:40:6
 //	[L2] *example.com/servoorders/internal/resilience.CircuitBreakerCache
 //	      deps: *example.com/servoorders/internal/cache/redis.Cache
 //	      capabilities: none | binding: explicit bind | internal/resilience/breaker.go:38:6
@@ -259,9 +259,9 @@ $ go run github.com/okian/servo/v3/cmd/servo graph --dir ./cmd/orders --format=m
 graph BT
   n0["example.com/servoorders/internal/auth.Config"]:::level0
   n1["example.com/servoorders/internal/broker/natsbroker.Config"]:::level0
-  n2["example.com/servoorders/internal/cache/redis.Config"]:::level0
+  n2["example.com/servoorders/internal/cache/redis.config"]:::level0
   n3["example.com/servoorders/internal/observability.Config"]:::level0
-  n4["example.com/servoorders/internal/repository/postgres.Config"]:::level0
+  n4["example.com/servoorders/internal/repository/postgres.config"]:::level0
   n5["example.com/servoorders/internal/resilience.Config"]:::level0
   n6["example.com/servoorders/internal/session.Config"]:::level0
   n7["example.com/servoorders/internal/transport/api.Config"]:::level0
@@ -329,9 +329,9 @@ name so it's actually readable at a glance:
 graph BT
   n0["auth.Config"]:::level0
   n1["natsbroker.Config"]:::level0
-  n2["redis.Config"]:::level0
+  n2["redis.config"]:::level0
   n3["observability.Config"]:::level0
-  n4["postgres.Config"]:::level0
+  n4["postgres.config"]:::level0
   n5["resilience.Config"]:::level0
   n6["session.Config"]:::level0
   n7["api.Config"]:::level0
