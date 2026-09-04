@@ -13,7 +13,7 @@ import (
 //
 // It is a list rather than the switch in run() so that an unknown command
 // can print the alternatives. Being told `unknown command "geneate"` and
-// nothing else is a dead end when the only place the ten names are written
+// nothing else is a dead end when the only place the names are written
 // down is the website.
 var commands = []struct{ Name, Usage, Summary string }{
 	{"generate", "servo generate [--dir]", "resolve every injector found under --dir and write its generated file"},
@@ -22,6 +22,7 @@ var commands = []struct{ Name, Usage, Summary string }{
 	{"explain", "servo explain <type> [--dir] [--json]", "which provider was selected for a type, and why"},
 	{"why", "servo why <type> [--dir] [--json]", "shortest path from a root to that node"},
 	{"list", "servo list [--rejected] [--all] [--dir] [--json]", "the candidate index, or every excluded function and the rule that excluded it"},
+	{"config", "servo config [--dir] [--json]", "every setting one injector's //servo:config types read: env name, file key, type, default"},
 	{"init", "servo init [--dir] [--tags]", "scaffold a spec file with the correct build tag"},
 	{"doctor", "servo doctor [--dir]", "diagnose setup problems before go generate ever runs"},
 	{"migrate", "servo migrate [--dir]", "read v1 Register(X{}, N) calls and emit a v3 skeleton"},
@@ -34,7 +35,7 @@ var commands = []struct{ Name, Usage, Summary string }{
 // command: the seven commands that load packages all take the same four,
 // spelled exactly as `go build` spells them.
 const buildFlagsHelp = `Build flags, accepted by every command that loads packages (generate, check,
-graph, explain, why, list, doctor) with the same meaning as in go build:
+graph, explain, why, list, config, doctor) with the same meaning as in go build:
 
     --tags, --mod, --modfile, --overlay
 

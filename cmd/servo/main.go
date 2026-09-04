@@ -76,7 +76,7 @@ func run(args []string) error {
 	// below deliberately leaves a leading flag with the default command, so
 	// a `cmd == "-h"` test after it can never fire — which is exactly how
 	// `servo -h` came to print `generate`'s four flags and exit 1, in the
-	// one place a new user looks for the other eleven commands.
+	// one place a new user looks for the other twelve commands.
 	//
 	// A bare `servo` still generates. That is the documented contract, and
 	// it is why only an explicit help request is intercepted here.
@@ -152,6 +152,16 @@ func run(args []string) error {
 			return fmt.Errorf("usage: servo why [--json] <type>")
 		}
 		return runWhy(load.Config{Dir: *dir, Build: *build}, fs.Arg(0), *jsonOut)
+
+	case "config":
+		fs := flag.NewFlagSet("config", flag.ContinueOnError)
+		dir := fs.String("dir", ".", "module directory")
+		jsonOut := fs.Bool("json", false, "machine-readable output")
+		build := registerBuildFlags(fs)
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		return runConfig(load.Config{Dir: *dir, Build: *build}, *jsonOut)
 
 	case "list":
 		fs := flag.NewFlagSet("list", flag.ContinueOnError)

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/okian/servo/v3/internal/emit"
 	"github.com/okian/servo/v3/internal/load"
+	"github.com/okian/servo/v3/internal/resolve"
 )
 
 // runCheck verifies every injector found within dir's scope matches a fresh
@@ -21,9 +23,22 @@ func runCheck(cfg load.Config) error {
 		return err
 	}
 
-	var errs []error
-	for _, p := range pipelines {
-		if err := checkOne(p); err != nil {
+	// Resolved once per injector, up front, so the cross-injector config
+	// agreement check runs against all of them — a disagreement is a
+	// property of the module, and CI should say so even when every
+	// individual injector's own file happens to be fresh. check writes
+	// nothing, so unlike generate it reports the disagreement and keeps
+	// checking rather than stopping.
+	resolveds, errs, agreementErr := resolveAll(pipelines)
+	if agreementErr != nil {
+		errs = append(errs, agreementErr)
+	}
+
+	for i, p := range pipelines {
+		if resolveds[i] == nil {
+			continue // resolution already failed and is already in errs
+		}
+		if err := checkOne(p, resolveds[i]); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -33,11 +48,17 @@ func runCheck(cfg load.Config) error {
 	return nil
 }
 
-func checkOne(p *pipeline) error {
+// checkPipeline is resolve + checkOne in one call, for callers (doctor)
+// that check a single injector and have no cross-injector concerns.
+func checkPipeline(p *pipeline) error {
 	resolved, err := p.resolve(nil)
 	if err != nil {
 		return err
 	}
+	return checkOne(p, resolved)
+}
+
+func checkOne(p *pipeline, resolved *resolve.Resolved) error {
 	fresh, err := emit.Emit(resolved, p.spec, false)
 	if err != nil {
 		return err
@@ -61,10 +82,35 @@ func checkOne(p *pipeline) error {
 		return err
 	}
 
-	if string(committed) == string(fresh) {
-		return nil
+	if string(committed) != string(fresh) {
+		return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", outPath, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(fresh), outPath), versionSkewNote())
 	}
-	return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", outPath, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(fresh), outPath), versionSkewNote())
+
+	// Companion config loaders are as much this graph's output as the
+	// injector file is, and drift the same way: a renamed tag regenerated
+	// on one machine and committed without the companion.
+	companions, err := companionFiles(resolved, p.spec.ConfigFile != nil)
+	if err != nil {
+		return err
+	}
+	paths := make([]string, 0, len(companions))
+	for path := range companions {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, path := range paths {
+		committed, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return fmt.Errorf("servo check: %s does not exist — run %s", path, regenerateCommand(p.spec.Variant))
+			}
+			return err
+		}
+		if string(committed) != string(companions[path]) {
+			return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", path, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(companions[path]), path), versionSkewNote())
+		}
+	}
+	return nil
 }
 
 // versionSkewNote is appended to every stale report because the message

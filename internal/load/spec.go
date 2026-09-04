@@ -7,7 +7,9 @@ import (
 	"go/build/constraint"
 	"go/token"
 	"go/types"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -27,6 +29,9 @@ type Spec struct {
 	Overrides   []BindDecl
 	Scopes      []ScopeDecl
 	Values      []ValueDecl
+	// ConfigFile is the one servo.ConfigFile("...") declaration, or nil for
+	// an env-only injector.
+	ConfigFile *ConfigFileDecl
 
 	// Variant is the canonical tag set the load ran under, copied from
 	// Loaded.Tags. Empty for a plain `servo generate`, which is what
@@ -51,6 +56,15 @@ type RootDecl struct {
 type ValueDecl struct {
 	Key  graph.Key
 	Type types.Type
+	Pos  token.Position
+}
+
+// ConfigFileDecl is one servo.ConfigFile("path") — the config file this
+// injector's //servo:config types read alongside the environment. The
+// path's extension (validated here, at parse time) decides which decoder
+// the generated code carries.
+type ConfigFileDecl struct {
+	Path string
 	Pos  token.Position
 }
 
@@ -235,6 +249,15 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 			if err := spliceInclude(pkg, spec, argCall, pos, including); err != nil {
 				return err
 			}
+		case "ConfigFile":
+			decl, err := parseConfigFileCall(argCall, pos)
+			if err != nil {
+				return err
+			}
+			if spec.ConfigFile != nil {
+				return fmt.Errorf("%s: servo.ConfigFile(...) declared twice — first at %s", pos, spec.ConfigFile.Pos)
+			}
+			spec.ConfigFile = decl
 		case "Bind", "Override":
 			if len(typeArgs) != 2 {
 				return fmt.Errorf("%s: servo.%s expects exactly two type arguments", pos, name)
@@ -287,6 +310,31 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 		}
 	}
 	return nil
+}
+
+// parseConfigFileCall reads servo.ConfigFile's one argument, which must be
+// a string literal — the path is read as syntax exactly as every marker
+// argument is, and the extension is checked here so a typo'd one fails at
+// the declaration instead of surfacing as a confusing decoder error from
+// generated code.
+func parseConfigFileCall(call *ast.CallExpr, pos token.Position) (*ConfigFileDecl, error) {
+	if len(call.Args) != 1 {
+		return nil, fmt.Errorf("%s: servo.ConfigFile takes exactly one argument, a string literal path", pos)
+	}
+	lit, ok := call.Args[0].(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return nil, fmt.Errorf("%s: servo.ConfigFile's argument must be a string literal — it is read as syntax, so a variable or a call is a value servo would have to execute the program to know", pos)
+	}
+	path, err := strconv.Unquote(lit.Value)
+	if err != nil || path == "" {
+		return nil, fmt.Errorf("%s: servo.ConfigFile's argument is not a usable path", pos)
+	}
+	switch filepath.Ext(path) {
+	case ".json", ".yaml", ".yml", ".toml":
+		return &ConfigFileDecl{Path: path, Pos: pos}, nil
+	default:
+		return nil, fmt.Errorf("%s: servo.ConfigFile(%q): the extension must be .json, .yaml, .yml, or .toml — it decides which decoder the generated code carries", pos, path)
+	}
 }
 
 // findValue is findByIface for Value declarations.

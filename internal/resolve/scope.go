@@ -58,9 +58,10 @@ type ScopeRoot struct {
 	Pos           token.Position
 }
 
-// NodeKind separates the four things a *Node can stand for. All but
+// NodeKind separates the five things a *Node can stand for. All but
 // NodeProvider exist only as entries in another node's Deps: they are
-// never constructed by a provider function and never appear in an Order.
+// never constructed by a provider function and never appear in an Order
+// (supplied values live in Resolved.Supplied, configs in Resolved.Configs).
 type NodeKind int
 
 const (
@@ -77,6 +78,14 @@ const (
 	// no provider, no dependencies and no lifecycle — servo did not make
 	// it, so servo does not stop it.
 	NodeSupplied
+	// NodeConfig is a //servo:config type: built by the generated
+	// ServoConfig loader in its own package, at the very top of New,
+	// before any provider runs. Like NodeSupplied it never appears in
+	// Resolved.Order — it lives in Resolved.Configs instead — and it has
+	// no lifecycle: a config is data, and anything with something to
+	// start or stop is a component that should receive the config, not
+	// be one.
+	NodeConfig
 )
 
 // scopeName renders a scope's stable identifier.

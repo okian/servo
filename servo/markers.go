@@ -66,6 +66,36 @@ func Value[T any]() Marker {
 	panic("servo: Value executed at runtime — run `servo generate`")
 }
 
+// ConfigFile declares the config file this injector's //servo:config types
+// may read, in addition to the environment:
+//
+//	servo.Build(
+//	    servo.Root[*api.Server](),
+//	    servo.ConfigFile("config.yaml"),
+//	)
+//
+// The path must be a string literal ending in .json, .yaml, .yml, or .toml
+// — it is read as syntax, and the extension decides which decoder the
+// generated code carries, so an env-only app never gains a yaml dependency
+// and a yaml app never gains a toml one. At runtime the path can be
+// overridden with the CONFIG_FILE environment variable (same extension
+// family only). A missing file at the declared default path is not an
+// error — every setting can still arrive from the environment — but a
+// path set explicitly via CONFIG_FILE must exist.
+//
+// Precedence per setting is default, then file, then environment: the
+// environment always wins, so an operator can override any file value in a
+// deployment without editing it.
+//
+// With no ConfigFile declared, //servo:config loaders read only the
+// environment, and their generated signature takes no arguments at all. A
+// module whose injectors share a config type must therefore agree: all of
+// them declare ConfigFile, or none — `servo generate` refuses the mix,
+// since one companion loader cannot have two signatures.
+func ConfigFile(path string) Marker {
+	panic("servo: ConfigFile executed at runtime — run `servo generate`")
+}
+
 // Include splices another function's markers into this Build call, so a
 // set of Bind/Override/Scoped declarations shared by several injectors is
 // written once:

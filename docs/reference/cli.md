@@ -55,7 +55,7 @@ a bare `servo` generates.
 
 **The default does not swallow `-h`.** A leading dash otherwise means "no command", which for a
 while made `servo -h` parse as `generate --help` and print `generate`'s four flags — the one place
-a new user looks for the other eleven commands. A help request is now recognised before the command
+a new user looks for the other twelve commands. A help request is now recognised before the command
 is extracted, so `-h`, `--help`, `-help` and [`help`](#help) all print the same list and exit 0.
 
 **Flags come before positional arguments.** Flag parsing stops at the first non-flag argument, so
@@ -631,6 +631,36 @@ because someone asking why their constructor wasn't picked up is never asking ab
 `unicode.ToLower`. `--json` prints `{name, pos}` objects, or `{name, pos, reason}` with
 `--rejected`.
 
+## `config`
+
+```
+servo config [--dir <path>] [--json]
+```
+
+Prints the operator's manual for one injector: every setting its
+[`//servo:config`](config.md) types read, resolved from the actual graph — so a config type
+nothing depends on doesn't clutter the table, exactly as it doesn't reach the binary:
+
+```
+$ servo config
+configuration for example.com/orders/cmd/orders
+file: config.yaml (override the path with CONFIG_FILE; environment always wins)
+
+  ENV                  FILE KEY            TYPE             MISSING?      FIELD
+  POSTGRES_DSN         postgres.dsn        string           required      dbConfig.dsn  postgres/postgres.go:14
+  POSTGRES_MAX_CONNS   postgres.max_conns  int32            default 10    dbConfig.maxConns  postgres/postgres.go:15
+  POSTGRES_PASSWORD    postgres.password   string (secret)  required      dbConfig.password  postgres/postgres.go:17
+```
+
+The `FILE KEY` column appears only when the spec declares a
+[`servo.ConfigFile`](spec.md#configfile); `MISSING?` is what happens when no source supplies the
+setting — `required`, `default <value>`, or `zero value`. Only the generator can print this table
+without running the binary: it is the same information the generated loader was built from.
+
+`--json` emits one object per setting: `{env, file_key, type, required, default, secret, field,
+pos}`. Rows are sorted by environment variable either way. Like `explain` and `why`, this is a
+question about one graph — pass `--dir` when the scope holds more than one injector.
+
 ## `init`
 
 ```
@@ -897,7 +927,7 @@ verify every generated file matches a fresh generation; writes nothing
 ```
 
 An unknown command prints the same list rather than only saying the name was wrong — being told
-`unknown command "geneate"` and nothing else is a dead end when the nearest list of the twelve names
+`unknown command "geneate"` and nothing else is a dead end when the nearest list of the thirteen names
 is a website away:
 
 ```

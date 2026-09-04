@@ -46,6 +46,9 @@ write, its own marker, its own generated code, and its own diagnostics.
 | How an interface parameter gets matched to an implementation | [Resolution rules](resolution.md#selection-precedence) |
 | What an error message means and how to fix it | [Diagnostics](diagnostics.md) |
 | How to get one instance per tenant, room, or region | [Scoped instances](scopes.md) |
+| How to load settings from env vars and a config file | [Generated configuration](config.md) |
+| What `//servo:config` and its tags mean | [Generated configuration](config.md#the-tag-grammar) |
+| Every setting my binary reads, as a table | [CLI commands](cli.md#config) |
 | Why a singleton can't depend on a scoped type | [Scoped instances](scopes.md#diagnostics) |
 | When a scoped instance is actually torn down | [Scoped instances](scopes.md#lifetimes) |
 | The seven lifecycle methods and when each is called | [Lifecycle](lifecycle.md#the-seven-capabilities) |

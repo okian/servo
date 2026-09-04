@@ -20,10 +20,13 @@ import (
 // carries. Empty leaves them absolute, which is what a Resolved built by
 // hand in a test gets.
 func ToGraph(resolved *resolve.Resolved, modRoot string) servo.Graph {
-	nodes := make([]servo.GraphNode, 0, len(resolved.Order)+len(resolved.Supplied))
-	// Supplied values first: they are the only nodes at level 0, and the
-	// app depends on them before it builds anything.
+	nodes := make([]servo.GraphNode, 0, len(resolved.Order)+len(resolved.Supplied)+len(resolved.Configs))
+	// Supplied values and configs first, at level 0: the app depends on
+	// them before it builds anything.
 	for _, n := range resolved.Supplied {
+		nodes = append(nodes, graphNode(n, 0, "", modRoot))
+	}
+	for _, n := range resolved.Configs {
 		nodes = append(nodes, graphNode(n, 0, "", modRoot))
 	}
 	for _, n := range resolved.Order {
@@ -52,11 +55,14 @@ func graphNode(n *resolve.Node, level int, scope, modRoot string) servo.GraphNod
 	}
 	binding := n.Binding
 	pos := ""
-	if n.Kind == resolve.NodeSupplied {
+	switch n.Kind {
+	case resolve.NodeSupplied:
 		binding = "supplied"
-		pos = relTo(modRoot, n.SuppliedPos.String())
-	} else {
-		pos = relTo(modRoot, n.Provider.Pos.String())
+		pos = RelTo(modRoot, n.SuppliedPos.String())
+	case resolve.NodeConfig:
+		pos = RelTo(modRoot, n.Config.Pos.String())
+	default:
+		pos = RelTo(modRoot, n.Provider.Pos.String())
 	}
 	return servo.GraphNode{
 		Type:         n.Key.String(),
@@ -69,11 +75,12 @@ func graphNode(n *resolve.Node, level int, scope, modRoot string) servo.GraphNod
 	}
 }
 
-// relTo trims modRoot off an absolute position, matching what emit's own
+// RelTo trims modRoot off an absolute position, matching what emit's own
 // posString writes into the generated file. Without it the two views of
 // one graph disagree on every position, and one of them embeds the
-// machine's filesystem layout.
-func relTo(modRoot, pos string) string {
+// machine's filesystem layout. Exported so every command that prints a
+// position relativizes it with the same rule rather than a private copy.
+func RelTo(modRoot, pos string) string {
 	if modRoot == "" {
 		return pos
 	}

@@ -1,13 +1,13 @@
-## One pipeline, seven views
+## One pipeline, eight views
 
-`generate`, `check`, `graph`, `explain`, `why`, `list` and `doctor` are not seven
-tools. They are seven windows onto the same five stages, which run in the same
-order every time — though only `generate` and `check` reach the last one.
+`generate`, `check`, `graph`, `explain`, `why`, `list`, `config` and `doctor` are
+not eight tools. They are eight windows onto the same five stages, which run in
+the same order every time — though only `generate` and `check` reach the last one.
 
 ```mermaid
 flowchart LR
     L["load<br/>one type-checked<br/>go/packages session"]
-    F["find spec<br/>roots, Bind, Override,<br/>Scoped, Value, Include"]
+    F["find spec<br/>roots, Bind, Override,<br/>Scoped, Value, Include,<br/>ConfigFile"]
     S["scan<br/>every constructor-shaped<br/>function, classified"]
     R["resolve<br/>closure → precedence →<br/>cycles → levels"]
     E["emit<br/>one deterministic,<br/>gofmt-clean file"]

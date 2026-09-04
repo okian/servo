@@ -35,8 +35,9 @@ func wire() {
 ```
 
 That is [`examples/basic`](https://github.com/okian/servo/blob/master/examples/basic/cmd/basic/spec.go)'s
-real spec file, using three of the six markers. The other three —
-[`Scoped`](#scoped), [`Value`](#value) and [`Include`](#include) — are on this page too.
+real spec file, using three of the seven markers. The other four —
+[`Scoped`](#scoped), [`Value`](#value), [`Include`](#include) and [`ConfigFile`](#configfile) —
+are on this page too.
 
 Note what is *not* in it: the `//go:generate` directive. That lives in an untagged
 `servo_generate.go` beside it, because `go generate` honours build constraints and would never
@@ -455,6 +456,35 @@ is deliberate and is the only ordering that makes a shared set worth having: a s
 cannot deviate from in one binary is a shared default you stop using. Two *local* declarations for
 the same interface are still the duplicate they always were —
 `servo.Bind[…, ...] declared twice`.
+
+## `ConfigFile`
+
+```go
+func ConfigFile(path string) Marker
+```
+
+```go
+servo.Build(
+	servo.Root[*api.Server](),
+	servo.ConfigFile("config.yaml"),
+)
+```
+
+Declares the config file this injector's [`//servo:config`](config.md) types read alongside the
+environment. At most one per `Build`; the path must be a **string literal** ending in `.json`,
+`.yaml`, `.yml` or `.toml` — like every marker argument it is read as syntax, and the extension
+decides which decoder the generated code carries, so an env-only or JSON app never gains a yaml
+dependency.
+
+Precedence per setting is default, then file, then environment — the environment always wins. At
+runtime the path can be overridden with the `CONFIG_FILE` environment variable (same extension
+family only); the declared path being absent is fine, an explicitly set one must exist. Declaring
+a `ConfigFile` no config in the graph would read is a diagnostic, the same judgement an unused
+`Value` gets.
+
+The full contract — the directive, the tag grammar, the generated loader, and the rule that every
+injector sharing a config must agree about declaring a file — is on
+[Generated configuration](config.md).
 
 ## The `go:generate` directive
 

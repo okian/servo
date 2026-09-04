@@ -5,6 +5,14 @@ address, a secret key, how long a token should live. This chapter builds the mec
 those values, and it makes one decision that shapes every chapter after it: **each package declares
 the settings it needs, and no package declares settings for anybody else.**
 
+> Servo can now generate this entire chapter's machinery: mark a struct with
+> [`//servo:config`](../reference/config.md) and the parsing, the defaults, and the
+> missing-variable errors are emitted as plain Go, with no reflection library and no `NewConfig`
+> provider to write. The chapter still builds it by hand, deliberately — the *design* it teaches
+> (each package owns its settings, namespaced by prefix, filled from a source you can fake) is
+> exactly the design the directive generates, and having built it once you'll know precisely what
+> the generated version is doing for you.
+
 That's worth being deliberate about, because the obvious design is the other one.
 
 ## The obvious design, and what's wrong with it

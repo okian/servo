@@ -6,6 +6,7 @@ package resolve
 import (
 	"go/token"
 	"go/types"
+	"sort"
 
 	"golang.org/x/tools/go/packages"
 
@@ -48,6 +49,10 @@ type Node struct {
 	// which have no Provider to carry a result type or a position.
 	SuppliedType types.Type
 	SuppliedPos  token.Position
+
+	// Config is set only on NodeConfig nodes: the //servo:config
+	// declaration whose generated loader builds this value.
+	Config *graph.ConfigDecl
 }
 
 // Scoped reports whether this node is one instance per key rather than one
@@ -66,6 +71,11 @@ type Resolved struct {
 	// Order stays correct, and an app declaring none emits a
 	// byte-identical file.
 	Supplied []*Node
+	// Configs is every //servo:config type the graph actually uses,
+	// ordered by declaration position. Like Supplied they stay out of
+	// Order: their loaders run at the top of New, before any provider,
+	// and an app using none emits a byte-identical file.
+	Configs []*Node
 }
 
 // Input is everything Resolve needs: the spec's roots/binds/scopes, the
@@ -80,6 +90,10 @@ type Input struct {
 	Caps       *graph.Capabilities
 	Scope      map[string]bool
 	ExtraBinds []load.BindDecl
+	// Configs is every //servo:config declaration in the main module. A
+	// requested type matching one resolves to its generated loader; the
+	// ones nothing requests are simply not part of this graph.
+	Configs []*graph.ConfigDecl
 	// Fset and Pkgs are used only by scope detection: positions for a
 	// ScopeKey method, and its declaration's syntax for the blank-receiver
 	// check. Both are optional — a graph with no Scoped declarations never
@@ -121,6 +135,8 @@ type resolver struct {
 	suppliedByKey  map[graph.Key]*Node
 	suppliedUsed   map[graph.Key]bool
 	declaredScope  map[graph.Key]bool // scoped types with a servo.Scoped declaration
+	configByKey    map[graph.Key]*graph.ConfigDecl
+	configNodes    []*Node
 	activeScope    *Scope
 }
 
@@ -158,6 +174,7 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		suppliedByKey: make(map[graph.Key]*Node),
 		suppliedUsed:  make(map[graph.Key]bool),
 		declaredScope: make(map[graph.Key]bool),
+		configByKey:   make(map[graph.Key]*graph.ConfigDecl),
 	}
 	for _, c := range in.Candidates {
 		r.byResult[c.Result] = append(r.byResult[c.Result], c)
@@ -179,6 +196,18 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	// singleton is.
 	for _, v := range in.Spec.Values {
 		r.suppliedByKey[v.Key] = &Node{Key: v.Key, Kind: NodeSupplied, Level: 0, SuppliedType: v.Type, SuppliedPos: v.Pos}
+	}
+	for _, d := range in.Configs {
+		r.configByKey[d.Key] = d
+		// A hand-written constructor for a //servo:config type would never
+		// be selected — the directive short-circuits ahead of provider
+		// selection, exactly as a declared scope accessor does — so left
+		// alone it would sit in the code looking authoritative while the
+		// generated loader quietly wins. Said now, at the declaration,
+		// rather than discovered in production.
+		for _, c := range r.byResult[d.Key] {
+			r.diags = append(r.diags, r.configProviderDiagnostic(d, c))
+		}
 	}
 
 	r.buildScopes(in.Spec.Scopes)
@@ -233,6 +262,7 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	r.checkScopeEdges(roots)
 	r.checkAccessorInterfaces()
 	r.checkSuppliedValues(in.Spec.Values)
+	r.checkConfigs(in.Spec)
 	if len(r.diags) > 0 {
 		return nil, r.diags
 	}
@@ -241,7 +271,59 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	for _, v := range in.Spec.Values {
 		supplied = append(supplied, r.suppliedByKey[v.Key])
 	}
-	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, Supplied: supplied}, nil
+	// Declaration-position order, not discovery order: which root's DFS
+	// reached a config first is an accident of the spec file's line order,
+	// and the generated preamble should not reshuffle when roots do.
+	sort.Slice(r.configNodes, func(i, j int) bool {
+		return graph.ComparePos(r.configNodes[i].Config.Pos, r.configNodes[j].Config.Pos) < 0
+	})
+	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, Supplied: supplied, Configs: r.configNodes}, nil
+}
+
+// checkConfigs runs the cross-config checks that only make sense once the
+// set of *used* configs is known: two used configs resolving a setting to
+// the same environment variable (or, with a config file declared, the same
+// section key), and a servo.ConfigFile declaration no config in the graph
+// would ever read.
+func (r *resolver) checkConfigs(spec *load.Spec) {
+	type claim struct {
+		decl  *graph.ConfigDecl
+		field graph.ConfigField
+	}
+	envClaims := map[string]claim{}
+	fileClaims := map[string]claim{}
+	for _, n := range sortedConfigNodes(r.configNodes) {
+		for _, f := range n.Config.Fields {
+			if prior, dup := envClaims[f.EnvName]; dup {
+				r.diags = append(r.diags, r.configCollisionDiagnostic("environment variable", f.EnvName, prior.decl, prior.field, n.Config, f))
+			} else {
+				envClaims[f.EnvName] = claim{n.Config, f}
+			}
+			if spec.ConfigFile == nil {
+				continue
+			}
+			fileKey := n.Config.Section + "." + f.FileKey
+			if prior, dup := fileClaims[fileKey]; dup {
+				r.diags = append(r.diags, r.configCollisionDiagnostic("config file key", fileKey, prior.decl, prior.field, n.Config, f))
+			} else {
+				fileClaims[fileKey] = claim{n.Config, f}
+			}
+		}
+	}
+	if spec.ConfigFile != nil && len(r.configNodes) == 0 {
+		r.diags = append(r.diags, r.unusedConfigFileDiagnostic(spec.ConfigFile))
+	}
+}
+
+// sortedConfigNodes orders by declaration position without mutating the
+// resolver's own slice, so collision reporting is deterministic even when
+// it runs before the final sort in Resolve.
+func sortedConfigNodes(nodes []*Node) []*Node {
+	sorted := append([]*Node(nil), nodes...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return graph.ComparePos(sorted[i].Config.Pos, sorted[j].Config.Pos) < 0
+	})
+	return sorted
 }
 
 // checkSuppliedValues reports a servo.Value nothing depends on.
@@ -308,6 +390,25 @@ func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry,
 	}
 	if r.failedKey[k] {
 		return nil, false
+	}
+
+	// A //servo:config type resolves to its generated loader, ahead of
+	// provider selection for the same reason a declared accessor does: the
+	// directive said so. It is loaded at the top of New and lives as a
+	// local there, not as an App field — which is what lets the type stay
+	// unexported — so a scope's per-key constructions, which read borrowed
+	// singletons off the App, cannot borrow one.
+	if decl, ok := r.configByKey[k]; ok {
+		if r.activeScope != nil {
+			r.diags = append(r.diags, r.configInScopeDiagnostic(decl, chain, rootPos))
+			r.failedKey[k] = true
+			return nil, false
+		}
+		node := &Node{Key: k, Kind: NodeConfig, Level: 0, Config: decl, Binding: "config directive"}
+		r.nodes[k] = node
+		r.resolvedKey[k] = node
+		r.configNodes = append(r.configNodes, node)
+		return node, true
 	}
 
 	sel := r.selectProvider(k, kType)

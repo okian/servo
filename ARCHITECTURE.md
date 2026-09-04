@@ -126,6 +126,39 @@ A declared value nothing in the graph depends on never reaches emission: `resolv
 `suppliedUsed` as it hands one out, and `checkSuppliedValues` turns the remainder into diagnostics.
 Unused, it would be a field every caller fills in and the app never reads.
 
+## Generated configuration
+
+A `//servo:config` type enters the pipeline in `loadModule` (`graph.ScanConfigs`, main module
+only, strict — a malformed directive is a module-wide error like a build error, because the
+author wrote it and servo never silently half-honors a directive) and resolves as a fifth
+`NodeKind`, `NodeConfig`, riding the `NodeSupplied` trick exactly: never in `Resolved.Order`,
+carried in `Resolved.Configs`, so every pre-existing loop over `Order` stays correct and a graph
+using no config emits a byte-identical file. It short-circuits ahead of `selectProvider` the way
+a declared accessor does — which is also why a hand-written constructor for a config type is a
+diagnostic rather than a silent loser — while a `servo.Value` for the same type still wins, per
+precedence rule 1.
+
+Emission is split in two. The loader (`internal/emit/config.go`) is a *companion file*,
+`servo_config_gen.go`, written into the config type's own package — the placement is the feature:
+it is what lets the type and its fields stay unexported, which no reflection-based env library
+can do. It is gated `!servoinject` like every generated file, so generation never sees the
+previous run's output, and its one export (`ServoConfig`) exists because the injector is another
+package and Go has no narrower door. The injector side (`internal/emit/configfile.go`) loads each
+config at the top of `New` as a **local, never an `App` field** — a field of an unexported
+foreign type would not compile — which is also why a scoped constructor depending on a config is
+a resolve-time diagnostic: scoped constructions read borrowed singletons off the `App`.
+
+`servo.ConfigFile` makes the loader's signature take the decoded file map, and the signature is
+the reason for the one cross-injector rule in the feature: a shared companion is one file with
+one signature, so every injector using a config must declare a file or none.
+`runGenerate`/`runCheck` resolve every injector before writing anything and refuse the mix
+(`checkConfigAgreement`), for the same reason the variant-overlap check runs before any write.
+The declared extension picks the decoder the generated code imports — in the *user's* module, so
+servo's own `go.mod` carries no yaml or toml dependency, and an env-only or JSON app stays
+stdlib-pure. The `conf` package exists because the three decoders disagree about numbers (JSON
+`float64`, yaml.v3 `int`, TOML `int64`); that normalization is written once, stdlib-only, with
+errors that name types and never values — a config file holds secrets.
+
 ## Scopes
 
 A scope is the one part of the graph that isn't a singleton, and it threads through every stage

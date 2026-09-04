@@ -2,6 +2,7 @@ package emit
 
 import (
 	"fmt"
+	"go/token"
 	"strings"
 
 	"github.com/okian/servo/v3/internal/resolve"
@@ -18,6 +19,11 @@ func (e *emitter) graphFunc() string {
 	// builds anything, and a graph view that omitted them would show
 	// consumers with a dependency on nothing.
 	for _, n := range e.resolved.Supplied {
+		e.writeGraphNode(&b, n, 0, "")
+	}
+	// Configs next, also level 0: loaded by New before anything is
+	// constructed, so every consumer sits above them.
+	for _, n := range e.resolved.Configs {
 		e.writeGraphNode(&b, n, 0, "")
 	}
 	for _, n := range e.resolved.Order {
@@ -39,9 +45,16 @@ func (e *emitter) writeGraphNode(b *strings.Builder, n *resolve.Node, level int,
 	for i, d := range n.Deps {
 		deps[i] = d.Key.String()
 	}
-	// Read before the provider is touched: a supplied value has none.
-	binding, pos := "supplied", n.SuppliedPos
-	if n.Kind != resolve.NodeSupplied {
+	// Read before the provider is touched: a supplied value and a config
+	// have none.
+	var binding string
+	var pos token.Position
+	switch n.Kind {
+	case resolve.NodeSupplied:
+		binding, pos = "supplied", n.SuppliedPos
+	case resolve.NodeConfig:
+		binding, pos = n.Binding, n.Config.Pos
+	default:
 		binding, pos = n.Binding, n.Provider.Pos
 	}
 	fmt.Fprintf(b, "\t\t{Type: %q, Level: %d, Deps: %s, Capabilities: %s, Binding: %q, Pos: %q",

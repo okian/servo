@@ -204,6 +204,21 @@ Full explanations on [Spec file and markers](spec.md#errors-from-this-stage). In
 | ``servo.Include names …, which is declared in a file without a `//go:build servoinject` constraint`` | Tag the shared marker set's file, exactly like a spec file |
 | ``X must be exactly `return []servo.Marker{ ... }` `` | The included body is read as syntax, so it can't be a variable, a conditional, or an `append` |
 | `servo.Include cycle — X includes itself, through:` | Two shared sets include each other; the path that closed the loop is printed |
+| `servo.ConfigFile takes exactly one argument, a string literal path` | `ConfigFile("config.yaml")` |
+| `servo.ConfigFile's argument must be a string literal` | The path is read as syntax; a variable or a call can't be |
+| `servo.ConfigFile(…): the extension must be .json, .yaml, .yml, or .toml` | It picks the decoder the generated code carries |
+| `servo.ConfigFile(...) declared twice` | One file per injector |
+
+## Configuration
+
+The [`//servo:config`](config.md) directive adds two families of diagnostics. Scanning ones —
+malformed directive or tag, unsupported field type, a bad `default=`, two directives in one
+package — are module-wide errors reported at the declaration, whether or not any graph uses the
+type: the author wrote the directive, and servo never silently half-honors one. Resolution ones —
+a hand-written constructor for a config type, two used configs claiming one environment variable
+or file key, a scoped constructor depending on a config, a `ConfigFile` nothing reads — are
+per-graph. The full table, with causes and fixes, is on
+[Generated configuration](config.md#diagnostics).
 
 ## Loading
 

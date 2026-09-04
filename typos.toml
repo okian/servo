@@ -13,9 +13,14 @@
 # `ANDed` (CHANGELOG.md) is the ordinary way to write "combined with a
 # logical AND", which is what `go/build` does to several `// +build` lines.
 # The checker reads the trailing "Ded" as a misspelling of "Dead".
+# `confg` is deliberate everywhere it appears: `//servo:confg` is the
+# canonical example of the typo'd directive servovet exists to catch — a
+# misspelled comment directive compiles and silently does nothing — so the
+# docs, the analyzer's tests, and the README all write it on purpose.
 [default.extend-words]
 Healther = "Healther"
 unparseable = "unparseable"
+confg = "confg"
 
 # extend-identifiers, not extend-words: the checker splits `ANDed` on the
 # case boundary and reports the trailing `Ded`, so the whole identifier has

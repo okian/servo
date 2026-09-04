@@ -172,6 +172,13 @@ you say "this comes from the caller", which is only meaningful if it wins. (The 
 resolves a scope's key type and a scope's accessor interface, for the same reason: both are
 declared, not searched for. See [Scoped instances](scopes.md).)
 
+**0½. A `//servo:config` type.** A key carrying the
+[config directive](config.md) resolves to its generated `ServoConfig` loader, ahead of every
+provider — which is also why a hand-written constructor for such a type is a diagnostic rather
+than a silent loser. Being below `Value`, a `servo.Value` for a config type still wins: "the
+caller supplies this" outranks "the generated loader builds this", and the loader is then not
+consulted and not generated for that graph.
+
 **1. An explicit `Bind` or `Override`.** If the key has one, the request is *redirected* to the
 named concrete type, and resolution continues from step 2 looking for that type instead.
 `Override` beats `Bind` for the same key, and only applies when generating the test variant.

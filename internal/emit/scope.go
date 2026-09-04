@@ -194,12 +194,17 @@ func baseNamesFor(nodes []*resolve.Node) map[*resolve.Node]string {
 
 // nodeResultType is the type a node stands for, read from wherever that
 // node kind records it: a provider's result for an ordinary node, the
-// declared type for a servo.Value, which has no provider at all.
+// declared type for a servo.Value or a //servo:config, neither of which
+// has a provider at all.
 func nodeResultType(n *resolve.Node) types.Type {
-	if n.Kind == resolve.NodeSupplied {
+	switch n.Kind {
+	case resolve.NodeSupplied:
 		return n.SuppliedType
+	case resolve.NodeConfig:
+		return n.Config.Type
+	default:
+		return n.Provider.ResultType
 	}
-	return n.Provider.ResultType
 }
 
 // allocateEntryField names one scope member's field on the entry, and

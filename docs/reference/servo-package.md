@@ -8,8 +8,8 @@ import "github.com/okian/servo/v3/servo"
 `Report` in their own code.
 
 This package is two unrelated halves. The **markers** (`Build`, `Root`, `Bind`, `Override`,
-`Scoped`, `Value`, `Include`, and the two scope options) are read as syntax by `servo generate` and
-panic if they ever execute. The **runtime** — around 430 lines — is what generated code actually
+`Scoped`, `Value`, `Include`, `ConfigFile`, and the two scope options) are read as syntax by
+`servo generate` and panic if they ever execute. The **runtime** — around 430 lines — is what generated code actually
 calls at run time. It imports nothing outside the standard library, and neither it nor any generated
 output imports `reflect`.
 
@@ -27,6 +27,7 @@ having the method.
 | [`Scoped`](#scoped) | func | Declares a keyed, refcounted instance (marker) |
 | [`Value`](#value) | func | Declares a type the caller supplies (marker) |
 | [`Include`](#include) | func | Splices another function's marker list in (marker) |
+| [`ConfigFile`](#configfile) | func | Declares the config file `//servo:config` types read (marker) |
 | [`Linger`](#linger-and-max), [`Max`](#linger-and-max) | funcs | Scope policy (markers) |
 | [`Marker`](#marker) | type | The markers' opaque return type |
 | [`ScopeOption`](#scopeoption) | type | `Linger`/`Max`'s opaque return type |
@@ -130,6 +131,19 @@ exactly `return []servo.Marker{ …marker calls… }` and why the file it lives 
 It may name a function in another package, includes may nest, a cycle is a diagnostic, and a
 `Bind`/`Override` written locally in the spec file supersedes an included one for the same
 interface. Full contract: [Spec file and markers](spec.md#include).
+
+### `ConfigFile`
+
+```go
+func ConfigFile(path string) Marker
+```
+
+Declares the config file this injector's [`//servo:config`](config.md) types read alongside the
+environment. The path must be a string literal ending in `.json`, `.yaml`, `.yml`, or `.toml` —
+the extension decides which decoder the generated code carries. Precedence per setting is default,
+then file, then environment; `CONFIG_FILE` overrides the path at runtime. At most one per `Build`,
+and one no config in the graph would read is a diagnostic. Full contract:
+[Generated configuration](config.md) and [Spec file and markers](spec.md#configfile).
 
 ### `Linger` and `Max`
 

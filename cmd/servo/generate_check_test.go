@@ -335,7 +335,7 @@ func TestCheckOneFailsWhenGeneratedFileIsADirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = checkOne(p)
+	err = checkPipeline(p)
 	if err == nil || strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("got err=%v, want a real read error (not 'does not exist') since the path is a directory", err)
 	}
@@ -353,7 +353,7 @@ func TestCheckOneFailsWhenEmitFails(t *testing.T) {
 	spec := &load.Spec{InjectorPkg: &packages.Package{Name: "type", PkgPath: "example.com/badpkgname"}}
 	p := &pipeline{spec: spec, caps: graph.EmptyCapabilities(), scope: map[string]bool{}}
 
-	err := checkOne(p)
+	err := checkPipeline(p)
 	if err == nil || !strings.Contains(err.Error(), "failed to format") {
 		t.Fatalf("got err=%v, want a 'failed to format' error", err)
 	}
@@ -363,7 +363,11 @@ func TestGenerateOneFailsWhenEmitFails(t *testing.T) {
 	spec := &load.Spec{InjectorPkg: &packages.Package{Name: "type", PkgPath: "example.com/badpkgname2"}}
 	p := &pipeline{spec: spec, caps: graph.EmptyCapabilities(), scope: map[string]bool{}}
 
-	err := generateOne(p)
+	resolved, err := p.resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	err = generateOne(p, resolved)
 	if err == nil || !strings.Contains(err.Error(), "failed to format") {
 		t.Fatalf("got err=%v, want a 'failed to format' error", err)
 	}
@@ -384,7 +388,11 @@ func TestGenerateOneFailsWhenOutputDirIsReadOnly(t *testing.T) {
 	}
 	defer func() { _ = os.Chmod(specDir, 0o755) }() // best-effort restore so t.TempDir cleanup can remove it
 
-	if err := generateOne(p); err == nil {
+	resolved, err := p.resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if err := generateOne(p, resolved); err == nil {
 		t.Fatal("expected writeFileAtomic to fail against a read-only directory")
 	}
 }

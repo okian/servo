@@ -120,6 +120,68 @@ func sortedCandidates(cands []*graph.Provider) []*graph.Provider {
 	return sorted
 }
 
+// configProviderDiagnostic reports a hand-written constructor for a type
+// that carries a //servo:config directive. The directive resolves ahead of
+// provider selection, so the constructor would never be chosen — the same
+// silent-loser problem a provider for a declared scope accessor has, and
+// reported for the same reason.
+func (r *resolver) configProviderDiagnostic(d *graph.ConfigDecl, c *graph.Provider) Diagnostic {
+	var b strings.Builder
+	fmt.Fprintf(&b, "servo: %s constructs %s, which carries a //servo:%s directive\n", c.Name, d.Key.String(), graph.ConfigDirective)
+	b.WriteString("\n  The directive generates a loader for this type (ServoConfig, in its own\n")
+	b.WriteString("  package), and resolution always prefers it — this constructor would sit in\n")
+	b.WriteString("  the code looking authoritative and never run. Remove one:\n")
+	fmt.Fprintf(&b, "    - delete the constructor      %s\n", c.Pos)
+	fmt.Fprintf(&b, "    - or drop the directive       %s\n", d.Pos)
+	return Diagnostic{Pos: c.Pos, Message: b.String()}
+}
+
+// configInScopeDiagnostic reports a scoped constructor depending on a
+// //servo:config type. Config values are loaded at the top of New and live
+// as locals there — never as App fields, which is what lets the type stay
+// unexported — while a scope's per-key constructions read every borrowed
+// singleton off the App. The two are incompatible, so it is refused with
+// the workaround named rather than emitted as code that cannot compile.
+func (r *resolver) configInScopeDiagnostic(d *graph.ConfigDecl, chain []chainEntry, rootPos token.Position) Diagnostic {
+	var b strings.Builder
+	fmt.Fprintf(&b, "servo: a scoped constructor depends on config type %s\n", d.Key.String())
+	b.WriteString(renderChain(chain, rootPos))
+	b.WriteString("\n  A //servo:config value is loaded by New and held as a local, not an App\n")
+	b.WriteString("  field, so a scope's per-key constructions cannot borrow it. Give the scoped\n")
+	b.WriteString("  component a singleton of your own that carries the values it needs:\n")
+	fmt.Fprintf(&b, "    func NewSettings(cfg %s) *Settings\n", d.TypeName)
+	pos := rootPos
+	if len(chain) > 0 {
+		pos = chain[len(chain)-1].Pos
+	}
+	return Diagnostic{Pos: pos, Message: b.String()}
+}
+
+// configCollisionDiagnostic reports two used configs resolving a setting
+// to the same fully-qualified name. Nothing would fail at runtime — both
+// fields would quietly read the same value — which is exactly why it has
+// to fail here instead.
+func (r *resolver) configCollisionDiagnostic(what, name string, firstDecl *graph.ConfigDecl, first graph.ConfigField, secondDecl *graph.ConfigDecl, second graph.ConfigField) Diagnostic {
+	var b strings.Builder
+	fmt.Fprintf(&b, "servo: two config fields resolve to the same %s %s\n", what, name)
+	fmt.Fprintf(&b, "    %s.%s      %s\n", firstDecl.TypeName, first.FieldName, first.Pos)
+	fmt.Fprintf(&b, "    %s.%s      %s\n", secondDecl.TypeName, second.FieldName, second.Pos)
+	fmt.Fprintf(&b, "\n  Both would silently read one value. Change a tag name, or give one type a\n  different prefix in its //servo:%s directive.\n", graph.ConfigDirective)
+	return Diagnostic{Pos: second.Pos, Message: b.String()}
+}
+
+// unusedConfigFileDiagnostic reports a servo.ConfigFile no config reads —
+// the same judgement an unused servo.Value gets: an unresolvable
+// declaration is a build failure, not a warning.
+func (r *resolver) unusedConfigFileDiagnostic(decl *load.ConfigFileDecl) Diagnostic {
+	var b strings.Builder
+	fmt.Fprintf(&b, "servo: servo.ConfigFile(%q) is declared, but no //servo:%s type is in this graph\n", decl.Path, graph.ConfigDirective)
+	b.WriteString("\n  The file would be read at startup and nothing would look inside it.\n")
+	b.WriteString("  Either mark a config struct with the directive and take it as a constructor\n")
+	b.WriteString("  parameter somewhere the roots reach, or delete the ConfigFile declaration.\n")
+	return Diagnostic{Pos: decl.Pos, Message: b.String()}
+}
+
 // unusedValueDiagnostic reports a servo.Value nothing in the graph asks
 // for. Every declared value becomes a field on the generated Values
 // struct, so an unused one is a parameter every caller keeps supplying and

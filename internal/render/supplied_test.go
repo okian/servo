@@ -248,8 +248,8 @@ func TestRelToMatchesTheGeneratedFilesPositions(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := relTo(c.modRoot, c.pos); got != c.want {
-				t.Errorf("relTo(%q, %q) = %q, want %q", c.modRoot, c.pos, got, c.want)
+			if got := RelTo(c.modRoot, c.pos); got != c.want {
+				t.Errorf("RelTo(%q, %q) = %q, want %q", c.modRoot, c.pos, got, c.want)
 			}
 		})
 	}

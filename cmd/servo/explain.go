@@ -66,11 +66,17 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 
 	// A servo.Value has no provider to name — the caller is the provider —
 	// so the fields that would describe one carry the declaration instead.
+	// A //servo:config's provider is its generated loader.
 	provider, pos, binding := "", "", node.Binding
-	if node.Kind == resolve.NodeSupplied {
+	switch node.Kind {
+	case resolve.NodeSupplied:
 		provider, pos, binding = "the caller, via NewWith", node.SuppliedPos.String(), "supplied"
 		lifetime = "supplied — handed to NewWith once, held for the life of the process"
-	} else {
+	case resolve.NodeConfig:
+		provider = fmt.Sprintf("%s.ServoConfig (generated, env prefix %s)", node.Config.PkgName, node.Config.Prefix)
+		pos = node.Config.Pos.String()
+		lifetime = "config — loaded by New before construction, held for the life of the process"
+	default:
 		provider, pos = node.Provider.Name, node.Provider.Pos.String()
 	}
 

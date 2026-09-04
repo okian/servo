@@ -11,11 +11,14 @@ and reviewable like any other file. What follows is exactly what it contains.
 
 | File | When | Contains |
 | --- | --- | --- |
-| `servo_gen.go` | Always | `App`, `New`, the full method set, one registry per declared scope, and `Values`/`NewWith` when the spec declares a [`servo.Value`](spec.md#value) |
+| `servo_gen.go` | Always | `App`, `New`, the full method set, one registry per declared scope, `Values`/`NewWith` when the spec declares a [`servo.Value`](spec.md#value), and the config-file reader when it declares a [`servo.ConfigFile`](spec.md#configfile) |
 | `servo_gen_test.go` | Only when the spec declares at least one `servo.Override` | `TestApp`, `NewTestApp`, the same method set, and `TestValues`/`NewTestAppWith` under the same condition |
+| `servo_config_gen.go` | One per [`//servo:config`](config.md) type the graph uses | The `ServoConfig` loader — written beside the **config type**, not the spec, which is what lets the type and its fields stay unexported |
 
-Both land in the **same directory as the spec file**, in that directory's package — which is why
-the spec file belongs next to the `main.go` that will call `New`.
+The first two land in the **same directory as the spec file**, in that directory's package — which
+is why the spec file belongs next to the `main.go` that will call `New`. Inside `New`, a config
+value is a local, deliberately never an `App` field (the type is usually unexported to its own
+package); see [Generated configuration](config.md#what-gets-generated).
 
 `servo_gen.go` opens with `//go:build !servoinject`, the mirror image of the spec file's constraint,
 so the two are never in one build. `servo_gen_test.go` is a `_test.go` file, so the test-only

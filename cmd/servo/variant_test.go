@@ -755,7 +755,11 @@ func TestGenerateOneRefusesAnOverlapItsCallerAlreadyChecked(t *testing.T) {
 		t.Fatalf("got %d pipelines, want exactly 1", len(pipelines))
 	}
 
-	err = generateOne(pipelines[0])
+	resolved, err := pipelines[0].resolve(nil)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	err = generateOne(pipelines[0], resolved)
 	if err == nil || !strings.Contains(err.Error(), "would both compile") {
 		t.Fatalf("generateOne = %v, want the overlap refusal", err)
 	}

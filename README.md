@@ -251,6 +251,43 @@ diagnostic, not an unused struct field, and a graph declaring no value at all em
 file it always did. Full contract:
 [`Value`](https://okian.github.io/servo/reference/spec.html#value).
 
+## Configuration from env and files
+
+Most components need a handful of settings, and most codebases answer that with a runtime
+reflection library and a hand-written `NewConfig` provider per package. Servo generates that code
+instead. Mark the struct, tag the fields, take it as a constructor parameter:
+
+```go
+//servo:config prefix=POSTGRES
+type dbConfig struct {
+	dsn      string        `config:"dsn,required"`         // POSTGRES_DSN
+	maxConns int32         `config:"max_conns,default=10"` // POSTGRES_MAX_CONNS
+	timeout  time.Duration `config:"timeout,default=30s"`  // POSTGRES_TIMEOUT
+	password string        `config:"password,required,secret"`
+}
+
+func New(cfg dbConfig) (*Store, error) { ... }
+```
+
+`servo generate` writes `servo_config_gen.go` beside the type: plain, steppable parsing that
+applies defaults, reads the environment, and reports every missing required variable in one
+startup error. Because the loader is generated *into the config's own package*, the type and every
+field stay unexported — the thing no reflection library can do at all — and the tags themselves
+are validated at generate time, so a misspelled option or a bad `default=` fails `servo generate`
+rather than a deploy. Fields tagged `secret` never have their values echoed by any generated error
+path. The tag grammar is deliberately four words — name, `required`, `default=`, `secret` — because
+anything smarter (ranges, cross-field rules) already has a home: the constructor receiving the
+struct returns an error at exactly the right moment.
+
+Declare `servo.ConfigFile("config.yaml")` in the spec and the same tags also read a file section
+(`postgres.max_conns`), with precedence default → file → environment, so an operator can override
+any file value without editing it. One `config:` tag drives every source; the path's extension
+(`.json`, `.yaml`/`.yml`, `.toml`) decides which decoder the generated code carries, so an
+env-only or JSON app stays stdlib-pure. And since the generator knows every setting the binary
+reads, `servo config` prints the operator's manual — env name, file key, type, default, secret —
+without running anything. Full contract:
+[Generated configuration](https://okian.github.io/servo/reference/config.html).
+
 ## Wiring shared between several injectors
 
 A monorepo's `cmd/api`, `cmd/worker` and `cmd/migrator` each declare their own graph, and below the
@@ -545,6 +582,7 @@ isolation.
 | `servo explain <type> [--dir]` | Which provider was selected and why, its dependencies, dependents, level, and capabilities. |
 | `servo why <type> [--dir]` | Shortest path from a root to that node. |
 | `servo list [--rejected] [--all] [--dir]` | The candidate index, or every excluded function and the rule that excluded it. Defaults to the main module; `--all` includes stdlib/third-party. |
+| `servo config [--dir]` | Every setting one injector's `//servo:config` types read — env name, file key, type, default, secret — straight from the resolved graph, without running the binary. |
 | `servo init [--dir]` | Scaffold the spec file with the correct build tag, plus an untagged `servo_generate.go` holding the `go:generate` directive — and print the one-time `go get -tool` step. |
 | `servo doctor [--dir]` | Diagnose setup problems (missing build tag, stale/absent generated file) before `go generate` ever runs. |
 | `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v3 skeleton plus a report flagging duplicate order values. See [`examples/migrate`](./examples/migrate) for a worked example. |
@@ -572,10 +610,12 @@ tags and writes a correspondingly constrained generated file, so one injector ca
 a `--tags=prod` variant side by side. [`examples/variants`](./examples/variants) is exactly that —
 one injector, two generated files, both built and tested in CI — and
 [Build variants](./docs/reference/cli.md#build-variants) is the contract. `servovet` is a
-`go/analysis` analyzer for the two mistakes the compiler can't catch: a marker call — `Build`,
-`Root`, `Bind`, `Override`, `Scoped`, `Value`, `Include`, `Linger`, `Max` — in a file missing the
-`servoinject` build tag, and a `ScopeKey` method whose body can reach its own receiver (servo calls
-it on a typed nil). Both are caught in the editor, not at runtime. The analyzer is an exported
+`go/analysis` analyzer for the mistakes the compiler can't catch: a marker call — `Build`,
+`Root`, `Bind`, `Override`, `Scoped`, `Value`, `Include`, `ConfigFile`, `Linger`, `Max` — in a
+file missing the `servoinject` build tag, a `ScopeKey` method whose body can reach its own
+receiver (servo calls it on a typed nil), and a broken `//servo:` directive — a typo'd
+`//servo:confg` is otherwise just a comment that compiles, generates, and silently loads nothing.
+All are caught in the editor, not at runtime. The analyzer is an exported
 `servovet.Analyzer`, so golangci-lint's module plugin system, a multichecker, or `analysistest` can
 import it; `cmd/servo-vet` is the `singlechecker` binary wrapping it.
 
@@ -770,8 +810,8 @@ not for gomock's stricter verification style.
 ## Layout
 
 ```
-cmd/servo/            CLI: generate, check, graph, explain, why, list, init, doctor, migrate,
-                      new, version, help
+cmd/servo/            CLI: generate, check, graph, explain, why, list, config, init, doctor,
+                      migrate, new, version, help
 cmd/servo-vet/        singlechecker binary wrapping servovet.Analyzer
 internal/load/        go/packages → typed syntax, spec-file discovery, Include splicing
 internal/graph/       Key, Provider, candidate index, capability detection
@@ -779,6 +819,7 @@ internal/resolve/     roots → closure → order, levels, diagnostics
 internal/emit/        source emission, import manager, name allocator
 internal/render/      text, JSON, DOT, Mermaid graph renderers
 servo/                markers + ~430-line runtime
+conf/                 stdlib-only coercions behind generated config-file reading
 servotest/            NoLeaks, NoNewLeaks, Recorder, AssertStopOrder, Timeout, Linger,
                       PanicReporter
 servovet/             the go/analysis Analyzer, importable by golangci-lint and analysistest

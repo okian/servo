@@ -23,6 +23,70 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
+## [Unreleased]
+
+**Why MINOR.** This release adds a comment directive, a marker, a package, a subcommand, and a
+generated companion file; nothing it changes is breaking under the rules above. A graph declaring
+no `//servo:config` emits a byte-identical file.
+
+### Added
+- **`//servo:config`: generated configuration.** Mark a struct with
+  `//servo:config prefix=POSTGRES`, tag its fields
+  (`config:"max_conns,default=10"` — the grammar is four words: name, `required`,
+  `default=`, `secret`), take it as a constructor parameter, and `servo generate`
+  writes the loader: `servo_config_gen.go` beside the type, plain steppable Go that
+  applies defaults, reads the environment (`POSTGRES_MAX_CONNS`), and reports every
+  missing required variable in one startup error that names each one. Tags and
+  defaults are validated at generate time — a misspelled option or a `default=` that
+  doesn't parse as the field's type fails `servo generate`, not a deploy.
+
+  The loader lives in the config's own package, which is what a reflection-based env
+  library can never offer: the struct and every field stay unexported, secrets
+  included, and error paths for a field tagged `secret` never echo the value they
+  rejected. The one export the package gains is the loader itself (`ServoConfig`),
+  because the injector lives in another package and Go has no narrower door; it
+  returns the unexported type, which the generated `New` receives by inference,
+  holds as a local — deliberately never an `App` field — and passes to the
+  constructor. Hand-written constructors for a config type, colliding
+  environment-variable claims between two used configs, and a scoped constructor
+  trying to borrow one (configs are locals; scopes read borrowed singletons off the
+  `App`) are all diagnostics.
+
+- **`servo.ConfigFile("config.yaml")`: one file, three formats, one tag.** Declared
+  in the spec, per injector; precedence per setting is default, then the file's
+  section (`postgres.max_conns`), then the environment, which always wins. The
+  path's extension — `.json`, `.yaml`/`.yml`, or `.toml`, checked at parse time —
+  decides which decoder the generated code carries, so an env-only or JSON app stays
+  stdlib-only and a yaml app gains `gopkg.in/yaml.v3` in *its own* module; servo's
+  module depends on no decoder. One `config:` tag drives every source — there are no
+  `json:`/`yaml:`/`toml:` tags to keep in sync, because the map-walking code is
+  generated. At runtime `CONFIG_FILE` overrides the path (same extension family
+  only); the declared path may be absent, since every setting can still arrive from
+  the environment, but an explicitly set one must exist. Injectors sharing a config
+  must all declare a file or none — the companion loader is one file with one
+  signature — and `servo generate` refuses the mix before writing anything.
+
+- **`conf` package.** The stdlib-only coercions behind generated file reading:
+  the three decoders disagree about numbers (JSON says `float64`, yaml.v3 says
+  `int`, TOML says `int64`), and that normalization is written and tested once
+  rather than stamped into every loader. Its errors name types, never values.
+
+- **`servo config`: the operator's manual, from the generator.** Prints every
+  setting one injector's graph reads — environment variable, file key, type,
+  required/default/secret, declaring field — as a table or `--json`. Only a
+  build-time resolver can print this without running the binary.
+
+- **Config nodes in every view.** Used configs appear at level 0 in the generated
+  file's header, `App.Graph()`, `servo graph`, `servo explain` (provider:
+  `pkg.ServoConfig (generated, env prefix …)`) and `servo why`; `servo check`
+  diffs companion loaders exactly as it diffs `servo_gen.go`.
+
+- **`servo-vet` checks directives.** A typo'd comment directive is otherwise just a
+  comment — it compiles, generates, and silently loads nothing — so the analyzer
+  flags an unrecognized `//servo:` name, malformed `//servo:config` options, a
+  directive on a non-struct, and one placed where the generator never looks.
+  `servo.ConfigFile` joins the markers flagged outside `servoinject`-tagged files.
+
 ## [3.3.0] - 2026-08-30
 
 **Why MINOR, and not PATCH or a new major.** This release adds two markers, a package, two

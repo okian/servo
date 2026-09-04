@@ -19,6 +19,7 @@ func (e *emitter) newFunc() string {
 	}
 	fmt.Fprintf(&b, "\ta := &%s{}\n\n", e.appType())
 	b.WriteString(e.valueAssignments())
+	b.WriteString(e.configAssignments())
 	b.WriteString(e.scopeSetup())
 
 	for i, n := range e.resolved.Order {
