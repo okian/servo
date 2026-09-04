@@ -135,12 +135,13 @@ job is to get you to the right one fast, not to repeat it.
   enforce order by default; use `gomock.InOrder(...)` if the order is actually load-bearing. See
   [chapter 8](08-service-layer.md).
 - **A test fails on its second HTTP call, never its first, only after an unrelated change** — a
-  `&resilience.Config{}` literal in the test is missing `RPS`. A struct literal skips
-  `caarlos0/env` entirely, so the zero value (which clamps the rate limiter's burst to 1) applies
-  instead of the configured default. See [chapter 16](16-resilience.md) and [chapter
+  `resilience.Config{}` literal in the test is missing `RPS`. A struct literal skips the generated
+  loader entirely, so the zero value (which clamps the rate limiter's burst to 1) applies instead
+  of the `default=50` the tag declares. See [chapter 16](16-resilience.md) and [chapter
   17](17-testing-strategy.md).
-- **`t.Setenv(k, "")` doesn't produce the "required environment variable" error you expected** — an
-  empty string still counts as a value for `,required` purposes. Use `os.Unsetenv` instead. See
+- **`t.Setenv(k, "")` doesn't produce the "missing required configuration" error you expected** —
+  an empty string still counts as set for `required` purposes; the generated loader uses
+  `os.LookupEnv`, which distinguishes unset from empty. Use `os.Unsetenv` instead. See
   [chapter 17](17-testing-strategy.md).
 - **A `NewTestApp`-based test returns an unexpected `500` instead of an obvious failure** — a
   `PanicReporter` panic raised *inside* a request handler is still caught by `recoverMiddleware` and

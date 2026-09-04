@@ -377,7 +377,6 @@ import (
 	"net/http"
 
 	"example.com/servoorders/internal/auth"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/service"
 )
@@ -388,21 +387,19 @@ type Server struct {
 	auth   *service.AuthService
 }
 
-// HTTPAddr and AdminAddr take no prefix: both are spelled that way in
-// every deployment already. AdminAddr belongs to this package because it
-// is the same concern — serving HTTP — even though main binds that
-// listener rather than the graph; see chapter 15.
+// AdminAddr belongs to this package because it is the same concern —
+// serving HTTP — even though main binds that listener rather than the
+// graph; see chapter 15. The directive's prefix gives both variables an
+// owner: HTTP_ADDR (its historical spelling) and HTTP_ADMIN_ADDR.
+//
+//servo:config prefix=HTTP
 type Config struct {
-	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
-	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, "")
+	HTTPAddr  string `config:"addr,default=:8080"`
+	AdminAddr string `config:"admin_addr,default=:8081"`
 }
 
 func New(
-	cfg *Config,
+	cfg Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,

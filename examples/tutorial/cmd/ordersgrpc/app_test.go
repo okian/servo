@@ -14,11 +14,11 @@ import (
 // than through broker.EventPublisher, so it is not one of the interfaces
 // Override replaced. Driving the handler directly sidesteps that.
 func TestGraphWiresAndServesTheContract(t *testing.T) {
-	// Config is not one of the overridden interfaces — it is a concrete
-	// type nothing stands in for — so every required field still has to
-	// be set even though nothing dials Postgres, Redis or NATS with them.
-	t.Setenv("POSTGRES_DSN", "unused-in-this-test")
-	t.Setenv("REDIS_ADDR", "unused-in-this-test")
+	// A config is required only while something in the graph consumes it:
+	// the overrides replaced the postgres and redis consumers with mocks,
+	// so their variables aren't needed here at all. NATS_URL still is —
+	// the notifier takes natsbroker.Config and isn't overridden — and
+	// JWT_SECRET matters for real, since auth.Issuer is unmocked.
 	t.Setenv("NATS_URL", "unused-in-this-test")
 	t.Setenv("JWT_SECRET", "test-secret")
 
@@ -47,7 +47,7 @@ func TestGraphWiresAndServesTheContract(t *testing.T) {
 
 	// ...and the operational endpoints are not. They are served by
 	// package admin on a separate listener, which main binds to
-	// ADMIN_ADDR and no ingress points at.
+	// HTTP_ADMIN_ADDR and no ingress points at.
 	for _, path := range []string{"/healthz", "/readyz", "/metrics"} {
 		resp, err := http.Get(ts.URL + path)
 		if err != nil {

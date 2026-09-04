@@ -15,7 +15,7 @@ import (
 
 func newSession(t *testing.T, id session.UserID, cap int) *session.Session {
 	t.Helper()
-	s := session.New(id, &session.Config{Recent: cap}, quietLogger())
+	s := session.New(id, session.NewSettings(session.Config{Recent: cap}), quietLogger())
 	if err := s.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}

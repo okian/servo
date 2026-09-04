@@ -235,7 +235,6 @@ package resilience
 import (
 	"net/http"
 
-	"example.com/servoorders/internal/config"
 	"golang.org/x/time/rate"
 )
 
@@ -243,7 +242,7 @@ type RateLimiter struct {
 	limiter *rate.Limiter
 }
 
-func NewRateLimiter(cfg *Config) *RateLimiter {
+func NewRateLimiter(cfg Config) *RateLimiter {
 	burst := max(int(cfg.RPS), 1)
 	return &RateLimiter{limiter: rate.NewLimiter(rate.Limit(cfg.RPS), burst)}
 }
@@ -327,17 +326,12 @@ type RateLimiter struct {
 	rejections prometheus.Counter
 }
 
-const envPrefix = "RATE_LIMIT_"
-
+//servo:config prefix=RATE_LIMIT
 type Config struct {
-	RPS float64 `env:"RPS" envDefault:"50"`
+	RPS float64 `config:"rps,default=50"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func NewRateLimiter(cfg *Config, metrics *observability.Metrics) *RateLimiter {
+func NewRateLimiter(cfg Config, metrics *observability.Metrics) *RateLimiter {
 	burst := max(int(cfg.RPS), 1)
 	return &RateLimiter{
 		limiter:    rate.NewLimiter(rate.Limit(cfg.RPS), burst),
@@ -370,7 +364,7 @@ A test proves the counter actually moves:
 ```go
 func TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt(t *testing.T) {
 	metrics := observability.NewMetrics()
-	rl := resilience.NewRateLimiter(&Config{RPS: 0}, metrics) // burst clamped to 1
+	rl := resilience.NewRateLimiter(resilience.Config{RPS: 0}, metrics) // burst clamped to 1
 	handler := rl.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -395,10 +389,10 @@ func TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt(t *testing.T) {
 }
 ```
 
-A bare `&resilience.Config{...}` literal is what makes `RPS: 0` easy to reach for here on
-purpose — it skips `caarlos0/env`'s tag processing entirely, so any field not set explicitly is
-Go's zero value, not the configured `envDefault`. That's exactly why every *other* test in this
-codebase that constructs a `&resilience.Config{}` literal needs `RPS` set to something
+A bare `resilience.Config{...}` literal is what makes `RPS: 0` easy to reach for here on
+purpose — it skips the generated loader entirely, so any field not set explicitly is Go's zero
+value, not the `default=50` the tag declares. That's exactly why every *other* test in this
+codebase that constructs a `resilience.Config{}` literal needs `RPS` set to something
 generous (`api_test.go`'s fixtures use `1000`): forgetting it there isn't a deliberate test of the
 limiter, it's a burst of one silently breaking the second HTTP call any other test happens to make.
 
@@ -410,7 +404,7 @@ walkthrough above landed on. This is the finished constructor: it matches `trans
 
 ```go
 func New(
-	cfg *Config,
+	cfg Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,
@@ -476,7 +470,7 @@ of its own, purely logic wrapping logic.
   custom `IsSuccessful`, or excluded by `IsExcluded`, the breaker never opens no matter how badly
   the dependency is failing.
 - **Tests fail intermittently on the second HTTP call in a test, never the first** — the
-  `RPS`-left-at-zero trap above. Check every `&resilience.Config{}` literal in the failing
+  `RPS`-left-at-zero trap above. Check every `resilience.Config{}` literal in the failing
   test sets it explicitly.
 - **The circuit breaker "flaps"** (rapidly opens and closes) — usually means `ReadyToTrip`'s
   threshold is too sensitive for the dependency's real, normal error rate (a cache that legitimately

@@ -280,12 +280,32 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, Supplied: supplied, Configs: r.configNodes}, nil
 }
 
-// checkConfigs runs the cross-config checks that only make sense once the
-// set of *used* configs is known: two used configs resolving a setting to
-// the same environment variable (or, with a config file declared, the same
-// section key), and a servo.ConfigFile declaration no config in the graph
-// would ever read.
+// checkConfigs runs the config checks that only make sense once the graph
+// is resolved: a scoped member taking a config directly, two used configs
+// resolving a setting to the same environment variable (or, with a config
+// file declared, the same section key), and a servo.ConfigFile declaration
+// no config in the graph would ever read.
 func (r *resolver) checkConfigs(spec *load.Spec) {
+	// A config value is a local in New, never an App field, so a scope's
+	// per-key constructions — which read every borrowed singleton off the
+	// App — cannot take one directly. A singleton *between* them is fine
+	// (it is built by New, where the value is in scope), and is exactly
+	// the workaround the diagnostic names. Checked here, after membership
+	// is settled, rather than during traversal: the scope pass resolves
+	// borrowed singletons' whole sub-graphs with the scope active, and a
+	// config two constructors deep is legal. Members still sit in r.order
+	// at this point — finishScopes moves them out later — so membership is
+	// read off each node's own Scope.
+	for _, n := range r.order {
+		if n.Scope == nil {
+			continue
+		}
+		for _, d := range n.Deps {
+			if d.Kind == NodeConfig {
+				r.diags = append(r.diags, r.configInScopeDiagnostic(d.Config, n, n.Scope.Pos))
+			}
+		}
+	}
 	type claim struct {
 		decl  *graph.ConfigDecl
 		field graph.ConfigField
@@ -394,16 +414,12 @@ func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry,
 
 	// A //servo:config type resolves to its generated loader, ahead of
 	// provider selection for the same reason a declared accessor does: the
-	// directive said so. It is loaded at the top of New and lives as a
-	// local there, not as an App field — which is what lets the type stay
-	// unexported — so a scope's per-key constructions, which read borrowed
-	// singletons off the App, cannot borrow one.
+	// directive said so. Resolving one from inside a scope's sub-graph is
+	// fine as long as the consumer is a borrowed singleton (constructed by
+	// New, where the loaded value is in scope as a local); a scoped
+	// *member* taking one directly is refused later, in checkConfigs, once
+	// membership is known.
 	if decl, ok := r.configByKey[k]; ok {
-		if r.activeScope != nil {
-			r.diags = append(r.diags, r.configInScopeDiagnostic(decl, chain, rootPos))
-			r.failedKey[k] = true
-			return nil, false
-		}
 		node := &Node{Key: k, Kind: NodeConfig, Level: 0, Config: decl, Binding: "config directive"}
 		r.nodes[k] = node
 		r.resolvedKey[k] = node

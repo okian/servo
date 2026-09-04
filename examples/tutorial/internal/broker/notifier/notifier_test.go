@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"example.com/servoorders/internal/broker"
+	"example.com/servoorders/internal/broker/natsbroker"
 	"example.com/servoorders/internal/observability"
 	"github.com/nats-io/nats.go"
 )
@@ -34,7 +35,7 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	n := New(&Config{URL: url}, capture)
+	n := New(natsbroker.Config{URL: url}, capture)
 	go func() { done <- n.Run(ctx) }()
 
 	pub, err := nats.Connect(url)
@@ -92,7 +93,7 @@ func TestRunLogsReceivedEvents(t *testing.T) {
 // still calls both during Shutdown. Neither may panic on the nil
 // connection that leaves behind.
 func TestDrainWithoutRunIsANoOp(t *testing.T) {
-	n := New(&Config{URL: "nats://unused"}, quietLogger())
+	n := New(natsbroker.Config{URL: "nats://unused"}, quietLogger())
 	if err := n.Drain(context.Background()); err != nil {
 		t.Errorf("Drain before Run: %v", err)
 	}

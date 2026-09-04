@@ -3,7 +3,6 @@ package resilience
 import (
 	"net/http"
 
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/observability"
 	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/time/rate"
@@ -20,17 +19,15 @@ type RateLimiter struct {
 	rejections prometheus.Counter
 }
 
-const envPrefix = "RATE_LIMIT_"
-
+// Config's generated loader reads RATE_LIMIT_RPS; the default is
+// validated as a float64 when `servo generate` runs.
+//
+//servo:config prefix=RATE_LIMIT
 type Config struct {
-	RPS float64 `env:"RPS" envDefault:"50"`
+	RPS float64 `config:"rps,default=50"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func NewRateLimiter(cfg *Config, metrics *observability.Metrics) *RateLimiter {
+func NewRateLimiter(cfg Config, metrics *observability.Metrics) *RateLimiter {
 	burst := max(int(cfg.RPS), 1)
 	return &RateLimiter{
 		limiter:    rate.NewLimiter(rate.Limit(cfg.RPS), burst),

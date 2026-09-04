@@ -22,7 +22,7 @@ func testStore(t *testing.T) *Store {
 		t.Skip("TEST_POSTGRES_DSN not set; see docs/tutorial/05-repository-layer.md")
 	}
 
-	s, err := New(&Config{DSN: dsn})
+	s, err := New(Config{DSN: dsn})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

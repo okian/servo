@@ -32,10 +32,10 @@ func main() {
 	// reachable once App is fully constructed, so no component inside the
 	// graph could serve them: this one piece of wiring belongs here.
 	//
-	// The address comes off the graph rather than being parsed a second
-	// time: servo already built an *api.Config, and this file is in the
-	// same package as the generated code.
-	adminSrv := admin.New(app.apiConfig.AdminAddr, app, app.server.MetricsHandler())
+	// The address comes off the server rather than being parsed a second
+	// time: the loaded config is a local inside the generated New, so the
+	// one component that received it answers for it.
+	adminSrv := admin.New(app.server.AdminAddr(), app, app.server.MetricsHandler())
 	go func() {
 		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Print(err)

@@ -10,7 +10,6 @@ import (
 	"time"
 	"uuid"
 
-	"example.com/servoorders/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -25,18 +24,19 @@ type Issuer struct {
 	expiry time.Duration
 }
 
-const envPrefix = "JWT_"
-
+// Config's generated loader reads JWT_SECRET and JWT_EXPIRY. The secret
+// tag is load-bearing: no error path the loader generates ever echoes the
+// value it rejected, so a malformed secret cannot leak into a log line.
+// The default is validated when `servo generate` runs, not when the
+// process starts — a typo'd duration here fails the build.
+//
+//servo:config prefix=JWT
 type Config struct {
-	Secret string        `env:"SECRET,required"`
-	Expiry time.Duration `env:"EXPIRY" envDefault:"1h"`
+	Secret string        `config:"secret,required,secret"`
+	Expiry time.Duration `config:"expiry,default=1h"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(cfg *Config) *Issuer {
+func New(cfg Config) *Issuer {
 	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}
 }
 

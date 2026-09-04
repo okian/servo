@@ -6,20 +6,19 @@ package observability
 import (
 	"log/slog"
 	"os"
-
-	"example.com/servoorders/internal/config"
 )
 
-// Config carries the two settings this package reads. It takes no prefix:
-// LOG_LEVEL and OTLP_ENDPOINT are app-wide by convention and are spelled
-// that way in every deployment already.
+// Config carries the two settings this package reads, as OBS_LOG_LEVEL
+// and OBS_OTLP_ENDPOINT. They used to be the unprefixed "app-wide by
+// convention" LOG_LEVEL and OTLP_ENDPOINT — the escape hatch
+// //servo:config deliberately doesn't offer, because an unowned name is
+// exactly how two packages end up quietly reading one variable. Every
+// setting now carries its owner's prefix, and this package's is OBS.
+//
+//servo:config prefix=OBS
 type Config struct {
-	LogLevel     string `env:"LOG_LEVEL" envDefault:"info"`
-	OTLPEndpoint string `env:"OTLP_ENDPOINT" envDefault:""`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, "")
+	LogLevel     string `config:"log_level,default=info"`
+	OTLPEndpoint string `config:"otlp_endpoint"`
 }
 
 // NewLogger is an ordinary provider, which is the whole point: anything
@@ -32,7 +31,7 @@ func NewConfig(src config.Source) (*Config, error) {
 // wire — the standard library and third-party packages log through
 // slog.Default() and have no constructor to inject into. Our own code
 // never relies on it: every component here takes the logger.
-func NewLogger(cfg *Config) *Logger {
+func NewLogger(cfg Config) *Logger {
 	l := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLevel(cfg.LogLevel),
 	}))

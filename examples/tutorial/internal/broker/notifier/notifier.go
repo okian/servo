@@ -13,23 +13,10 @@ import (
 	"sync"
 
 	"example.com/servoorders/internal/broker"
-	"example.com/servoorders/internal/config"
+	"example.com/servoorders/internal/broker/natsbroker"
 	"example.com/servoorders/internal/observability"
 	"github.com/nats-io/nats.go"
 )
-
-// envPrefix is the same one natsbroker uses: both ends of the messaging
-// layer connect to the same server, and each says so for itself rather
-// than sharing a struct to agree on it.
-const envPrefix = "NATS_"
-
-type Config struct {
-	URL string `env:"URL,required"`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
 
 type Notifier struct {
 	url string
@@ -47,7 +34,12 @@ type Notifier struct {
 	inFlight sync.WaitGroup
 }
 
-func New(cfg *Config, log *observability.Logger) *Notifier {
+// New takes natsbroker.Config rather than declaring a config of its own:
+// both ends of the messaging layer connect to the same server, and under
+// //servo:config a setting has exactly one owner — a second struct tagged
+// to read NATS_URL would be a collision `servo generate` refuses. The
+// publisher's package owns the setting; this package borrows the value.
+func New(cfg natsbroker.Config, log *observability.Logger) *Notifier {
 	return &Notifier{url: cfg.URL, log: log}
 }
 

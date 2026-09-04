@@ -24,12 +24,11 @@ import (
 // NATS. Testing the HTTP surface directly through app.server.Handler()
 // sidesteps that entirely — see docs/tutorial/13-wiring-with-servo.md.
 func TestFullAPIFlowWithMockedInfrastructure(t *testing.T) {
-	// Config itself isn't one of the four overridden interfaces — it's a
-	// concrete type nothing stands in for — so every required field still
-	// has to be set even though the mocked path never actually dials
-	// Postgres, Redis, or NATS with these values.
-	t.Setenv("POSTGRES_DSN", "unused-in-this-test")
-	t.Setenv("REDIS_ADDR", "unused-in-this-test")
+	// A config is required only while something in the graph consumes it:
+	// the overrides replaced the postgres and redis consumers with mocks,
+	// so POSTGRES_DSN and REDIS_ADDR aren't needed here at all. NATS_URL
+	// still is — the notifier takes natsbroker.Config and isn't overridden
+	// — and JWT_SECRET matters for real, since auth.Issuer is unmocked.
 	t.Setenv("NATS_URL", "unused-in-this-test")
 	t.Setenv("JWT_SECRET", "test-secret")
 

@@ -11,29 +11,23 @@ import (
 	"fmt"
 
 	"example.com/servoorders/internal/broker"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
 	"github.com/nats-io/nats.go"
 )
 
-// Config is this package's own configuration, declared here and nowhere
-// else. Adding or removing a setting is a one-file change, and the config
-// package never learns that NATS_URL exists.
-// envPrefix namespaces this package's settings. It is declared here, next
-// to the fields it applies to, so the deployment-facing names and the
-// struct that consumes them cannot drift apart.
-const envPrefix = "NATS_"
-
+// Config owns NATS_URL for the whole messaging layer. The prefix on the
+// directive namespaces the environment variable; the generated loader
+// (servo_config_gen.go, beside this file) fills the struct and reports a
+// missing NATS_URL at startup by name.
+//
+// The notifier — the consuming end of the same messaging layer — takes
+// this Config rather than declaring its own: two structs both tagged to
+// read NATS_URL would be two claims on one variable, which `servo
+// generate` refuses as a collision. One setting, one owner.
+//
+//servo:config prefix=NATS
 type Config struct {
-	URL string `env:"URL,required"`
-}
-
-// NewConfig is the sole candidate for *Config: servo resolves every
-// parameter by type, so the narrow type needs a provider of its own. It
-// takes a config.Source rather than reading the environment, so this
-// package assumes nothing about where values come from.
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
+	URL string `config:"url,required"`
 }
 
 type Publisher struct {
@@ -43,7 +37,7 @@ type Publisher struct {
 
 var _ broker.EventPublisher = (*Publisher)(nil)
 
-func New(cfg *Config) *Publisher {
+func New(cfg Config) *Publisher {
 	return &Publisher{url: cfg.URL}
 }
 

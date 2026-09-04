@@ -136,25 +136,25 @@ func (r *resolver) configProviderDiagnostic(d *graph.ConfigDecl, c *graph.Provid
 	return Diagnostic{Pos: c.Pos, Message: b.String()}
 }
 
-// configInScopeDiagnostic reports a scoped constructor depending on a
-// //servo:config type. Config values are loaded at the top of New and live
-// as locals there — never as App fields, which is what lets the type stay
-// unexported — while a scope's per-key constructions read every borrowed
-// singleton off the App. The two are incompatible, so it is refused with
-// the workaround named rather than emitted as code that cannot compile.
-func (r *resolver) configInScopeDiagnostic(d *graph.ConfigDecl, chain []chainEntry, rootPos token.Position) Diagnostic {
+// configInScopeDiagnostic reports a scoped member's constructor taking a
+// //servo:config type directly. Config values are loaded at the top of New
+// and live as locals there — never as App fields, which is what lets the
+// type stay unexported — while a scope's per-key constructions read every
+// borrowed singleton off the App. The two are incompatible, so it is
+// refused with the workaround named rather than emitted as code that
+// cannot compile. A singleton between the member and the config is that
+// workaround, and is legal.
+func (r *resolver) configInScopeDiagnostic(d *graph.ConfigDecl, member *Node, scopePos token.Position) Diagnostic {
 	var b strings.Builder
 	fmt.Fprintf(&b, "servo: a scoped constructor depends on config type %s\n", d.Key.String())
-	b.WriteString(renderChain(chain, rootPos))
+	fmt.Fprintf(&b, "  needed by %s  %s\n", member.Key.String(), member.Provider.Pos)
+	fmt.Fprintf(&b, "  scoped at %s\n", scopePos)
 	b.WriteString("\n  A //servo:config value is loaded by New and held as a local, not an App\n")
-	b.WriteString("  field, so a scope's per-key constructions cannot borrow it. Give the scoped\n")
-	b.WriteString("  component a singleton of your own that carries the values it needs:\n")
+	b.WriteString("  field, so a scope's per-key constructions cannot take it directly. Give the\n")
+	b.WriteString("  scoped component a singleton of your own that carries the values it needs —\n")
+	b.WriteString("  a singleton is built by New, where the loaded value is in scope:\n")
 	fmt.Fprintf(&b, "    func NewSettings(cfg %s) *Settings\n", d.TypeName)
-	pos := rootPos
-	if len(chain) > 0 {
-		pos = chain[len(chain)-1].Pos
-	}
-	return Diagnostic{Pos: pos, Message: b.String()}
+	return Diagnostic{Pos: member.Provider.Pos, Message: b.String()}
 }
 
 // configCollisionDiagnostic reports two used configs resolving a setting

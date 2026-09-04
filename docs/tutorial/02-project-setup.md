@@ -33,7 +33,6 @@ servoorders/
   cmd/ordersgrpc/          the gRPC injector                                 chapter 12
   deploy/                  docker-compose.yml, Dockerfile                    chapter 19
   internal/
-    config/                typed configuration                               chapter 3
     domain/                core types, no dependency on anything else here   chapter 4
 
     repository/            OrderRepository, UserRepository interfaces        chapter 5

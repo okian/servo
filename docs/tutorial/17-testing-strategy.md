@@ -87,21 +87,21 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	// Each component gets its own narrow config, built as a literal. RPS
-	// is set explicitly (rather than relying on the envDefault) because a
-	// bare struct literal skips caarlos0/env's tag processing entirely —
+	// is set explicitly (rather than relying on the tag's default=50)
+	// because a bare struct literal skips the generated loader entirely —
 	// every field not set here is the Go zero value, not the configured
 	// default. A zero RPS would mean the rate limiter allows exactly one
 	// request per test, ever; see
 	// TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt for the test
 	// that actually wants that.
-	authCfg := &auth.Config{Secret: "test-secret", Expiry: time.Hour}
-	limitCfg := &resilience.Config{RPS: 1000}
-	sessionCfg := &session.Config{Recent: 10}
+	authCfg := auth.Config{Secret: "test-secret", Expiry: time.Hour}
+	limitCfg := resilience.Config{RPS: 1000}
+	sessionSettings := session.NewSettings(session.Config{Recent: 10})
 	issuer := auth.New(authCfg)
 	orders := service.New(repo, orderCache, pub, quietLogger())
 	authSvc := service.NewAuthService(users, issuer)
 	metrics := observability.NewMetrics()
-	tracer, err := observability.NewTracer(&observability.Config{})
+	tracer, err := observability.NewTracer(observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
@@ -114,8 +114,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	users.EXPECT().GetByUsername(gomock.Any(), "alice").Return(testUser, nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound).AnyTimes()
 
-	srv := api.New(&api.Config{}, orders, authSvc, issuer, metrics, tracer,
-		resilience.NewRateLimiter(limitCfg, metrics), newFakeSessions(sessionCfg), quietLogger())
+	srv := api.New(api.Config{}, orders, authSvc, issuer, metrics, tracer,
+		resilience.NewRateLimiter(limitCfg, metrics), newFakeSessions(sessionSettings), quietLogger())
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return ts, repo, issuer
@@ -128,8 +128,8 @@ fill: `servo.Override` and `NewTestApp` don't appear until tier 3, and this file
 to prove the HTTP contract on its own first, decoupled from whether the dependency graph wires up
 correctly. Two details worth noticing:
 
-- `RateLimitRPS: 1000` is set explicitly rather than left to `Config`'s own `envDefault`. A bare
-  bare struct literal skips `caarlos0/env`'s tag processing entirely — every field not set
+- `RPS: 1000` is set explicitly rather than left to the tag's `default=50`. A bare
+  struct literal skips the generated loader entirely — every field not set
   here is Go's zero value, not the configured default. A zero `RPS` clamps the limiter's
   burst to 1, which silently broke `TestCreateOrderSucceedsWithValidToken` the first time the rate
   limiter was wired into `api.New` in chapter 16, well after this fixture was written. See
@@ -163,18 +163,18 @@ The seventh is not like the others:
 // so if Run ever again relies on Stop to make it return, it will time out.
 func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	ctrl := gomock.NewController(t)
-	apiCfg := &api.Config{HTTPAddr: "127.0.0.1:0"}
-	limitCfg := &resilience.Config{RPS: 1000}
-	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	apiCfg := api.Config{HTTPAddr: "127.0.0.1:0"}
+	limitCfg := resilience.Config{RPS: 1000}
+	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
 	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl))
 	authSvc := service.NewAuthService(mocks.NewMockUserRepository(ctrl), issuer)
-	tracer, err := observability.NewTracer(&observability.Config{})
+	tracer, err := observability.NewTracer(observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
 	testMetrics := observability.NewMetrics()
 	srv := api.New(apiCfg, orders, authSvc, issuer, testMetrics, tracer,
-		resilience.NewRateLimiter(limitCfg, testMetrics), newFakeSessions(&session.Config{Recent: 10}), quietLogger())
+		resilience.NewRateLimiter(limitCfg, testMetrics), newFakeSessions(session.NewSettings(session.Config{Recent: 10})), quietLogger())
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -254,7 +254,6 @@ ok  	example.com/servoorders/internal/auth	0.606s
 ok  	example.com/servoorders/cmd/orders	0.583s
 ok  	example.com/servoorders/cmd/ordersgin	1.185s
 ok  	example.com/servoorders/cmd/ordersgrpc	0.873s
-ok  	example.com/servoorders/internal/config	0.500s
 ?   	example.com/servoorders/internal/domain	[no test files]
 ok  	example.com/servoorders/internal/transport/ginapi	1.480s
 ok  	example.com/servoorders/internal/transport/grpcapi	0.645s
@@ -321,13 +320,14 @@ every test that checked it, and only those.
 
 - **A test fails on its second HTTP call, never its first, and only after some unrelated chapter's
   change** — check whether a bare config literal in the failing test's fixture is missing
-  `RPS`. A struct literal doesn't run through `caarlos0/env`, so an omitted field is Go's
+  `RPS`. A struct literal doesn't run through the generated loader, so an omitted field is Go's
   zero value, not the configured default; zero `RPS` clamps the token bucket's burst to 1,
   and the first request in a test consumes it.
-- **A `t.Setenv(k, "")` doesn't produce the "required environment variable" error you expected** —
-  an empty string is still a value as far as `,required` validation is concerned; it doesn't unset
-  anything. Use `os.Unsetenv` (with `os.LookupEnv` first, so a real ambient value can be restored in
-  `t.Cleanup`) to actually simulate a missing variable.
+- **A `t.Setenv(k, "")` doesn't produce the "missing required configuration" error you expected** —
+  an empty string is still set as far as `required` validation is concerned; the generated loader
+  uses `os.LookupEnv`, which distinguishes unset from empty. Use `os.Unsetenv` (with `os.LookupEnv`
+  first, so a real ambient value can be restored in `t.Cleanup`) to actually simulate a missing
+  variable.
 - **`postgres`/`redis`/`natsbroker` tests report `ok` in CI, but nobody's sure they're doing
   anything** — check that the job actually sets `TEST_POSTGRES_DSN`/`TEST_REDIS_ADDR`/
   `TEST_NATS_URL` (see [chapter 18](18-cicd.md)). A missing `services:` block or a typo'd env var

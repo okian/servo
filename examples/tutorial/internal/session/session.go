@@ -12,7 +12,6 @@ import (
 	"sync"
 	"uuid"
 
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/observability"
 	"github.com/okian/servo/v3/servo"
 )
@@ -44,31 +43,43 @@ type Sessions interface {
 // request and wrong to share across users: the orders this person has
 // looked at recently, plus a count of how much work they've caused.
 type Session struct {
-	id  UserID
-	cfg *Config
-	log *observability.Logger
+	id       UserID
+	settings *Settings
+	log      *observability.Logger
 
 	mu     sync.Mutex
 	recent []uuid.UUID
 	views  int
 }
 
-// New takes the key like any other dependency, and *config.Config like any
-// other singleton. The config does not vary with the user, so it stays one
+// Config's generated loader reads SESSION_RECENT.
+//
+//servo:config prefix=SESSION
+type Config struct {
+	Recent int `config:"recent,default=10"`
+}
+
+// Settings is the singleton carrier between the config and the scope. A
+// config value is loaded at the top of New and held as a local there —
+// never a field on the App — so a *scoped* constructor cannot borrow one
+// the way it borrows the logger, and `servo generate` says so if you try.
+// The documented workaround is exactly this: a singleton of your own that
+// takes the config once and is shared by every session, which is also the
+// truthful shape — the setting does not vary with the user.
+type Settings struct {
+	Recent int
+}
+
+func NewSettings(cfg Config) *Settings {
+	return &Settings{Recent: cfg.Recent}
+}
+
+// New takes the key like any other dependency, and *Settings like any
+// other singleton. Settings does not vary with the user, so it stays one
 // shared instance rather than being rebuilt per session — servo works that
 // out from the dependency edges, not from an annotation.
-const envPrefix = "SESSION_"
-
-type Config struct {
-	Recent int `env:"RECENT" envDefault:"10"`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(id UserID, cfg *Config, log *observability.Logger) *Session {
-	return &Session{id: id, cfg: cfg, log: log}
+func New(id UserID, settings *Settings, log *observability.Logger) *Session {
+	return &Session{id: id, settings: settings, log: log}
 }
 
 // ScopeKey extracts the user this request belongs to.
@@ -99,8 +110,8 @@ func (s *Session) RecordView(id uuid.UUID) {
 
 	s.views++
 	s.recent = append([]uuid.UUID{id}, s.deduped(id)...)
-	if len(s.recent) > s.cfg.Recent {
-		s.recent = s.recent[:s.cfg.Recent]
+	if len(s.recent) > s.settings.Recent {
+		s.recent = s.recent[:s.settings.Recent]
 	}
 }
 

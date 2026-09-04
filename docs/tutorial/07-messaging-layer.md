@@ -65,7 +65,6 @@ import (
 
 	"example.com/servoorders/internal/broker"
 	"example.com/servoorders/internal/observability"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
 	"github.com/nats-io/nats.go"
 )
@@ -77,17 +76,15 @@ type Publisher struct {
 
 var _ broker.EventPublisher = (*Publisher)(nil)
 
-const envPrefix = "NATS_"
-
+// Config owns NATS_URL for the whole messaging layer — the consuming end
+// takes this struct rather than declaring its own; see the notifier below.
+//
+//servo:config prefix=NATS
 type Config struct {
-	URL string `env:"URL,required"`
+	URL string `config:"url,required"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(cfg *Config) *Publisher {
+func New(cfg Config) *Publisher {
 	return &Publisher{url: cfg.URL}
 }
 ```
@@ -154,31 +151,23 @@ import (
 	"fmt"
 
 	"example.com/servoorders/internal/broker"
-	"example.com/servoorders/internal/config"
+	"example.com/servoorders/internal/broker/natsbroker"
 	"example.com/servoorders/internal/observability"
 	"github.com/nats-io/nats.go"
 )
-
-// This package declares its own Config even though it wants the same
-// NATS_URL natsbroker does. Both ends of the messaging layer connect to
-// the same server, and each says so for itself rather than sharing a
-// struct to agree on it — see chapter 3.
-const envPrefix = "NATS_"
-
-type Config struct {
-	URL string `env:"URL,required"`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
 
 type Notifier struct {
 	url string
 	log *observability.Logger
 }
 
-func New(cfg *Config, log *observability.Logger) *Notifier {
+// New takes natsbroker.Config rather than declaring a config of its own.
+// Both ends of the messaging layer connect to the same server, and under
+// //servo:config a setting has exactly one owner — a second struct tagged
+// to read NATS_URL would be a collision `servo generate` refuses, with
+// both declaration sites named. The publisher's package owns the setting;
+// this package borrows the value, and the import says so.
+func New(cfg natsbroker.Config, log *observability.Logger) *Notifier {
 	return &Notifier{url: cfg.URL, log: log}
 }
 ```

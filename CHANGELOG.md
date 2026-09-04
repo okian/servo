@@ -87,6 +87,29 @@ no `//servo:config` emits a byte-identical file.
   directive on a non-struct, and one placed where the generator never looks.
   `servo.ConfigFile` joins the markers flagged outside `servoinject`-tagged files.
 
+### Changed
+- **The tutorial runs on the directive.** `examples/tutorial` dropped its
+  hand-rolled `internal/config` package (and with it the `caarlos0/env`
+  dependency): every package's config now carries `//servo:config`, the notifier
+  borrows `natsbroker.Config` instead of re-declaring `NATS_URL` (two claims on one
+  variable is now a refused collision), and the session scope demonstrates the
+  documented singleton-carrier workaround (`session.Settings`) for the rule that a
+  scoped constructor cannot take a config directly. The formerly unprefixed
+  variables gained owners: `ADMIN_ADDR` → `HTTP_ADMIN_ADDR`, `LOG_LEVEL` →
+  `OBS_LOG_LEVEL`, `OTLP_ENDPOINT` → `OBS_OTLP_ENDPOINT`. The `NewTestApp` tests
+  stopped setting `POSTGRES_DSN`/`REDIS_ADDR` — the overrides removed those
+  configs' consumers, so the requirement disappeared with them, which is the model
+  working. docs/tutorial chapter 3 teaches the directive (the design lesson it
+  taught — each package owns its settings — is unchanged; the mechanism is now
+  generated), and every later chapter's listings and generated-output excerpts
+  were refreshed against the real regenerated files.
+
+  While migrating, the scoped-config rule itself was refined: a config resolved
+  *through* a borrowed singleton from inside a scope's sub-graph is legal (the
+  singleton is built by New, where the loaded value is in scope) — only a scoped
+  member taking the config type directly is refused. The check moved from
+  traversal time to `checkConfigs`, where membership is settled.
+
 ## [3.3.0] - 2026-08-30
 
 **Why MINOR, and not PATCH or a new major.** This release adds two markers, a package, two

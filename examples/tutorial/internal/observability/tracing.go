@@ -26,7 +26,7 @@ type Tracer struct {
 // unset, just never exported — tracing is opt-in, not a required
 // dependency this service can't start without. See
 // docs/tutorial/15-observability.md.
-func NewTracer(cfg *Config) (*Tracer, error) {
+func NewTracer(cfg Config) (*Tracer, error) {
 	ctx := context.Background()
 	res, err := resource.New(ctx, resource.WithAttributes(
 		semconv.ServiceName("servoorders"),

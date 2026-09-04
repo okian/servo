@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 
 	"example.com/servoorders/internal/auth"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
@@ -22,6 +21,9 @@ import (
 
 type Server struct {
 	http *http.Server
+	// adminAddr is kept for main, which wires the admin listener outside
+	// the graph and asks this server where it should live — see AdminAddr.
+	adminAddr string
 	// ready flips once the listener is bound. Read by Ready from whatever
 	// goroutine serves the readiness probe, written by Run, hence atomic.
 	ready   atomic.Bool
@@ -40,19 +42,20 @@ type Server struct {
 // HTTP — even though the admin listener itself is wired in main rather
 // than through the graph; see admin.New.
 //
-// No prefix: HTTP_ADDR and ADMIN_ADDR are spelled that way in every
-// deployment already.
+// The directive requires a prefix — the app-wide unprefixed variable was
+// the escape hatch //servo:config deliberately doesn't offer, since an
+// unowned name is how two packages end up reading one variable. HTTP_ADDR
+// keeps its historical spelling (prefix HTTP + tag addr); the admin
+// listener's variable is HTTP_ADMIN_ADDR.
+//
+//servo:config prefix=HTTP
 type Config struct {
-	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
-	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, "")
+	HTTPAddr  string `config:"addr,default=:8080"`
+	AdminAddr string `config:"admin_addr,default=:8081"`
 }
 
 func New(
-	cfg *Config,
+	cfg Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,
@@ -62,7 +65,7 @@ func New(
 	sessions session.Sessions,
 	log *observability.Logger,
 ) *Server {
-	s := &Server{orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
+	s := &Server{adminAddr: cfg.AdminAddr, orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
 
 	mux := http.NewServeMux()
 
@@ -105,6 +108,14 @@ func New(
 // (or wanted) to test routing, middleware, and status codes.
 func (s *Server) Handler() http.Handler {
 	return s.http.Handler
+}
+
+// AdminAddr is where main should bind the admin listener. It comes off
+// this server rather than off a config field on the App: the loaded
+// config is a local inside the generated New, so the one component that
+// received it answers for it.
+func (s *Server) AdminAddr() string {
+	return s.adminAddr
 }
 
 // MetricsHandler exposes this server's own metrics registry — not the

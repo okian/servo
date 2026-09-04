@@ -303,6 +303,59 @@ func TestConfigInsideScopeIsRefused(t *testing.T) {
 	}
 }
 
+// TestConfigBorrowedThroughSingletonIsAllowed is the workaround the
+// refusal above names, proven legal: scoped member → singleton wrapper →
+// config. The wrapper is built by New, where the loaded config value is a
+// local in scope, so nothing about the scope machinery ever touches the
+// config itself.
+func TestConfigBorrowedThroughSingletonIsAllowed(t *testing.T) {
+	pkg, fset, pkgs, all := checkConfigScopeFixture(t)
+	decl := &graph.ConfigDecl{
+		Key:      namedKey(pkg, "settings"),
+		Type:     namedType(pkg, "settings"),
+		TypeName: "settings",
+		Prefix:   "APP",
+		Section:  "app",
+		PkgPath:  "example.com/scopedcfg",
+		PkgName:  "scopedcfg",
+		Dir:      "scopedcfg",
+		Pos:      token.Position{Filename: "scopedcfg.go", Line: 8},
+		Fields:   []graph.ConfigField{{FieldName: "dsn", Name: "dsn", EnvName: "APP_DSN", FileKey: "dsn", Kind: graph.KindString}},
+	}
+	scope := map[string]bool{}
+	for _, c := range all {
+		scope[c.Pkg] = true
+	}
+	resolved, diags := Resolve(Input{
+		Spec: &load.Spec{
+			Roots: []load.RootDecl{rootDecl(pkg, "Server2")},
+			Scopes: []load.ScopeDecl{{
+				Impl: ptrKey(pkg, "Hall"), ImplType: ptrType(pkg, "Hall"),
+				Iface: namedKey(pkg, "Halls"), IfaceType: namedType(pkg, "Halls"),
+				Pos: token.Position{Filename: "spec.go", Line: 10},
+			}},
+		},
+		Candidates: all,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      scope,
+		Configs:    []*graph.ConfigDecl{decl},
+		Fset:       fset,
+		Pkgs:       pkgs,
+	})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics:\n%s", diagText(diags))
+	}
+	if len(resolved.Configs) != 1 {
+		t.Fatalf("got %d configs, want 1", len(resolved.Configs))
+	}
+	// The wrapper is an ordinary borrowed singleton: in Order, with the
+	// config as its dependency.
+	wrapped := resolved.ByKey[ptrKey(pkg, "Wrapped")]
+	if wrapped == nil || wrapped.Scope != nil || len(wrapped.Deps) != 1 || wrapped.Deps[0].Kind != NodeConfig {
+		t.Fatalf("wrapped = %+v", wrapped)
+	}
+}
+
 const configScopedSrc = `
 package scopedcfg
 
@@ -321,6 +374,21 @@ type Rooms interface {
 
 type Server struct{}
 func NewServer(r Rooms) *Server { return &Server{} }
+
+// Wrapped is the documented workaround: a singleton between the scoped
+// member and the config, built by New where the loaded value is in scope.
+type Wrapped struct{}
+func NewWrapped(s settings) *Wrapped { return &Wrapped{} }
+
+type Hall struct{}
+func NewHall(k RoomKey, w *Wrapped) *Hall { return &Hall{} }
+func (_ *Hall) ScopeKey(ctx context.Context) (RoomKey, error) { return "", nil }
+type Halls interface {
+	Acquire(ctx context.Context) (*Hall, func(), error)
+}
+
+type Server2 struct{}
+func NewServer2(h Halls) *Server2 { return &Server2{} }
 `
 
 func checkConfigScopeFixture(t *testing.T) (*types.Package, *token.FileSet, []*packages.Package, []*graph.Provider) {

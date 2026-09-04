@@ -19,7 +19,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"example.com/servoorders/internal/auth"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
@@ -28,11 +27,14 @@ import (
 )
 
 type Server struct {
-	http    *http.Server
-	ready   atomic.Bool
-	orders  *service.OrderService
-	auth    *service.AuthService
-	metrics *observability.Metrics
+	http *http.Server
+	// adminAddr is kept for main, which wires the admin listener outside
+	// the graph — see AdminAddr.
+	adminAddr string
+	ready     atomic.Bool
+	orders    *service.OrderService
+	auth      *service.AuthService
+	metrics   *observability.Metrics
 	// sessions is the scope accessor, not a session. Holding a *Session
 	// here would pin one user's session for the life of the process, and
 	// `servo generate` refuses to emit that — see
@@ -42,18 +44,19 @@ type Server struct {
 
 // Config is this package's own, not shared with api.Config: two transport
 // variants that both wanted HTTP_ADDR would otherwise have to agree on one
-// type, and a reader swapping between them would have to know that.
+// type, and a reader swapping between them would have to know that. Both
+// resolving to the same HTTP_ADDR variable is fine — each binary wires
+// exactly one transport, and the collision check is per graph, over the
+// configs that graph actually uses.
+//
+//servo:config prefix=HTTP
 type Config struct {
-	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
-	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, "")
+	HTTPAddr  string `config:"addr,default=:8080"`
+	AdminAddr string `config:"admin_addr,default=:8081"`
 }
 
 func New(
-	cfg *Config,
+	cfg Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,
@@ -63,7 +66,7 @@ func New(
 	sessions session.Sessions,
 	log *observability.Logger,
 ) *Server {
-	s := &Server{orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
+	s := &Server{adminAddr: cfg.AdminAddr, orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
 
 	// ReleaseMode suppresses Gin's startup banner and its debug-level
 	// route dump, both of which write to stdout outside the structured
@@ -118,6 +121,12 @@ func New(
 // (or wanted) to test routing, middleware, and status codes.
 func (s *Server) Handler() http.Handler {
 	return s.http.Handler
+}
+
+// AdminAddr is where main should bind the admin listener — see the api
+// variant for why it comes off this server rather than a config field.
+func (s *Server) AdminAddr() string {
+	return s.adminAddr
 }
 
 // MetricsHandler exposes this server's own metrics registry — not the

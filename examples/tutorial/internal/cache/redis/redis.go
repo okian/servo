@@ -10,7 +10,6 @@ import (
 	"uuid"
 
 	"example.com/servoorders/internal/cache"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -27,17 +26,16 @@ type Cache struct {
 
 var _ cache.OrderCache = (*Cache)(nil)
 
-const envPrefix = "REDIS_"
-
+// Config's generated loader reads REDIS_ADDR — the directive's prefix
+// plus the tag name, uppercased — and a deployment missing it fails at
+// startup naming the variable.
+//
+//servo:config prefix=REDIS
 type Config struct {
-	Addr string `env:"ADDR,required"`
+	Addr string `config:"addr,required"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(cfg *Config) *Cache {
+func New(cfg Config) *Cache {
 	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.Addr})}
 }
 

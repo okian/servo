@@ -21,7 +21,6 @@ import (
 	"google.golang.org/grpc"
 
 	"example.com/servoorders/internal/auth"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
@@ -33,28 +32,28 @@ import (
 type Server struct {
 	ordersv1.UnimplementedOrdersServer
 
-	http    *http.Server
-	grpc    *grpc.Server
-	ready   atomic.Bool
-	orders  *service.OrderService
-	auth    *service.AuthService
-	metrics *observability.Metrics
+	http *http.Server
+	grpc *grpc.Server
+	// adminAddr is kept for main, which wires the admin listener outside
+	// the graph — see AdminAddr.
+	adminAddr string
+	ready     atomic.Bool
+	orders    *service.OrderService
+	auth      *service.AuthService
+	metrics   *observability.Metrics
 	// sessions is the scope accessor, not a session — see
 	// docs/tutorial/14-scoped-instances.md.
 	sessions session.Sessions
 }
 
+//servo:config prefix=HTTP
 type Config struct {
-	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
-	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
-}
-
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, "")
+	HTTPAddr  string `config:"addr,default=:8080"`
+	AdminAddr string `config:"admin_addr,default=:8081"`
 }
 
 func New(
-	cfg *Config,
+	cfg Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,
@@ -64,7 +63,7 @@ func New(
 	sessions session.Sessions,
 	log *observability.Logger,
 ) *Server {
-	s := &Server{orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
+	s := &Server{adminAddr: cfg.AdminAddr, orders: orders, auth: authSvc, metrics: metrics, sessions: sessions}
 
 	s.grpc = grpc.NewServer(grpc.UnaryInterceptor(authInterceptor(issuer)))
 	ordersv1.RegisterOrdersServer(s.grpc, s)
@@ -138,6 +137,12 @@ func dispatch(grpcServer *grpc.Server, rest http.Handler) http.Handler {
 // decision above can be tested without binding a port.
 func (s *Server) Handler() http.Handler {
 	return s.http.Handler
+}
+
+// AdminAddr is where main should bind the admin listener — see the api
+// variant for why it comes off this server rather than a config field.
+func (s *Server) AdminAddr() string {
+	return s.adminAddr
 }
 
 // Serve runs on ln with this server's own configuration, rather than

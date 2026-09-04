@@ -43,7 +43,7 @@ ends up in the final image. `CGO_ENABLED=0` matters here: it produces a statical
 with no dynamic dependency on `libc`, which is what makes the second stage possible at all. The
 second stage starts from `gcr.io/distroless/static-debian12:nonroot` — not `scratch`, and not a
 full `debian` or `alpine` image. `scratch` is literally empty; it has no CA certificate bundle,
-which would break the OTLP exporter's ability to verify TLS the moment `OTLP_ENDPOINT` pointed at
+which would break the OTLP exporter's ability to verify TLS the moment `OBS_OTLP_ENDPOINT` pointed at
 anything other than an `--insecure` local collector. `distroless/static` ships exactly the CA
 certificates and timezone data a static Go binary needs and nothing else — no shell, no package
 manager, no coreutils. The `:nonroot` tag additionally runs as UID `65532` instead of root, for
@@ -155,7 +155,7 @@ services:
       REDIS_ADDR: redis:6379
       NATS_URL: nats://nats:4222
       JWT_SECRET: dev-secret-do-not-use-in-production
-      OTLP_ENDPOINT: jaeger:4318
+      OBS_OTLP_ENDPOINT: jaeger:4318
     ports:
       - "8080:8080"
       - "8081:8081"
@@ -269,23 +269,25 @@ Every variable the service reads, gathered from the per-package `Config` types o
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `HTTP_ADDR` | No | `:8080` | The public API — login, orders |
-| `ADMIN_ADDR` | No | `:8081` | `/healthz`, `/readyz`, `/metrics` — chapter 10, 15 |
+| `HTTP_ADMIN_ADDR` | No | `:8081` | `/healthz`, `/readyz`, `/metrics` — chapter 10, 15 |
 | `POSTGRES_DSN` | **Yes** | — | e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 | `REDIS_ADDR` | **Yes** | — | `host:port`, no scheme |
 | `NATS_URL` | **Yes** | — | e.g. `nats://host:4222` |
 | `JWT_SECRET` | **Yes** | — | No default on purpose — chapter 3, 9 |
 | `JWT_EXPIRY` | No | `1h` | Go duration string (`30m`, `2h`) |
-| `LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
-| `OTLP_ENDPOINT` | No | *(empty)* | `host:port`, no scheme — tracing is a no-op exporter until set |
-| `RATE_LIMIT_RPS` | No | `50` | See chapter 16; a bare `&resilience.Config{}` in a test omits this at its peril |
+| `OBS_LOG_LEVEL` | No | `info` | `debug`, `info`, `warn`, or `error` |
+| `OBS_OTLP_ENDPOINT` | No | *(empty)* | `host:port`, no scheme — tracing is a no-op exporter until set |
+| `RATE_LIMIT_RPS` | No | `50` | See chapter 16; a bare `resilience.Config{}` in a test omits this at its peril |
 | `SESSION_RECENT` | No | `10` | How many recently-viewed orders a session keeps. The scope's linger window and Max are *not* here — both are constants in the spec file; see chapter 14 |
 
 The four variables with no default (`POSTGRES_DSN`, `REDIS_ADDR`, `NATS_URL`, `JWT_SECRET`) are the
-ones the service refuses to start without — that is what chapter 3's `,required` tag is for. Each is
-checked by the package that declares it, as its `NewConfig` runs during construction, so a missing
-one fails inside the generated `New` before `Run` is ever reached. Nothing partially starts; see
-[chapter 3](03-configuration.md#the-trade-this-design-makes) for what that costs compared to a
-single up-front parse.
+ones the service refuses to start without — that is what chapter 3's `required` tag is for. Each is
+checked by its generated loader at the top of `New`, before anything is constructed, so a missing
+one fails before `Run` is ever reached and the error names the variable. Nothing partially starts;
+see [chapter 3](03-configuration.md#the-trade-this-design-makes) for what that costs compared to a
+single up-front parse — and note the whole table above is `servo config --dir cmd/orders`'s output,
+reformatted: the generator knows every variable the binary reads, so the deployment contract never
+drifts from the code.
 
 ## Diagnostics
 
@@ -348,7 +350,7 @@ single up-front parse.
   never commits them to a file that sits in version control.
 - **Don't** reach for `scratch` reflexively just because it's the smallest possible base. It has no
   CA certificates, which silently breaks anything making an outbound TLS connection — this
-  service's OTLP exporter among them, the moment `OTLP_ENDPOINT` points at something that isn't
+  service's OTLP exporter among them, the moment `OBS_OTLP_ENDPOINT` points at something that isn't
   `--insecure`.
 - **Don't** assume a healthy container is a ready one, or vice versa. `orders` itself deliberately
   has no Docker-level healthcheck at all (see the compose file's own comment) — its readiness is
