@@ -9,7 +9,7 @@
 //	      capabilities: none | binding: sole implementation | internal/config/config.go:42:6
 //	[L2] *example.com/servoorders/internal/session.Config
 //	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/session/session.go:66:6
+//	      capabilities: none | binding: sole candidate | internal/session/session.go:67:6
 //	[L2] *example.com/servoorders/internal/observability.Config
 //	      deps: *example.com/servoorders/internal/config.Env
 //	      capabilities: none | binding: sole candidate | internal/observability/logging.go:21:6
@@ -1283,7 +1283,7 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
 		{Type: "*example.com/servoorders/internal/config.Env", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole implementation", Pos: "internal/config/config.go:42:6"},
-		{Type: "*example.com/servoorders/internal/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/session/session.go:66:6"},
+		{Type: "*example.com/servoorders/internal/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/session/session.go:67:6"},
 		{Type: "*example.com/servoorders/internal/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:21:6"},
 		{Type: "*example.com/servoorders/internal/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/internal/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:35:6"},
 		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:88:6"},
@@ -1306,7 +1306,7 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/broker/natsbroker.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/broker/natsbroker/natsbroker.go:35:6"},
 		{Type: "*example.com/servoorders/internal/broker/natsbroker.Publisher", Level: 3, Deps: []string{"*example.com/servoorders/internal/broker/natsbroker.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "internal/broker/natsbroker/natsbroker.go:46:6"},
 		{Type: "*example.com/servoorders/internal/service.OrderService", Level: 5, Deps: []string{"*example.com/servoorders/internal/repository/postgres.Store", "*example.com/servoorders/internal/resilience.CircuitBreakerCache", "*example.com/servoorders/internal/broker/natsbroker.Publisher", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/service.go:28:6"},
-		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:70:6", Scope: "example.com/servoorders/internal/session.UserID"},
+		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:71:6", Scope: "example.com/servoorders/internal/session.UserID"},
 	}, Scopes: []servo.GraphScope{
 		{Key: "example.com/servoorders/internal/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/internal/session.Sessions"}, Members: []string{"*example.com/servoorders/internal/session.Session"}, Borrows: []string{"*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}},
 	}, HTTP: &servo.GraphHTTP{
