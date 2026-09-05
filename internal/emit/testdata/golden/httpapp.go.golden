@@ -6,20 +6,41 @@
 //
 //	[L1] *github.com/okian/servo/v3/servo.HTTPConfig
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:14:6
+//	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:15:6
+//	[L1] *example.com/httpapp.UserExtractor
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:46:6
+//	[L1] *example.com/httpapp.Guard
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:53:6
+//	[L1] *example.com/httpapp.Auth
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:57:6
+//	[L1] *example.com/httpapp.Audit
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:61:6
 //	[L1] *example.com/httpapp.Repo
 //	      deps: none
-//	      capabilities: Finalizer | binding: sole candidate | example.com/httpapp/fixture.go:11:6
+//	      capabilities: Finalizer | binding: sole candidate | example.com/httpapp/fixture.go:12:6
 //
 // http (servo.HTTP() at spec.go:11):
 //
 //	config: *github.com/okian/servo/v3/servo.HTTPConfig
-//	GET /health -> httpapp.Health (example.com/httpapp/fixture.go:36:1)
-//	      deps: none
-//	POST /notes -> httpapp.CreateNote (example.com/httpapp/fixture.go:31:1)
-//	      deps: none
-//	POST /order/{category}/ -> httpapp.Order (example.com/httpapp/fixture.go:22:1)
-//	      deps: *example.com/httpapp.Repo
+//	groups: telemetry
+//	use: *example.com/httpapp.Guard -> every group
+//	use: *example.com/httpapp.Auth -> group telemetry
+//	use: *example.com/httpapp.Audit -> POST /order/{category}/
+//	extract: *example.com/httpapp.UserExtractor -> *example.com/httpapp.User
+//	GET /health -> httpapp.Health (example.com/httpapp/fixture.go:37:1)
+//	      args: none
+//	GET /me -> httpapp.Me (example.com/httpapp/fixture.go:49:1)
+//	      args: *example.com/httpapp.User (extracted)
+//	POST /notes -> httpapp.CreateNote (example.com/httpapp/fixture.go:32:1)
+//	      args: none
+//	POST /order/{category}/ -> httpapp.Order (example.com/httpapp/fixture.go:23:1)
+//	      args: *example.com/httpapp.Repo
+//	GET /healthz [telemetry] -> httpapp.Healthz (example.com/httpapp/fixture.go:40:1)
+//	      args: none
 package main
 
 import (
@@ -39,25 +60,35 @@ import (
 
 	"example.com/httpapp"
 	"github.com/okian/servo/v3/servo"
+	"golang.org/x/sync/errgroup"
 )
 
 type App struct {
-	hTTPConfig           *servo.HTTPConfig
-	repo                 *httpapp.Repo
-	repoStopOnce         sync.Once
-	repoStopResult       servo.NodeResult
-	httpServer           *httpServer
-	httpServerStopOnce   sync.Once
-	httpServerStopResult servo.NodeResult
-	startupReport        servo.StartupReport
+	hTTPConfig                    *servo.HTTPConfig
+	userExtractor                 *httpapp.UserExtractor
+	guard                         *httpapp.Guard
+	auth                          *httpapp.Auth
+	audit                         *httpapp.Audit
+	repo                          *httpapp.Repo
+	repoStopOnce                  sync.Once
+	repoStopResult                servo.NodeResult
+	httpServer                    *httpServer
+	httpServerStopOnce            sync.Once
+	httpServerStopResult          servo.NodeResult
+	httpTelemetryServer           *httpTelemetryServer
+	httpTelemetryServerStopOnce   sync.Once
+	httpTelemetryServerStopResult servo.NodeResult
+	startupReport                 servo.StartupReport
 }
 
-// httpServer serves the //servo: routes declared across this module. It is
-// generated machinery, not a graph node: its dependencies are ordinary
-// singletons on the App, resolved once at construction.
+const defaultMaxBodyBytes = 1 << 20
+
+// httpServer serves the default group's //servo: routes. It is generated
+// machinery, not a graph node: its dependencies are ordinary singletons
+// on the App, resolved once at construction.
 type httpServer struct {
 	app     *App
-	cfg     *servo.HTTPConfig
+	lc      servo.HTTPListener
 	srv     *http.Server
 	maxBody int64
 	// ready flips once the listener is bound, which is the precise moment
@@ -65,55 +96,79 @@ type httpServer struct {
 	ready atomic.Bool
 }
 
-const defaultMaxBodyBytes = 1 << 20
-
-func newHttpServer(a *App) *httpServer {
+func newHttpServer(a *App) (*httpServer, error) {
 	cfg := a.hTTPConfig
-	s := &httpServer{app: a, cfg: cfg}
-	s.maxBody = cfg.MaxBodyBytes
+	lc := servo.HTTPListener{
+		IP:           cfg.IP,
+		Port:         cfg.Port,
+		CertFile:     cfg.CertFile,
+		KeyFile:      cfg.KeyFile,
+		MaxBodyBytes: cfg.MaxBodyBytes,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
+	}
+	s := &httpServer{app: a, lc: lc}
+	s.maxBody = lc.MaxBodyBytes
 	if s.maxBody <= 0 {
 		s.maxBody = defaultMaxBodyBytes
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", s.handleHealth)
+	mux.HandleFunc("GET /me", s.handleMe)
 	mux.HandleFunc("POST /notes", s.handleCreateNote)
-	mux.HandleFunc("POST /order/{category}/", s.handleOrder)
-	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(cfg.IP, strconv.FormatUint(uint64(cfg.Port), 10)),
-		Handler:      mux,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+	{
+		var h http.Handler = http.HandlerFunc(s.handleOrder)
+		h = a.audit.Middleware(h)
+		mux.Handle("POST /order/{category}/", h)
 	}
-	return s
+	var handler http.Handler = mux
+	handler = a.guard.Middleware(handler)
+	s.srv = &http.Server{
+		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:      handler,
+		ReadTimeout:  lc.ReadTimeout,
+		WriteTimeout: lc.WriteTimeout,
+		IdleTimeout:  lc.IdleTimeout,
+	}
+	return s, nil
 }
 
 func (s *httpServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	res, err := httpapp.Health(r.Context())
 	if err != nil {
 		var hs servo.HTTPStatus
-		if !errors.As(err, &hs) {
-			slog.Error("servo: handler httpapp.Health failed", "route", "GET /health", "error", err)
-			s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		code := hs.Code()
-		switch {
-		case code < 300:
+		if errors.As(err, &hs) && hs.Code() < 300 {
 			// A 2xx status in the error position is the contract's way of
 			// picking a success code other than 200.
-			httpRespond(s, w, code, res)
-		case code < 500:
-			s.writeError(w, code, err.Error())
-		default:
-			// 5xx bodies carry only the canonical text; the wrapped detail
-			// is for the log, not the client.
-			slog.Error("servo: handler httpapp.Health failed", "route", "GET /health", "error", err)
-			s.writeError(w, code, hs.Error())
+			httpRespond(w, hs.Code(), res)
+			return
 		}
+		httpWriteFailure(w, "httpapp.Health", "GET /health", err)
 		return
 	}
-	httpRespond(s, w, http.StatusOK, res)
+	httpRespond(w, http.StatusOK, res)
+}
+
+func (s *httpServer) handleMe(w http.ResponseWriter, r *http.Request) {
+	user, err := s.app.userExtractor.Extract(r)
+	if err != nil {
+		httpWriteFailure(w, "httpapp.Me", "GET /me", err)
+		return
+	}
+	res, err := httpapp.Me(r.Context(), user)
+	if err != nil {
+		var hs servo.HTTPStatus
+		if errors.As(err, &hs) && hs.Code() < 300 {
+			// A 2xx status in the error position is the contract's way of
+			// picking a success code other than 200.
+			httpRespond(w, hs.Code(), res)
+			return
+		}
+		httpWriteFailure(w, "httpapp.Me", "GET /me", err)
+		return
+	}
+	httpRespond(w, http.StatusOK, res)
 }
 
 func (s *httpServer) handleCreateNote(w http.ResponseWriter, r *http.Request) {
@@ -122,34 +177,22 @@ func (s *httpServer) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		s.writeError(w, http.StatusBadRequest, "malformed request body")
+		httpWriteError(w, http.StatusBadRequest, "malformed request body")
 		return
 	}
 	res, err := httpapp.CreateNote(r.Context(), req)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if !errors.As(err, &hs) {
-			slog.Error("servo: handler httpapp.CreateNote failed", "route", "POST /notes", "error", err)
-			s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		code := hs.Code()
-		switch {
-		case code < 300:
+		if errors.As(err, &hs) && hs.Code() < 300 {
 			// A 2xx status in the error position is the contract's way of
 			// picking a success code other than 200.
-			httpRespond(s, w, code, res)
-		case code < 500:
-			s.writeError(w, code, err.Error())
-		default:
-			// 5xx bodies carry only the canonical text; the wrapped detail
-			// is for the log, not the client.
-			slog.Error("servo: handler httpapp.CreateNote failed", "route", "POST /notes", "error", err)
-			s.writeError(w, code, hs.Error())
+			httpRespond(w, hs.Code(), res)
+			return
 		}
+		httpWriteFailure(w, "httpapp.CreateNote", "POST /notes", err)
 		return
 	}
-	httpRespond(s, w, http.StatusOK, res)
+	httpRespond(w, http.StatusOK, res)
 }
 
 func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +202,7 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("page"); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 0)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "query parameter \"page\" is not a valid int")
+			httpWriteError(w, http.StatusBadRequest, "query parameter \"page\" is not a valid int")
 			return
 		}
 		req.Page = int(v)
@@ -167,53 +210,16 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	res, err := httpapp.Order(r.Context(), req, s.app.repo)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if !errors.As(err, &hs) {
-			slog.Error("servo: handler httpapp.Order failed", "route", "POST /order/{category}/", "error", err)
-			s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		code := hs.Code()
-		switch {
-		case code < 300:
+		if errors.As(err, &hs) && hs.Code() < 300 {
 			// A 2xx status in the error position is the contract's way of
 			// picking a success code other than 200.
-			httpRespond(s, w, code, res)
-		case code < 500:
-			s.writeError(w, code, err.Error())
-		default:
-			// 5xx bodies carry only the canonical text; the wrapped detail
-			// is for the log, not the client.
-			slog.Error("servo: handler httpapp.Order failed", "route", "POST /order/{category}/", "error", err)
-			s.writeError(w, code, hs.Error())
+			httpRespond(w, hs.Code(), res)
+			return
 		}
+		httpWriteFailure(w, "httpapp.Order", "POST /order/{category}/", err)
 		return
 	}
-	httpRespond(s, w, http.StatusOK, res)
-}
-
-// httpRespond writes one success response; a nil Json means status only, no body.
-func httpRespond[T any](s *httpServer, w http.ResponseWriter, code int, res servo.Json[T]) {
-	if res == nil {
-		w.WriteHeader(code)
-		return
-	}
-	s.writeJSON(w, code, res.Value())
-}
-
-func (s *httpServer) writeJSON(w http.ResponseWriter, code int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		slog.Error("servo: encoding response failed", "error", err)
-	}
-}
-
-func (s *httpServer) writeError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(struct {
-		Error string `json:"error"`
-	}{Error: msg})
+	httpRespond(w, http.StatusOK, res)
 }
 
 func (s *httpServer) run(ctx context.Context) error {
@@ -225,8 +231,8 @@ func (s *httpServer) run(ctx context.Context) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		var err error
-		if s.cfg.CertFile != "" && s.cfg.KeyFile != "" {
-			err = s.srv.ServeTLS(ln, s.cfg.CertFile, s.cfg.KeyFile)
+		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
+			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
 		} else {
 			err = s.srv.Serve(ln)
 		}
@@ -244,16 +250,162 @@ func (s *httpServer) run(ctx context.Context) error {
 	}
 }
 
+// httpTelemetryServer serves group "telemetry"'s //servo: routes. It is generated
+// machinery, not a graph node: its dependencies are ordinary singletons
+// on the App, resolved once at construction.
+type httpTelemetryServer struct {
+	app *App
+	lc  servo.HTTPListener
+	srv *http.Server
+	// ready flips once the listener is bound, which is the precise moment
+	// Ready starts reporting ok for the "http:telemetry" node.
+	ready atomic.Bool
+}
+
+func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error) {
+	cfg := a.hTTPConfig
+	lc, ok := cfg.Groups["telemetry"]
+	if !ok {
+		return nil, fmt.Errorf("http: group %q declared in the spec but missing from HTTPConfig.Groups", "telemetry")
+	}
+	s := &httpTelemetryServer{app: a, lc: lc}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	var handler http.Handler = mux
+	handler = a.auth.Middleware(handler)
+	handler = a.guard.Middleware(handler)
+	s.srv = &http.Server{
+		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:      handler,
+		ReadTimeout:  lc.ReadTimeout,
+		WriteTimeout: lc.WriteTimeout,
+		IdleTimeout:  lc.IdleTimeout,
+	}
+	return s, nil
+}
+
+func (s *httpTelemetryServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	res, err := httpapp.Healthz(r.Context())
+	if err != nil {
+		var hs servo.HTTPStatus
+		if errors.As(err, &hs) && hs.Code() < 300 {
+			// A 2xx status in the error position is the contract's way of
+			// picking a success code other than 200.
+			httpRespond(w, hs.Code(), res)
+			return
+		}
+		httpWriteFailure(w, "httpapp.Healthz", "GET /healthz", err)
+		return
+	}
+	httpRespond(w, http.StatusOK, res)
+}
+
+func (s *httpTelemetryServer) run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.srv.Addr)
+	if err != nil {
+		return fmt.Errorf("http:telemetry: listen %s: %w", s.srv.Addr, err)
+	}
+	s.ready.Store(true)
+	serveErr := make(chan error, 1)
+	go func() {
+		var err error
+		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
+			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
+		} else {
+			err = s.srv.Serve(ln)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serveErr:
+		return err
+	}
+}
+
+// httpRespond writes one success response; a nil Json means status only, no body.
+func httpRespond[T any](w http.ResponseWriter, code int, res servo.Json[T]) {
+	if res == nil {
+		w.WriteHeader(code)
+		return
+	}
+	httpWriteJSON(w, code, res.Value())
+}
+
+// httpWriteFailure maps a handler or extractor error onto the response: a status in
+// the chain picks the code, 4xx bodies carry the message, 5xx bodies only
+// the canonical text — the wrapped detail is for the log, not the client.
+func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
+	var hs servo.HTTPStatus
+	if !errors.As(err, &hs) {
+		slog.Error("servo: handler "+handler+" failed", "route", route, "error", err)
+		httpWriteError(w, http.StatusInternalServerError, "Internal Server Error")
+		return
+	}
+	code := hs.Code()
+	if code >= 500 {
+		slog.Error("servo: handler "+handler+" failed", "route", route, "status", code, "error", err)
+		httpWriteError(w, code, hs.Error())
+		return
+	}
+	httpWriteError(w, code, err.Error())
+}
+
+func httpWriteJSON(w http.ResponseWriter, code int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		slog.Error("servo: encoding response failed", "error", err)
+	}
+}
+
+func httpWriteError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+	}{Error: msg})
+}
+
 func New(ctx context.Context) (*App, error) {
 	a := &App{}
 
 	hTTPConfig := httpapp.NewHTTPConfig()
 	a.hTTPConfig = hTTPConfig
 
+	userExtractor := httpapp.NewUserExtractor()
+	a.userExtractor = userExtractor
+
+	guard := httpapp.NewGuard()
+	a.guard = guard
+
+	auth := httpapp.NewAuth()
+	a.auth = auth
+
+	audit := httpapp.NewAudit()
+	a.audit = audit
+
 	repo := httpapp.NewRepo()
 	a.repo = repo
 
-	a.httpServer = newHttpServer(a)
+	httpServer, err := newHttpServer(a)
+	if err != nil {
+		report := a.Shutdown(ctx)
+		return nil, errors.Join(err, report)
+	}
+	a.httpServer = httpServer
+
+	httpTelemetryServer, err := newHttpTelemetryServer(a)
+	if err != nil {
+		report := a.Shutdown(ctx)
+		return nil, errors.Join(err, report)
+	}
+	a.httpTelemetryServer = httpTelemetryServer
 
 	return a, nil
 }
@@ -278,8 +430,22 @@ func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {
 	return a.httpServerStopResult
 }
 
+func (a *App) stopHttpTelemetryServer(ctx context.Context) servo.NodeResult {
+	a.httpTelemetryServerStopOnce.Do(func() {
+		if a.httpTelemetryServer == nil {
+			a.httpTelemetryServerStopResult = servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK}
+			return
+		}
+		a.httpTelemetryServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)
+	})
+	return a.httpTelemetryServerStopResult
+}
+
 func (a *App) Run(ctx context.Context) error {
-	return a.httpServer.run(ctx)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return a.httpServer.run(gctx) })
+	g.Go(func() error { return a.httpTelemetryServer.run(gctx) })
+	return g.Wait()
 }
 
 func (a *App) Shutdown(ctx context.Context) servo.Report {
@@ -298,6 +464,7 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 
 	var nodes []servo.NodeResult
 	nodes = append(nodes, a.stopHttpServer(ctx))
+	nodes = append(nodes, a.stopHttpTelemetryServer(ctx))
 	nodes = append(nodes, a.stopRepo(ctx))
 	return servo.Report{Nodes: nodes}
 }
@@ -314,13 +481,22 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 	} else {
 		nodes = append(nodes, servo.NodeResult{Name: "http", Status: servo.StatusFailed, Err: errors.New("http: not accepting connections yet")})
 	}
+	if a.httpTelemetryServer != nil && a.httpTelemetryServer.ready.Load() {
+		nodes = append(nodes, servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK})
+	} else {
+		nodes = append(nodes, servo.NodeResult{Name: "http:telemetry", Status: servo.StatusFailed, Err: errors.New("http:telemetry: not accepting connections yet")})
+	}
 	return servo.Report{Nodes: nodes}
 }
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:14:6"},
-		{Type: "*example.com/httpapp.Repo", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:11:6"},
+		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:15:6"},
+		{Type: "*example.com/httpapp.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:46:6"},
+		{Type: "*example.com/httpapp.Guard", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:53:6"},
+		{Type: "*example.com/httpapp.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:57:6"},
+		{Type: "*example.com/httpapp.Audit", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:61:6"},
+		{Type: "*example.com/httpapp.Repo", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:12:6"},
 	}}
 }
 

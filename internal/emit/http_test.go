@@ -20,12 +20,15 @@ import (
 
 // httpAppSrc keeps the handlers OUTSIDE the injector package, so the
 // emitted adapters must reference them (and the request structs) with a
-// package qualifier — the shape the tutorial's layered app has.
+// package qualifier. It carries one route per feature: typed binding with
+// a dependency, a JSON body, a bare handler, a telemetry-group route, an
+// extracted parameter, and middleware at all three levels.
 const httpAppSrc = `
 package httpapp
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/okian/servo/v3/servo"
 )
@@ -58,25 +61,60 @@ func CreateNote(ctx context.Context, req *NoteReq) (servo.Json[*OrderResp], erro
 
 //servo:get /health
 func Health(ctx context.Context) (servo.Json[*OrderResp], error) { return nil, nil }
+
+//servo:get /healthz telemetry
+func Healthz(ctx context.Context) (servo.Json[*OrderResp], error) { return nil, nil }
+
+type User struct{ Name string }
+
+type UserExtractor struct{}
+func NewUserExtractor() *UserExtractor { return &UserExtractor{} }
+func (e *UserExtractor) Extract(r *http.Request) (*User, error) { return &User{}, nil }
+
+//servo:get /me
+func Me(ctx context.Context, u *User) (servo.Json[*OrderResp], error) { return nil, nil }
+
+type Guard struct{}
+func NewGuard() *Guard { return &Guard{} }
+func (m *Guard) Middleware(next http.Handler) http.Handler { return next }
+
+type Auth struct{}
+func NewAuth() *Auth { return &Auth{} }
+func (m *Auth) Middleware(next http.Handler) http.Handler { return next }
+
+type Audit struct{}
+func NewAudit() *Audit { return &Audit{} }
+func (m *Audit) Middleware(next http.Handler) http.Handler { return next }
 `
 
 const httpMainSrc = `
 package main
 `
 
+func loadStdPkg(t *testing.T, path string) *packages.Package {
+	t.Helper()
+	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedDeps | packages.NeedImports}
+	pkgs, err := packages.Load(cfg, path)
+	if err != nil || len(pkgs) != 1 {
+		t.Fatalf("load %s: %v", path, err)
+	}
+	return pkgs[0]
+}
+
 func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 	t.Helper()
 	servoPkg := loadServoPackage(t)
+	httpPkg := loadStdPkg(t, "net/http")
 	caps, err := graph.LoadCapabilities(servoPkg.Types)
 	if err != nil {
 		t.Fatalf("LoadCapabilities: %v", err)
 	}
 
 	fset := token.NewFileSet()
-	importer := newPkgImporter(servoPkg)
+	importer := newPkgImporter(servoPkg, httpPkg)
 	mod := &packages.Module{Path: "example.com", Main: true}
 
-	parse := func(path, src string) (*packages.Package, *ast.File) {
+	parse := func(path, src string) *packages.Package {
 		f, err := parser.ParseFile(fset, path+"/fixture.go", src, parser.ParseComments)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
@@ -91,11 +129,11 @@ func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 		return &packages.Package{
 			Name: pkg.Name(), PkgPath: path,
 			Types: pkg, TypesInfo: info, Fset: fset, Syntax: []*ast.File{f}, Module: mod,
-		}, f
+		}
 	}
 
-	appPkg, _ := parse("example.com/httpapp", httpAppSrc)
-	mainPkg, _ := parse("example.com/httpapp/cmd/app", httpMainSrc)
+	appPkg := parse("example.com/httpapp", httpAppSrc)
+	mainPkg := parse("example.com/httpapp/cmd/app", httpMainSrc)
 	pkgs := []*packages.Package{appPkg, mainPkg}
 
 	candidates, _ := graph.ScanCandidates(pkgs, mainPkg.PkgPath)
@@ -103,6 +141,11 @@ func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 	if len(rdiags) != 0 {
 		t.Fatalf("fixture scan diagnostics: %v", rdiags)
 	}
+
+	ptr := func(name string) types.Type {
+		return types.NewPointer(appPkg.Types.Scope().Lookup(name).Type())
+	}
+	key := func(name string) graph.Key { return graph.NewKey(ptr(name), "") }
 
 	spec := &load.Spec{InjectorPkg: mainPkg}
 	ck, ct := route.HTTPConfigKey(servoPkg.Types)
@@ -114,8 +157,15 @@ func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 		Fset:       fset,
 		Pkgs:       pkgs,
 		HTTP: &resolve.HTTPInput{
-			Pos:        token.Position{Filename: "spec.go", Line: 11},
-			Routes:     routes,
+			Pos:    token.Position{Filename: "spec.go", Line: 11},
+			Routes: routes,
+			Groups: []load.GroupDecl{{Name: "telemetry", Pos: token.Position{Filename: "spec.go", Line: 12}}},
+			Uses: []load.UseDecl{
+				{Type: key("Guard"), TypeT: ptr("Guard"), Pos: token.Position{Filename: "spec.go", Line: 13}},
+				{Type: key("Auth"), TypeT: ptr("Auth"), Groups: []string{"telemetry"}, Pos: token.Position{Filename: "spec.go", Line: 14}},
+				{Type: key("Audit"), TypeT: ptr("Audit"), Routes: []load.RouteSel{{Pattern: "POST /order/{category}/", Pos: token.Position{Filename: "spec.go", Line: 15}}}, Pos: token.Position{Filename: "spec.go", Line: 15}},
+			},
+			Extracts:   []load.ExtractDecl{{Type: key("UserExtractor"), TypeT: ptr("UserExtractor"), Pos: token.Position{Filename: "spec.go", Line: 16}}},
 			ConfigKey:  ck,
 			ConfigType: ct,
 		},
@@ -135,38 +185,48 @@ func TestEmitHTTPServer(t *testing.T) {
 	src := string(out)
 
 	wantSubstrings := []string{
-		// The server type, its constructor, and the App wiring at the very
-		// end of New — after Init, since construction is pure wiring and
-		// the listener binds in run().
+		// One server type per group, each constructed fallibly at the end
+		// of New.
 		"type httpServer struct",
-		"func newHttpServer(a *App) *httpServer",
-		"a.httpServer = newHttpServer(a)",
-		// Route registration in scan order, method prepended.
+		"type httpTelemetryServer struct",
+		"func newHttpServer(a *App) (*httpServer, error)",
+		"func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error)",
+		"a.httpServer = httpServer",
+		"a.httpTelemetryServer = httpTelemetryServer",
+		// The default group reads the flat config fields; a named group
+		// looks itself up and fails construction when missing.
+		`lc, ok := cfg.Groups["telemetry"]`,
+		`missing from HTTPConfig.Groups`,
+		// Routes land on their own group's mux.
 		`mux.HandleFunc("GET /health", s.handleHealth)`,
+		`mux.HandleFunc("GET /healthz", s.handleHealthz)`,
 		`mux.HandleFunc("POST /notes", s.handleCreateNote)`,
-		`mux.HandleFunc("POST /order/{category}/", s.handleOrder)`,
-		// The listen address comes from the user's config node.
-		"net.JoinHostPort(",
-		// Typed request decoding: path and query with strconv, JSON body
-		// under MaxBytesReader.
+		// Middleware: route-level wraps the one handler, group- and
+		// server-level wrap the mux.
+		"h = a.audit.Middleware(h)",
+		`mux.Handle("POST /order/{category}/", h)`,
+		"handler = a.auth.Middleware(handler)",
+		"handler = a.guard.Middleware(handler)",
+		// Extracted parameter: produced per request, failure through the
+		// shared status mapping, then handed to the handler.
+		"user, err := s.app.userExtractor.Extract(r)",
+		`httpWriteFailure(w, "httpapp.Me", "GET /me", err)`,
+		"httpapp.Me(r.Context(), user)",
+		// The shared helpers exist once, package-level.
+		"func httpWriteFailure(w http.ResponseWriter, handler, route string, err error)",
+		`httpWriteError(w, http.StatusInternalServerError, "Internal Server Error")`,
+		"func httpRespond[T any](w http.ResponseWriter, code int, res servo.Json[T])",
+		// Typed decode and the handler call are unchanged in spirit.
 		`req.Category = r.PathValue("category")`,
 		"strconv.ParseInt(raw, 10, 0)",
-		"http.MaxBytesReader(w, r.Body,",
-		// The handler call is package-qualified with graph-resolved deps.
 		"httpapp.Order(r.Context(), req, s.app.repo)",
-		// Status semantics: recover the HTTPStatus, 2xx-as-error succeeds,
-		// 5xx logs and hides the detail.
-		"errors.As(err, &hs)",
-		"slog.Error(",
-		`s.writeError(w, http.StatusInternalServerError, "Internal Server Error")`,
-		// Lifecycle: single runner is the server itself; the stop method
-		// shuts the listener down under the standard budget.
-		"return a.httpServer.run(ctx)",
+		// Lifecycle: both servers run, both stop, both report readiness.
+		"g.Go(func() error { return a.httpServer.run(gctx) })",
+		"g.Go(func() error { return a.httpTelemetryServer.run(gctx) })",
 		`servo.RunStop(ctx, servo.DefaultStopBudget, "http", a.httpServer.srv.Shutdown)`,
-		// TLS branch driven by config.
+		`servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)`,
+		`Name: "http:telemetry"`,
 		"ServeTLS(ln,",
-		// Ready gains the listener-bound entry.
-		"a.httpServer.ready.Load()",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(src, want) {
@@ -178,9 +238,41 @@ func TestEmitHTTPServer(t *testing.T) {
 	}
 }
 
-// The server is the pseudo-root: it must stop before every node, so its
-// stop call is the first thing Shutdown appends.
-func TestEmitHTTPShutdownStopsServerFirst(t *testing.T) {
+// Wrap order is declaration order, outermost first: the server-level Guard
+// must be applied AFTER the group-level Auth in the telemetry constructor,
+// so it ends up outermost.
+func TestEmitHTTPMiddlewareOrder(t *testing.T) {
+	resolved, spec := buildHTTPResolved(t)
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+
+	ctor := strings.Index(src, "func newHttpTelemetryServer(")
+	if ctor < 0 {
+		t.Fatalf("no telemetry constructor")
+	}
+	body := src[ctor:]
+	end := strings.Index(body, "\n}\n")
+	body = body[:end]
+	auth := strings.Index(body, "a.auth.Middleware(handler)")
+	guard := strings.Index(body, "a.guard.Middleware(handler)")
+	if auth < 0 || guard < 0 || auth > guard {
+		t.Fatalf("wrap order wrong (auth=%d guard=%d):\n%s", auth, guard, body)
+	}
+	// And the default group's constructor never sees the telemetry-only
+	// Auth middleware.
+	dctor := strings.Index(src, "func newHttpServer(")
+	dbody := src[dctor:]
+	dbody = dbody[:strings.Index(dbody, "\n}\n")]
+	if strings.Contains(dbody, "auth.Middleware") {
+		t.Fatalf("group middleware leaked into the default group:\n%s", dbody)
+	}
+}
+
+// The server stops before every node, in every group.
+func TestEmitHTTPShutdownStopsServersFirst(t *testing.T) {
 	resolved, spec := buildHTTPResolved(t)
 	out, err := Emit(resolved, spec, false)
 	if err != nil {
@@ -193,13 +285,14 @@ func TestEmitHTTPShutdownStopsServerFirst(t *testing.T) {
 		t.Fatalf("no Shutdown in output")
 	}
 	body := src[shutdownIdx:]
-	serverStop := strings.Index(body, "a.stopHttpServer(ctx)")
+	defStop := strings.Index(body, "a.stopHttpServer(ctx)")
+	telStop := strings.Index(body, "a.stopHttpTelemetryServer(ctx)")
 	repoStop := strings.Index(body, "a.stopRepo(ctx)")
-	if serverStop < 0 || repoStop < 0 {
-		t.Fatalf("Shutdown missing stops (server=%d repo=%d):\n%s", serverStop, repoStop, body)
+	if defStop < 0 || telStop < 0 || repoStop < 0 {
+		t.Fatalf("Shutdown missing stops (def=%d tel=%d repo=%d):\n%s", defStop, telStop, repoStop, body)
 	}
-	if serverStop > repoStop {
-		t.Fatalf("server stops after its dependencies:\n%s", body)
+	if defStop > repoStop || telStop > repoStop {
+		t.Fatalf("servers stop after their dependencies:\n%s", body)
 	}
 }
 
@@ -232,7 +325,8 @@ func TestEmitHTTPTestMode(t *testing.T) {
 	src := string(out)
 	for _, want := range []string{
 		"type testHttpServer struct",
-		"func newTestHttpServer(a *TestApp) *testHttpServer",
+		"func newTestHttpServer(a *TestApp) (*testHttpServer, error)",
+		"type testHttpTelemetryServer struct",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("test-mode output missing %q\n---\n%s", want, src)
