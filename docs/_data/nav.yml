@@ -73,7 +73,7 @@ sections:
       - num: 13
         title: The transport you don’t write
         url: /tutorial/13-directive-transport.html
-        blurb: The same API as //servo: directives — routes as comments, server generated.
+        blurb: "The same API as //servo: directives — routes as comments, server generated."
 
   - title: Wiring it together
     numeral: IV
