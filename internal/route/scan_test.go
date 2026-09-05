@@ -547,12 +547,12 @@ func Order(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
 			want: `must start with "/"`,
 		},
 		{
-			name: "trailing tokens after pattern",
+			name: "trailing tokens after the group",
 			src: header + `
-//servo:post /order extra
+//servo:post /order extra more
 func Order(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
 `,
-			want: "takes exactly one pattern",
+			want: "takes a pattern and an optional group",
 		},
 		{
 			name: "directive not on a function",
@@ -902,4 +902,121 @@ func mustParse(t *testing.T, fset *token.FileSet, name, src string) *ast.File {
 		t.Fatalf("parse %s: %v", name, err)
 	}
 	return f
+}
+
+func TestScanGroupToken(t *testing.T) {
+	src := `package app
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type Resp struct{}
+
+//servo:get /healthz telemetry
+func Healthz(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+
+//servo:get /orders default
+func Orders(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+
+//servo:get /plain
+func Plain(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+`
+	routes, diags := scanOn(t, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	byName := map[string]string{}
+	for _, rt := range routes {
+		byName[rt.Func.Name()] = rt.Group
+	}
+	// A literal "default" token normalizes to "", the default group's
+	// internal name, so the two spellings cannot diverge downstream.
+	if byName["Healthz"] != "telemetry" || byName["Orders"] != "" || byName["Plain"] != "" {
+		t.Fatalf("groups = %v", byName)
+	}
+}
+
+// The same method+pattern on two different groups is two different servers
+// — legal. Duplicate detection and the ServeMux conflict probe are both
+// per group.
+func TestScanDuplicatesArePerGroup(t *testing.T) {
+	src := `package app
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type Resp struct{}
+
+//servo:post /order
+func A(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+
+//servo:post /order internal
+func B(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+
+//servo:get /a/{x}
+func C(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+
+//servo:get /a/{y} internal
+func D(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+`
+	routes, diags := scanOn(t, src)
+	if len(diags) != 0 || len(routes) != 4 {
+		t.Fatalf("routes=%d diags=%v, want 4 routes and no diagnostics", len(routes), diags)
+	}
+}
+
+func TestScanStillRejectsSameGroupConflicts(t *testing.T) {
+	src := `package app
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type Resp struct{}
+
+//servo:post /order internal
+func A(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+
+//servo:post /order internal
+func B(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+`
+	_, diags := scanOn(t, src)
+	if len(diags) != 1 || !strings.Contains(diags[0].Message, "duplicate route POST /order") {
+		t.Fatalf("diags = %v", diags)
+	}
+}
+
+func TestScanRejectsBadGroupToken(t *testing.T) {
+	src := `package app
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type Resp struct{}
+
+//servo:get /x bad group
+func X(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+
+//servo:get /y sp@ce
+func Y(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+`
+	_, diags := scanOn(t, src)
+	if len(diags) != 2 {
+		t.Fatalf("diags = %v, want 2", diags)
+	}
+	joined := diags[0].Message + "\n" + diags[1].Message
+	if !strings.Contains(joined, `unexpected "group"`) || !strings.Contains(joined, "must match [A-Za-z0-9_-]+") {
+		t.Fatalf("messages = %s", joined)
+	}
 }

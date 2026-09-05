@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"net/http"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -63,9 +64,14 @@ func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagno
 		}
 	}
 
-	// Sorted by (Pattern, Method, Pos): the deterministic order everything
-	// downstream — emit, the generated header, duplicate reporting — uses.
+	// Sorted by (Group, Pattern, Method, Pos): the deterministic order
+	// everything downstream — emit, the generated header, duplicate
+	// reporting — uses. Group first so each emitted server's routes are
+	// contiguous.
 	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Group != routes[j].Group {
+			return routes[i].Group < routes[j].Group
+		}
 		if routes[i].Pattern != routes[j].Pattern {
 			return routes[i].Pattern < routes[j].Pattern
 		}
@@ -95,12 +101,17 @@ func firstDirective(pkg *packages.Package, file *ast.File) (token.Position, bool
 	return token.Position{}, false
 }
 
-// directive is one parsed //servo:<method> <pattern> line.
+// directive is one parsed //servo:<method> <pattern> [group] line.
 type directive struct {
 	method  string // upper-case
 	pattern string
+	group   string // "" = default group
 	pos     token.Position
 }
+
+// groupTokenRE is the directive-token half of the group-name grammar; the
+// spec-marker half lives in internal/load and must stay identical.
+var groupTokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 func scanFile(pkg *packages.Package, file *ast.File, jsonType *types.TypeName, routes *[]*Route, diags *[]Diagnostic) {
 	// Doc comment groups are shared pointers between file.Comments and
@@ -161,6 +172,7 @@ func scanFile(pkg *packages.Package, file *ast.File, jsonType *types.TypeName, r
 			rt := &Route{
 				Method:   d.method,
 				Pattern:  d.pattern,
+				Group:    d.group,
 				Func:     h.fn,
 				Pkg:      pkg.PkgPath,
 				Name:     pkg.Types.Name() + "." + h.fn.Name(),
@@ -200,13 +212,22 @@ func parseDirective(text string, pos token.Position) (directive, *Diagnostic) {
 	if !strings.HasPrefix(fields[1], "/") {
 		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: route pattern %q must start with %q", fields[1], "/")}
 	}
-	if len(fields) > 2 {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s takes exactly one pattern — unexpected %q after %q", fields[0], fields[2], fields[1])}
+	if len(fields) > 3 {
+		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s takes a pattern and an optional group — unexpected %q after %q", fields[0], fields[3], fields[2])}
+	}
+	group := ""
+	if len(fields) == 3 {
+		if !groupTokenRE.MatchString(fields[2]) {
+			return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: group %q must match [A-Za-z0-9_-]+", fields[2])}
+		}
+		if fields[2] != "default" {
+			group = fields[2]
+		}
 	}
 	if diag := probePattern(method, fields[1], pos); diag != nil {
 		return directive{}, diag
 	}
-	return directive{method: method, pattern: fields[1], pos: pos}, nil
+	return directive{method: method, pattern: fields[1], group: group, pos: pos}, nil
 }
 
 // probePattern registers the single pattern on a fresh ServeMux: a panic
@@ -551,17 +572,24 @@ func dedupAndProbe(routes []*Route) ([]*Route, []Diagnostic) {
 	seen := map[string]*Route{}
 	kept := routes[:0]
 	for _, rt := range routes {
-		key := rt.Method + " " + rt.Pattern
+		// Keyed per group: two groups are two servers with two muxes, so
+		// the same method+pattern across them is legitimate.
+		key := rt.Group + "\x00" + rt.Method + " " + rt.Pattern
 		if prior := seen[key]; prior != nil {
-			diags = append(diags, Diagnostic{Pos: rt.Pos, Message: fmt.Sprintf("servo: duplicate route %s — first declared at %s", key, prior.Pos)})
+			diags = append(diags, Diagnostic{Pos: rt.Pos, Message: fmt.Sprintf("servo: duplicate route %s %s — first declared at %s", rt.Method, rt.Pattern, prior.Pos)})
 			continue
 		}
 		seen[key] = rt
 		kept = append(kept, rt)
 	}
 
-	mux := http.NewServeMux()
+	muxes := map[string]*http.ServeMux{}
 	for _, rt := range kept {
+		mux := muxes[rt.Group]
+		if mux == nil {
+			mux = http.NewServeMux()
+			muxes[rt.Group] = mux
+		}
 		func() {
 			defer func() {
 				if r := recover(); r != nil {

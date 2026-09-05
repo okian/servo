@@ -83,6 +83,9 @@ type Route struct {
 	Method string
 	// Pattern is the ServeMux pattern as written, without the method.
 	Pattern string
+	// Group is the directive's trailing token, "" for the default group
+	// (a literal "default" token normalizes to "" at scan time).
+	Group string
 	// Func is the handler.
 	Func *types.Func
 	// Pkg is the handler's import path.
