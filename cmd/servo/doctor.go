@@ -29,7 +29,7 @@ func runDoctor(cfg load.Config) error {
 		fmt.Printf("  [%s] %s\n", status, fmt.Sprintf(format, args...))
 	}
 
-	loaded, caps, routes, err := loadModule(cfg)
+	loaded, caps, routes, configs, err := loadModule(cfg)
 	if err != nil {
 		report(false, "load module: %v", err)
 		return fmt.Errorf("servo doctor: problems found")
@@ -95,7 +95,7 @@ func runDoctor(cfg load.Config) error {
 		}
 		report(true, "generated file present: %s", outPath)
 
-		if err := checkOne(pipelineFor(loaded, caps, spec, routes)); err != nil {
+		if err := checkPipeline(pipelineFor(loaded, caps, routes, configs, spec)); err != nil {
 			report(false, "generated file is stale (run %s): %v", regenerateCommand(spec.Variant), err)
 		} else {
 			report(true, "generated file matches a fresh generation")

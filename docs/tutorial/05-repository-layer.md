@@ -50,7 +50,6 @@ import (
 	"fmt"
 	"uuid"
 
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
 	"example.com/servoorders/internal/repository/migrations"
 	"example.com/servoorders/internal/repository"
@@ -67,24 +66,27 @@ var (
 	_ repository.UserRepository  = (*Store)(nil)
 )
 
-const envPrefix = "POSTGRES_"
-
-type Config struct {
-	DSN string `env:"DSN,required"`
+//servo:config prefix=POSTGRES
+type config struct {
+	dsn string `config:"dsn,required"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(cfg *Config) (*Store, error) {
-	pool, err := pgxpool.New(context.Background(), cfg.DSN)
+func New(cfg config) (*Store, error) {
+	pool, err := pgxpool.New(context.Background(), cfg.dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
 	return &Store{pool: pool}, nil
 }
 ```
+
+The `//servo:config` directive is [chapter 3](03-configuration.md)'s whole mechanism in one
+comment: `servo generate` writes this package's loader beside it, `New` receives a filled struct,
+and a deployment without `POSTGRES_DSN` fails at startup naming the variable. Nothing here imports
+a config package, because there isn't one — and note that `config` and its `dsn` field are
+entirely unexported. Nothing outside this package constructs or reads them; the injector receives
+the value from the generated loader by inference and passes it straight to `New` without ever
+naming the type. Settings can be as private as any other implementation detail.
 
 The two `var _ repository.X = (*Store)(nil)` lines aren't runtime code — they're compile-time
 assertions. If `Store` ever stops satisfying either interface, the build fails right here, with a
@@ -343,12 +345,6 @@ And run the tests:
 
 ```
 $ make test-integration
-=== RUN   TestNewFailsWhenARequiredVarIsMissing
---- PASS: TestNewFailsWhenARequiredVarIsMissing (0.00s)
-=== RUN   TestNewAppliesDefaultsAndParsesTypedFields
---- PASS: TestNewAppliesDefaultsAndParsesTypedFields (0.00s)
-PASS
-ok  	example.com/servoorders/internal/config	0.351s
 ?   	example.com/servoorders/internal/domain	[no test files]
 ?   	example.com/servoorders/internal/repository/migrations	[no test files]
 === RUN   TestCreateAndGetOrder

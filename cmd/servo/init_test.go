@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -28,8 +29,91 @@ func TestRunInitScaffoldsSpecFile(t *testing.T) {
 	if !strings.Contains(content, "package worker") {
 		t.Errorf("scaffold should detect the package name from the existing main.go, got:\n%s", content)
 	}
-	if !strings.Contains(content, "//go:generate go run github.com/okian/servo/v3/cmd/servo generate") {
-		t.Errorf("scaffold missing go:generate directive:\n%s", content)
+	// The directive is deliberately NOT in this file: go generate honours
+	// build constraints, so one inside the servoinject file is invisible
+	// to `go generate ./...`, which then exits 0 having done nothing.
+	if strings.Contains(content, "go:generate") {
+		t.Errorf("the go:generate directive must not live in the tagged spec file, where go generate cannot see it:\n%s", content)
+	}
+
+	gen, err := os.ReadFile(filepath.Join(dir, "servo_generate.go"))
+	if err != nil {
+		t.Fatalf("reading the scaffolded directive file: %v", err)
+	}
+	directive := string(gen)
+	if strings.Contains(directive, "//go:build") {
+		t.Errorf("the directive file must carry no build constraint at all:\n%s", directive)
+	}
+	for _, want := range []string{"package worker", "//go:generate go tool servo generate"} {
+		if !strings.Contains(directive, want) {
+			t.Errorf("directive file missing %q:\n%s", want, directive)
+		}
+	}
+}
+
+// TestRunInitScaffoldedWorkflowIsReachableByGoGenerate is the end-to-end
+// half: it builds the module the scaffold describes and confirms `go
+// generate ./...` actually reaches the directive. The unit assertions
+// above cannot catch a directive that is present, correct, and never run.
+func TestRunInitScaffoldedWorkflowIsReachableByGoGenerate(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", `module example.com/initflow
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+root+`
+`)
+	mustWriteFile(t, dir, "pkg/pkg.go", `package pkg
+
+type T struct{}
+
+func New() *T { return &T{} }
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", `package main
+
+func main() {}
+`)
+	appDir := filepath.Join(dir, "cmd", "app")
+	if err := runInit(appDir, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	mustWriteFile(t, dir, "cmd/app/servo_spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/initflow/pkg"
+	"github.com/okian/servo/v3/servo"
+)
+
+func wire() {
+	servo.Build(
+		servo.Root[*pkg.T](),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+
+	// The go command has to be able to find the tool the directive names,
+	// which is the second half of the same failure: without it, `go run
+	// <the generator's package>` fails on a missing go.sum entry, because a
+	// consumer requires servo for the marker package alone.
+	get := exec.Command("go", "get", "-tool", "github.com/okian/servo/v3/cmd/servo")
+	get.Dir = dir
+	if out, err := get.CombinedOutput(); err != nil {
+		t.Skipf("go get -tool needs the module proxy or a warm cache; skipping: %v\n%s", err, out)
+	}
+
+	gen := exec.Command("go", "generate", "./...")
+	gen.Dir = dir
+	if out, err := gen.CombinedOutput(); err != nil {
+		t.Fatalf("go generate ./...: %v\n%s", err, out)
+	}
+	if _, err := os.Stat(filepath.Join(appDir, "servo_gen.go")); err != nil {
+		t.Fatalf("`go generate ./...` produced no servo_gen.go — the scaffolded directive was not reached: %v", err)
 	}
 }
 
@@ -152,11 +236,18 @@ func TestRunInitScaffoldsAVariantSpec(t *testing.T) {
 	}
 	for _, want := range []string{
 		"//go:build servoinject && prod",
-		"servo generate --tags=prod",
 	} {
 		if !strings.Contains(string(body), want) {
 			t.Errorf("scaffolded spec missing %q:\n%s", want, body)
 		}
+	}
+
+	gen, err := os.ReadFile(filepath.Join(dir, "servo_generate.go"))
+	if err != nil {
+		t.Fatalf("reading the scaffolded directive file: %v", err)
+	}
+	if !strings.Contains(string(gen), "servo generate --tags=prod") {
+		t.Errorf("the directive should carry the variant's tags:\n%s", gen)
 	}
 
 	// The default name is untouched, so the two coexist.
@@ -185,6 +276,65 @@ func TestRunInitWarnsAboutAnUnexcludedSibling(t *testing.T) {
 	}
 	if !strings.Contains(out, "servoinject && !prod") {
 		t.Errorf("expected the warning to give the constraint to narrow it to, got:\n%s", out)
+	}
+}
+
+// TestRunInitStaysQuietWhenTheSiblingAlreadyExcludesTheNewTags is the case
+// the warning must not fire on, and the reason it is worth a test of its
+// own: a default spec already gated `servoinject && !prod` is invisible
+// under --tags=prod, so the two variants can never compile together.
+// Warning here anyway would train people to scroll past the message in the
+// one case where it is telling them something true.
+func TestRunInitStaysQuietWhenTheSiblingAlreadyExcludesTheNewTags(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "servo_spec.go", "//go:build servoinject && !prod\n\npackage main\n")
+
+	out := captureStdout(t, func() {
+		if err := runInit(dir, []string{"prod"}); err != nil {
+			t.Fatalf("init --tags=prod: %v", err)
+		}
+	})
+	if strings.Contains(out, "also visible with") {
+		t.Errorf("a sibling that already excludes prod drew an overlap warning:\n%s", out)
+	}
+	// Proof the scan actually looked at the sibling rather than skipping
+	// the directory outright: the run really did scaffold the variant.
+	if !strings.Contains(out, "servo_spec_prod.go") {
+		t.Errorf("init --tags=prod did not scaffold the variant at all:\n%s", out)
+	}
+}
+
+// TestWarnAboutUnexcludedSiblingsSkipsAFileItCannotParse: the scan reads
+// every .go file in the directory, including one being edited in another
+// window. A file that does not parse has to be stepped over rather than
+// end the scan, or a real overlapping sibling stays unreported behind it.
+// os.ReadDir returns entries sorted by name, so the broken file has to
+// sort first for this to prove anything.
+func TestWarnAboutUnexcludedSiblingsSkipsAFileItCannotParse(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "aaa_broken.go", "not valid go source {{{")
+	mustWriteFile(t, dir, "servo_spec.go", "//go:build servoinject\n\npackage main\n")
+
+	out := captureStdout(t, func() {
+		warnAboutUnexcludedSiblings(dir, filepath.Join(dir, "servo_spec_prod.go"), []string{"prod"})
+	})
+	if !strings.Contains(out, "servo_spec.go is also visible with --tags=prod") {
+		t.Errorf("the scan stopped at the unparseable file instead of stepping over it, got:\n%s", out)
+	}
+}
+
+// TestWarnAboutUnexcludedSiblingsOnAnUnreadableDirectory: the warning is
+// advice printed after the spec file has already been written, so a
+// directory it cannot read must leave the scaffold successful and silent
+// rather than turn it into a failure.
+func TestWarnAboutUnexcludedSiblingsOnAnUnreadableDirectory(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "does-not-exist")
+
+	out := captureStdout(t, func() {
+		warnAboutUnexcludedSiblings(missing, filepath.Join(missing, "servo_spec_prod.go"), []string{"prod"})
+	})
+	if out != "" {
+		t.Errorf("expected no output for a directory that cannot be read, got:\n%s", out)
 	}
 }
 

@@ -1,314 +1,92 @@
 package main
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"go/types"
+	"bytes"
+	"errors"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"golang.org/x/tools/go/analysis"
-	"golang.org/x/tools/go/packages"
-
-	"github.com/okian/servo/v3/internal/graph"
 )
 
-// pkgImporter shares object identity with a real go/packages load of the
-// servo package, so the fixture's "github.com/okian/servo/v3/servo" import
-// resolves to the exact same types.Package the analyzer's own
-// pass.TypesInfo will reference. See internal/graph/capabilities_test.go
-// for why this matters (a second, independent Check of "servo" would
-// otherwise produce a non-identical package, breaking the fn.Pkg().Path()
-// comparison here just as it broke types.Implements there).
-type pkgImporter struct{ byPath map[string]*types.Package }
-
-func newPkgImporter(roots ...*packages.Package) *pkgImporter {
-	idx := &pkgImporter{byPath: map[string]*types.Package{}}
-	var add func(p *packages.Package)
-	add = func(p *packages.Package) {
-		if _, ok := idx.byPath[p.PkgPath]; ok {
-			return
-		}
-		idx.byPath[p.PkgPath] = p.Types
-		for _, dep := range p.Imports {
-			add(dep)
-		}
+// TestInheritedTagsRefusal pins both halves of the -tags contract: the
+// flag is refused wherever and however it is spelled, and a bare -tags
+// with nothing after it is not (there is no configuration to mistake it
+// for, and go/analysis's own parser will report it).
+func TestInheritedTagsRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		reject bool
+	}{
+		{"equals form", []string{"-tags=prod", "./..."}, true},
+		{"double dash", []string{"--tags=prod", "./..."}, true},
+		{"separate value", []string{"-tags", "prod", "./..."}, true},
+		{"after the package list", []string{"./...", "-tags=prod"}, true},
+		{"empty value", []string{"-tags=", "./..."}, false},
+		{"trailing with no value", []string{"./...", "-tags"}, false},
+		{"absent", []string{"./..."}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, reject := inheritedTagsRefusal(tc.args)
+			if reject != tc.reject {
+				t.Fatalf("inheritedTagsRefusal(%q) = %v, want %v", tc.args, reject, tc.reject)
+			}
+			if !reject {
+				return
+			}
+			// The message has to name the invocation that works, or the
+			// refusal is just an obstacle.
+			for _, want := range []string{"go vet", "-vettool", "-tags=prod"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("refusal does not mention %q:\n%s", want, msg)
+				}
+			}
+		})
 	}
-	for _, p := range roots {
-		add(p)
-	}
-	return idx
 }
 
-func (i *pkgImporter) Import(path string) (*types.Package, error) {
-	if path == "unsafe" {
-		return types.Unsafe, nil
-	}
-	if pkg, ok := i.byPath[path]; ok {
-		return pkg, nil
-	}
-	return nil, &importNotFoundError{path}
-}
-
-type importNotFoundError struct{ path string }
-
-func (e *importNotFoundError) Error() string { return "pkgImporter: package not found: " + e.path }
-
-func loadServoPackage(t *testing.T) *packages.Package {
-	t.Helper()
-	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports}
-	pkgs, err := packages.Load(cfg, graph.ServoPackagePath)
-	if err != nil {
-		t.Fatalf("load servo package: %v", err)
-	}
-	if len(pkgs) != 1 || pkgs[0].Types == nil {
-		t.Fatalf("expected exactly one loaded servo package, got %d", len(pkgs))
-	}
-	return pkgs[0]
-}
-
-// runOn type-checks src as one file and runs the analyzer directly against
-// a hand-built analysis.Pass, returning every reported message.
-func runOn(t *testing.T, src string) []string {
-	t.Helper()
-	servoPkg := loadServoPackage(t)
-
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "spec.go", src, parser.ParseComments)
-	if err != nil {
-		t.Fatalf("parse: %v", err)
-	}
-	info := &types.Info{
-		Defs:      map[*ast.Ident]types.Object{},
-		Uses:      map[*ast.Ident]types.Object{},
-		Instances: map[*ast.Ident]types.Instance{},
-	}
-	conf := types.Config{Importer: newPkgImporter(servoPkg)}
-	pkg, err := conf.Check("example.com/fixture", fset, []*ast.File{f}, info)
-	if err != nil {
-		t.Fatalf("typecheck: %v", err)
+// TestTagsRefusalStopsTheRealBinary checks the half of the contract that
+// only exists once inheritedTagsRefusal's answer has been turned into an
+// exit status, which is main()'s entire job. A refusal that printed the
+// right paragraph and still exited 0 would be worse than no check at all:
+// `go vet -vettool=servo-vet` and every CI step behind it read the exit
+// code, not the prose, so the run would go green having analysed nothing
+// the caller asked for. It also has to be a refusal rather than an
+// analysis — reaching singlechecker.Main at all is the failure this
+// guards against — and the message belongs on stderr, where a wrapper
+// capturing vet's stdout will not swallow it.
+//
+// This has to be a subprocess: main() calls os.Exit, so anything in-process
+// would take the test binary down with it. Building and running the real
+// thing is the pattern the rest of this repo already uses wherever the unit
+// under test is a whole program (see cmd/servo's fixture builds). Being a
+// subprocess, it moves no coverage number — main() stays uncovered by
+// construction, exactly as codecov.yml describes.
+func TestTagsRefusalStopsTheRealBinary(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "servo-vet")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
 	}
 
-	var got []string
-	pass := &analysis.Pass{
-		Fset:      fset,
-		Files:     []*ast.File{f},
-		Pkg:       pkg,
-		TypesInfo: info,
-		Report:    func(d analysis.Diagnostic) { got = append(got, d.Message) },
-	}
-	if _, err := run(pass); err != nil {
-		t.Fatalf("run: %v", err)
-	}
-	return got
-}
+	cmd := exec.Command(bin, "-tags=prod", "./...")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
 
-func TestFlagsMarkerCallWithoutBuildTag(t *testing.T) {
-	const src = `package fixture
-
-import "github.com/okian/servo/v3/servo"
-
-func wire() {
-	servo.Build(
-		servo.Root[int](),
-	)
-}
-`
-	// Both the outer Build call and the nested Root call are flagged
-	// independently: Go evaluates arguments before the call itself, so
-	// servo.Root[int]() would panic even before servo.Build ever runs.
-	got := runOn(t, src)
-	if len(got) != 2 {
-		t.Fatalf("got %d diagnostics, want 2 (Build and the nested Root): %v", len(got), got)
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) {
+		t.Fatalf("servo-vet -tags=prod ./... = %v, want a non-zero exit", err)
 	}
-	joined := strings.Join(got, "\n")
-	for _, want := range []string{"servo.Build", "servo.Root"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("diagnostics %v do not mention %q", got, want)
+	if got := exit.ExitCode(); got != 2 {
+		t.Errorf("exit code = %d, want 2\nstderr:\n%s", got, stderr.String())
+	}
+	for _, want := range []string{"-tags does not work here", "go vet", "-vettool", "-tags=prod"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("stderr does not mention %q:\n%s", want, stderr.String())
 		}
 	}
-}
-
-func TestDoesNotFlagCorrectlyTaggedFile(t *testing.T) {
-	const src = `//go:build servoinject
-
-package fixture
-
-import "github.com/okian/servo/v3/servo"
-
-func wire() {
-	servo.Build(
-		servo.Root[int](),
-	)
-}
-`
-	got := runOn(t, src)
-	if len(got) != 0 {
-		t.Fatalf("got %d diagnostics for a correctly tagged file, want 0: %v", len(got), got)
-	}
-}
-
-func TestFlagsMultiTypeArgMarkerCall(t *testing.T) {
-	const src = `package fixture
-
-import "github.com/okian/servo/v3/servo"
-
-func wire() {
-	servo.Build(
-		servo.Bind[int, int](),
-	)
-}
-`
-	// As with the single-type-arg case, both the outer Build call and the
-	// nested Bind[int, int]() (an IndexListExpr, not IndexExpr) are flagged.
-	got := runOn(t, src)
-	if len(got) != 2 {
-		t.Fatalf("got %d diagnostics, want 2 (Build and the nested Bind): %v", len(got), got)
-	}
-	joined := strings.Join(got, "\n")
-	for _, want := range []string{"servo.Build", "servo.Bind"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("diagnostics %v do not mention %q", got, want)
-		}
-	}
-}
-
-func TestDoesNotFlagUnqualifiedGenericCall(t *testing.T) {
-	const src = `package fixture
-
-func Ident[T any]() T { var zero T; return zero }
-
-func wire() {
-	_ = Ident[int]()
-}
-`
-	got := runOn(t, src)
-	if len(got) != 0 {
-		t.Fatalf("got %d diagnostics for an unqualified (non-selector) generic call, want 0: %v", len(got), got)
-	}
-}
-
-func TestDoesNotFlagUnqualifiedMultiArgGenericCall(t *testing.T) {
-	const src = `package fixture
-
-func Ident2[A, B any]() A { var zero A; return zero }
-
-func wire() {
-	_ = Ident2[int, string]()
-}
-`
-	got := runOn(t, src)
-	if len(got) != 0 {
-		t.Fatalf("got %d diagnostics for an unqualified (non-selector) multi-arg generic call, want 0: %v", len(got), got)
-	}
-}
-
-func TestDoesNotFlagPlainFunctionCall(t *testing.T) {
-	const src = `package fixture
-
-func helper() {}
-
-func wire() {
-	helper()
-}
-`
-	got := runOn(t, src)
-	if len(got) != 0 {
-		t.Fatalf("got %d diagnostics for a plain (non-generic, non-selector) call, want 0: %v", len(got), got)
-	}
-}
-
-func TestDoesNotFlagUnrelatedCalls(t *testing.T) {
-	const src = `package fixture
-
-import "fmt"
-
-func wire() {
-	fmt.Println("Build", "Root")
-}
-`
-	got := runOn(t, src)
-	if len(got) != 0 {
-		t.Fatalf("got %d diagnostics for unrelated calls, want 0: %v", len(got), got)
-	}
-}
-
-// servo.HTTP() is a marker like any other: calling it in an untagged file
-// compiles into the real binary and panics at runtime, so it must be in
-// markerNames — this test is what notices a new marker being forgotten.
-func TestFlagsHTTPMarkerCall(t *testing.T) {
-	const src = `package fixture
-
-import "github.com/okian/servo/v3/servo"
-
-func wire() {
-	servo.Build(
-		servo.HTTP(),
-	)
-}
-`
-	got := runOn(t, src)
-	if len(got) != 2 {
-		t.Fatalf("got %d diagnostics, want 2 (Build and the nested HTTP): %v", len(got), got)
-	}
-	joined := strings.Join(got, "\n")
-	for _, want := range []string{"servo.Build", "servo.HTTP"} {
-		if !strings.Contains(joined, want) {
-			t.Errorf("diagnostics %v do not mention %q", got, want)
-		}
-	}
-}
-
-// Every new HTTP marker is a panic waiting for an untagged file, exactly
-// like the originals — this test is what notices one being forgotten in
-// markerNames.
-func TestFlagsGroupUseRouteExtractMarkerCalls(t *testing.T) {
-	const src = `package fixture
-
-import "github.com/okian/servo/v3/servo"
-
-func wire() {
-	servo.Build(
-		servo.HTTP(
-			servo.Group("telemetry"),
-			servo.Use[int](servo.Route("GET /x")),
-		),
-		servo.Extract[int](),
-	)
-}
-`
-	got := runOn(t, src)
-	// Build, HTTP, Group, Use, Route, Extract — six calls, six diagnostics.
-	if len(got) != 6 {
-		t.Fatalf("got %d diagnostics, want 6: %v", len(got), got)
-	}
-}
-
-// A malformed //servo: directive gets an in-editor squiggle, mirroring the
-// generate-time rejection — the reserved prefix must never silently no-op,
-// and the editor is where the typo is cheapest to fix.
-func TestFlagsMalformedDirectives(t *testing.T) {
-	const src = `package fixture
-
-import "context"
-
-type Resp struct{}
-
-//servo:pots /broken
-func Broken(ctx context.Context) (*Resp, error) { return nil, nil }
-
-//servo:get /fine telemetry
-func Fine(ctx context.Context) (*Resp, error) { return nil, nil }
-
-// an ordinary comment mentioning //servo: mid-line is not a directive
-func Unrelated() {}
-`
-	got := runOn(t, src)
-	if len(got) != 1 {
-		t.Fatalf("got %d diagnostics, want 1: %v", len(got), got)
-	}
-	if !strings.Contains(got[0], `unknown //servo: directive "pots"`) {
-		t.Fatalf("diagnostic = %q", got[0])
+	if stdout.Len() != 0 {
+		t.Errorf("the refusal was written to stdout, where a wrapper capturing vet's output would lose it: %q", stdout.String())
 	}
 }

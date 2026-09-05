@@ -23,7 +23,7 @@ func testPublisher(t *testing.T) (*Publisher, string) {
 		t.Skip("TEST_NATS_URL not set; see docs/tutorial/07-messaging-layer.md")
 	}
 
-	p := New(&Config{URL: url})
+	p := New(Config{URL: url})
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatalf("Init (is NATS running at %s?): %v", url, err)
 	}

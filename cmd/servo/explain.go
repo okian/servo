@@ -64,18 +64,34 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 		}
 	}
 
+	// A servo.Value has no provider to name — the caller is the provider —
+	// so the fields that would describe one carry the declaration instead.
+	// A //servo:config's provider is its generated loader.
+	provider, pos, binding := "", "", node.Binding
+	switch node.Kind {
+	case resolve.NodeSupplied:
+		provider, pos, binding = "the caller, via NewWith", node.SuppliedPos.String(), "supplied"
+		lifetime = "supplied — handed to NewWith once, held for the life of the process"
+	case resolve.NodeConfig:
+		provider = fmt.Sprintf("%s.ServoConfig (generated, env prefix %s)", node.Config.PkgName, node.Config.Prefix)
+		pos = node.Config.Pos.String()
+		lifetime = "config — loaded by New before construction, held for the life of the process"
+	default:
+		provider, pos = node.Provider.Name, node.Provider.Pos.String()
+	}
+
 	if jsonOut {
 		return printJSON(explainJSON{
-			Type: node.Key.String(), Provider: node.Provider.Name, Pos: node.Provider.Pos.String(),
-			Binding: node.Binding, Level: levelOf(node),
+			Type: node.Key.String(), Provider: provider, Pos: pos,
+			Binding: binding, Level: levelOf(node),
 			DependsOn: deps, DependedOn: dependents, Capabilities: node.Capabilities,
 			Scope: scopeKey, Lifetime: lifetime,
 		})
 	}
 
 	fmt.Printf("%s\n", node.Key.String())
-	fmt.Printf("  provider:     %s (%s)\n", node.Provider.Name, node.Provider.Pos)
-	fmt.Printf("  binding:      %s\n", node.Binding)
+	fmt.Printf("  provider:     %s (%s)\n", provider, pos)
+	fmt.Printf("  binding:      %s\n", binding)
 	fmt.Printf("  lifetime:     %s\n", lifetime)
 	fmt.Printf("  level:        %d\n", levelOf(node))
 	fmt.Printf("  depends on:   %s\n", joinOrNone(deps))

@@ -27,16 +27,13 @@ package observability
 // exactly as they would have.
 type Logger struct{ *slog.Logger }
 
+//servo:config prefix=OBS
 type Config struct {
-	LogLevel     string `env:"LOG_LEVEL" envDefault:"info"`
-	OTLPEndpoint string `env:"OTLP_ENDPOINT" envDefault:""`
+	LogLevel     string `config:"log_level,default=info"`
+	OTLPEndpoint string `config:"otlp_endpoint"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, "")
-}
-
-func NewLogger(cfg *Config) *Logger {
+func NewLogger(cfg Config) *Logger {
 	l := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: parseLevel(cfg.LogLevel),
 	}))
@@ -60,6 +57,11 @@ func parseLevel(s string) slog.Level {
 
 `NewLogger` is an ordinary provider, and that is the whole point.
 
+The variables are `OBS_LOG_LEVEL` and `OBS_OTLP_ENDPOINT`. Chapter 3's hand-rolled ancestor of
+this design let "app-wide" settings go unprefixed; the `//servo:config` directive doesn't, because
+an unowned name is how two packages end up quietly reading one variable — so this package's
+settings carry its prefix like everyone else's.
+
 ### Why the logger is a node, and not a call at the top of `main`
 
 The tempting shape is a plain function called before anything else:
@@ -80,7 +82,7 @@ Making the logger a node removes the question instead of answering it. Anything 
 `*observability.Logger`:
 
 ```go
-func New(cfg *Config, log *observability.Logger) *Notifier
+func New(cfg natsbroker.Config, log *observability.Logger) *Notifier
 func New(repo repository.OrderRepository, c cache.OrderCache, publisher broker.EventPublisher, log *observability.Logger) *OrderService
 ```
 
@@ -236,7 +238,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"example.com/servoorders/internal/config"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -248,7 +249,7 @@ type Tracer struct {
 	provider *sdktrace.TracerProvider
 }
 
-func NewTracer(cfg *Config) (*Tracer, error) {
+func NewTracer(cfg Config) (*Tracer, error) {
 	ctx := context.Background()
 	res, err := resource.New(ctx, resource.WithAttributes(
 		semconv.ServiceName("servoorders"),
@@ -285,7 +286,7 @@ understanding rather than a style choice: `api.Server`'s own constructor needs a
 that its `Init` has too. `Init` calls all happen later, together, in one `errgroup`. Splitting this
 into `New` (build) + `Init` (start) the way `postgres.Store` does would hand `api.Server` a
 `*Tracer` whose provider field is still `nil`. Doing all the setup inside `New` itself — the same
-shape every NewConfig already uses — sidesteps the whole question.
+shape a generated config loader uses too — sidesteps the whole question.
 
 The `if cfg.OTLPEndpoint != ""` branch is the other thing worth noticing: with no endpoint
 configured, `NewTracer` still returns a fully working `*Tracer` — spans are created, sampled, and
@@ -295,7 +296,7 @@ it:
 
 ```go
 func TestNewTracerWithNoEndpointStillCreatesSpans(t *testing.T) {
-	tracer, err := observability.NewTracer(&observability.Config{OTLPEndpoint: ""})
+	tracer, err := observability.NewTracer(observability.Config{OTLPEndpoint: ""})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
@@ -321,7 +322,7 @@ asynchronously, in the background. `NewTracer` succeeds immediately even against
 
 ```go
 func TestNewTracerRejectsAnUnreachableEndpointOnlyAtExportTimeNotConstruction(t *testing.T) {
-	tracer, err := observability.NewTracer(&observability.Config{OTLPEndpoint: "127.0.0.1:1"})
+	tracer, err := observability.NewTracer(observability.Config{OTLPEndpoint: "127.0.0.1:1"})
 	if err != nil {
 		t.Fatalf("NewTracer: %v, want it to succeed even with an unreachable endpoint", err)
 	}
@@ -354,7 +355,7 @@ chain grows two more layers:
 
 ```go
 func New(
-	cfg *Config,
+	cfg Config,
 	orders *service.OrderService,
 	authSvc *service.AuthService,
 	issuer *auth.Issuer,
@@ -407,12 +408,12 @@ jaeger:
     - "4318:4318"   # OTLP over HTTP
 ```
 
-Start everything, including `OTLP_ENDPOINT` this time:
+Start everything, including `OBS_OTLP_ENDPOINT` this time:
 
 ```
 $ make up
 $ POSTGRES_DSN=... REDIS_ADDR=... NATS_URL=... JWT_SECRET=... \
-  OTLP_ENDPOINT=localhost:4318 \
+  OBS_OTLP_ENDPOINT=localhost:4318 \
   go run ./cmd/orders
 ```
 

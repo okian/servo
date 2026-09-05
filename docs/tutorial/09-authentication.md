@@ -19,7 +19,6 @@ import (
 	"time"
 	"uuid"
 
-	"example.com/servoorders/internal/config"
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -34,21 +33,21 @@ type Issuer struct {
 	expiry time.Duration
 }
 
-const envPrefix = "JWT_"
-
+//servo:config prefix=JWT
 type Config struct {
-	Secret string        `env:"SECRET,required"`
-	Expiry time.Duration `env:"EXPIRY" envDefault:"1h"`
+	Secret string        `config:"secret,required,secret"`
+	Expiry time.Duration `config:"expiry,default=1h"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(cfg *Config) *Issuer {
+func New(cfg Config) *Issuer {
 	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}
 }
 ```
+
+The `secret` tag on `Secret` is doing real work: the generated loader's error paths never echo a
+value for a field tagged secret, so a malformed `JWT_SECRET` cannot leak into a log line. And
+`default=1h` is validated as a `time.Duration` when `servo generate` runs — a typo there fails the
+build, not a deploy at 3am.
 
 `Issuer` has no lifecycle capabilities — no `Init`, no `Stop`, no `Health`. It's pure logic, same
 as `OrderService` from the last chapter: nothing about signing or verifying a token needs a

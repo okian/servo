@@ -58,7 +58,7 @@ func New(ctx context.Context) (*App, error) {
 
 	db, dbCleanup, err := NewDB(logger)
 	if err != nil {
-		_ = a.stopLogger(ctx)
+		_ = a.stopLogger(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.db = db
@@ -93,7 +93,10 @@ func New(ctx context.Context) (*App, error) {
 			return err
 		})
 		if err := g.Wait(); err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}
@@ -102,7 +105,10 @@ func New(ctx context.Context) (*App, error) {
 		err := a.server.Init(ctx)
 		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/app.Server", Duration: time.Since(start)})
 		if err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}
@@ -122,7 +128,9 @@ func (a *App) stopDb(ctx context.Context) servo.NodeResult {
 	a.dbStopOnce.Do(func() {
 		var results []servo.NodeResult
 		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.DB", a.db.Stop))
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.DB", func(context.Context) error { a.dbCleanup(); return nil }))
+		if a.dbCleanup != nil {
+			results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.DB", func(context.Context) error { a.dbCleanup(); return nil }))
+		}
 		a.dbStopResult = servo.MergeNodeResults("*example.com/app.DB", results...)
 	})
 	return a.dbStopResult

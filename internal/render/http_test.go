@@ -38,7 +38,7 @@ func httpResolved() *resolve.Resolved {
 }
 
 func TestToGraphAttributesHTTP(t *testing.T) {
-	g := ToGraph(httpResolved())
+	g := ToGraph(httpResolved(), "")
 	if g.HTTP == nil {
 		t.Fatalf("Graph.HTTP is nil")
 	}
@@ -66,7 +66,7 @@ func TestToGraphAttributesHTTP(t *testing.T) {
 // The JSON schema gains an "http" object; a plan-less graph omits it, so
 // existing consumers see byte-identical output.
 func TestGraphJSONIncludesHTTP(t *testing.T) {
-	b, err := json.Marshal(ToGraph(httpResolved()))
+	b, err := json.Marshal(ToGraph(httpResolved(), ""))
 	if err != nil {
 		t.Fatal(err)
 	}

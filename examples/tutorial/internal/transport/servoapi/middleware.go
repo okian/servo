@@ -11,7 +11,6 @@ import (
 	"github.com/okian/servo/v3/servo"
 
 	"example.com/servoorders/internal/auth"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/session"
 )
 
@@ -76,21 +75,21 @@ func (e *ClaimsExtractor) Extract(r *http.Request) (auth.Claims, error) {
 	return claims, nil
 }
 
-// listenConfig reads the same HTTP_ADDR every deployment already sets for
-// this service — the api transport's Config does too, but each injector
-// resolves only its own.
-type listenConfig struct {
-	Addr string `env:"HTTP_ADDR" envDefault:":8080"`
+// ListenConfig reads HTTP_ADDR the same way the api transport's Config
+// does — a //servo:config struct whose loader the generator emits, so this
+// injector never writes env-parsing code. Each injector resolves only its
+// own config, so sharing the HTTP_ADDR spelling is not a collision.
+//
+//servo:config prefix=HTTP
+type ListenConfig struct {
+	Addr string `config:"addr,default=:8080"`
 }
 
-// NewHTTPConfig is the node servo.HTTP() requires: the user constructs it,
-// so where the values come from stays this module's business.
-func NewHTTPConfig(src config.Source) (*servo.HTTPConfig, error) {
-	lc, err := config.Parse[listenConfig](src, "")
-	if err != nil {
-		return nil, err
-	}
-	host, portStr, err := net.SplitHostPort(lc.Addr)
+// NewHTTPConfig is the node servo.HTTP() requires: it turns the loaded
+// address into the servo.HTTPConfig the emitted server binds. The listen
+// config arrives by value, built by the generated loader.
+func NewHTTPConfig(cfg ListenConfig) (*servo.HTTPConfig, error) {
+	host, portStr, err := net.SplitHostPort(cfg.Addr)
 	if err != nil {
 		return nil, err
 	}

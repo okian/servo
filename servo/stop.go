@@ -2,6 +2,8 @@ package servo
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"time"
 )
 
@@ -16,12 +18,29 @@ var DefaultStopBudget = 5 * time.Second
 // abandoned rather than blocking forever if fn does not return in time. The
 // result channel is buffered so a goroutine that outlives its budget can
 // still send without leaking.
+//
+// A panic in fn is recovered and reported as StatusFailed, with the panic
+// value and the stack that produced it. It has to be: the goroutine is
+// servo's, not the caller's, so a recover in main cannot reach a panic
+// here — the process would die mid-teardown with every node behind this
+// one still running and no Report to say which. Turning it into one failed
+// node lets the rest of the unwind finish and names the culprit.
 func RunStop(ctx context.Context, budget time.Duration, name string, fn func(context.Context) error) NodeResult {
 	cctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
 	done := make(chan error, 1)
-	go func() { done <- fn(cctx) }()
+	go func() {
+		// Only ever one send: the deferred recover reaches this line only
+		// when fn panicked, which is precisely when the send below it did
+		// not happen.
+		defer func() {
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("servo: %s panicked during stop: %v\n%s", name, r, debug.Stack())
+			}
+		}()
+		done <- fn(cctx)
+	}()
 
 	select {
 	case err := <-done:

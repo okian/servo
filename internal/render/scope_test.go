@@ -117,7 +117,7 @@ func (e *notFoundError) Error() string { return "no package " + e.path }
 // scope's key and their level within it, and the scope itself reports what
 // it holds and what it borrows.
 func TestToGraphAttributesScopes(t *testing.T) {
-	g := ToGraph(buildScopedResolved(t))
+	g := ToGraph(buildScopedResolved(t), "")
 
 	if len(g.Scopes) != 1 {
 		t.Fatalf("got %d scopes, want 1", len(g.Scopes))
@@ -156,7 +156,7 @@ func TestToGraphAttributesScopes(t *testing.T) {
 }
 
 func TestRenderersAcceptARealScopedGraph(t *testing.T) {
-	g := ToGraph(buildScopedResolved(t))
+	g := ToGraph(buildScopedResolved(t), "")
 	for name, out := range map[string]string{"text": Text(g), "dot": DOT(g), "mermaid": Mermaid(g)} {
 		if !strings.Contains(out, "example.com/app.RoomKey") {
 			t.Errorf("%s output does not mention the scope key:\n%s", name, out)

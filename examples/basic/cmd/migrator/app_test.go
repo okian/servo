@@ -9,12 +9,12 @@ import (
 )
 
 // This graph has no Runner at all — Migrator only implements Initializer,
-// so its work happens during New and Run has nothing to do. Same main.go
-// shape as cmd/basic regardless.
+// so its work happens during NewWith and Run has nothing to do. Same
+// main.go shape as cmd/basic regardless.
 func TestAppRunsAndStopsCleanly(t *testing.T) {
 	defer servotest.NoLeaks(t)
 
-	app, err := New(context.Background())
+	app, err := NewWith(context.Background(), Values{Target: "2026-08-29-add-orders"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -41,8 +41,24 @@ func TestAppRunsAndStopsCleanly(t *testing.T) {
 	servotest.AssertStopOrder(t, rec, "*example.com/servobasic/postgres.DB", "*example.com/servobasic/logger.Logger")
 }
 
-func TestAppHealthReflectsDB(t *testing.T) {
+// TestNewSuppliesTheZeroValue pins what the plain New does for a graph that
+// declares a servo.Value: it still exists, and it still builds — with the
+// zero value, which for a schema version is the empty string rather than
+// anything anyone meant. It is why main.go calls NewWith.
+func TestNewSuppliesTheZeroValue(t *testing.T) {
 	app, err := New(context.Background())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = app.Shutdown(context.Background()) }()
+
+	if got := app.target; got != "" {
+		t.Errorf("New supplied target = %q, want the zero value", got)
+	}
+}
+
+func TestAppHealthReflectsDB(t *testing.T) {
+	app, err := NewWith(context.Background(), Values{Target: "latest"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

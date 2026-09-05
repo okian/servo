@@ -3,6 +3,7 @@ package main
 import (
 	"go/ast"
 	"go/parser"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -88,6 +89,28 @@ func TestMainModuleScope(t *testing.T) {
 	}
 	if scope["example.com/app/nomodule"] {
 		t.Errorf("expected a package with no Module info to be excluded from scope: %v", scope)
+	}
+}
+
+// TestModuleRootIsThePrefixPositionsAreTrimmedAgainst covers both answers
+// moduleRoot can give. The directory it returns is stripped from every
+// position `servo graph` prints, which is the only reason those strings
+// match the ones the generated App.Graph() carries. A package that came
+// back without module information — a load that never resolved one — has
+// no such prefix, and answering with anything other than the empty string
+// would trim a path that was never there and mangle every position in the
+// output.
+func TestModuleRootIsThePrefixPositionsAreTrimmedAgainst(t *testing.T) {
+	withModule := &load.Spec{InjectorPkg: &packages.Package{
+		Module: &packages.Module{Dir: filepath.FromSlash("/src/app")},
+	}}
+	if got, want := moduleRoot(withModule), filepath.FromSlash("/src/app"); got != want {
+		t.Errorf("moduleRoot with module info = %q, want %q", got, want)
+	}
+
+	withoutModule := &load.Spec{InjectorPkg: &packages.Package{}}
+	if got := moduleRoot(withoutModule); got != "" {
+		t.Errorf("moduleRoot without module info = %q, want the empty string so nothing is trimmed", got)
 	}
 }
 

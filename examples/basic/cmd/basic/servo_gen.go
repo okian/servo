@@ -71,7 +71,7 @@ func New(ctx context.Context) (*App, error) {
 
 	db, err := postgres.New(logger)
 	if err != nil {
-		_ = a.stopLogger(ctx)
+		_ = a.stopLogger(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.db = db
@@ -111,7 +111,10 @@ func New(ctx context.Context) (*App, error) {
 			return err
 		})
 		if err := g.Wait(); err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}

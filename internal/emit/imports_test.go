@@ -193,3 +193,55 @@ func TestImportManagerRenderImportsIncludesAliasForm(t *testing.T) {
 		t.Errorf("expected an aliased import line, got:\n%s", out)
 	}
 }
+
+// TestImportManagerAliasesASingleSegmentPathWithANumericSuffix is the
+// case extending backward cannot reach: "errors" has no earlier segment
+// to borrow, and its own name is already spoken for by a user package
+// scanned first. Falling through used to return "errors" a second time,
+// so the file declared two imports under one identifier and did not
+// compile — with `servo generate` reporting success, since it formats the
+// output rather than type-checking it.
+func TestImportManagerAliasesASingleSegmentPathWithANumericSuffix(t *testing.T) {
+	m := NewImportManager()
+	if got := m.Add("example.com/app/errors", "errors"); got != "errors" {
+		t.Fatalf("the user package = %q, want the bare errors it claimed first", got)
+	}
+	got := m.Add("errors", "errors")
+	if got == "errors" {
+		t.Fatalf("the stdlib import reused the identifier the user package holds")
+	}
+	if got != "errors2" {
+		t.Errorf("Add(\"errors\", \"errors\") = %q, want errors2", got)
+	}
+
+	// The rendered block is where the collision would have shown up: two
+	// lines, two distinct identifiers.
+	out := m.RenderImports()
+	if !strings.Contains(out, "errors2 \"errors\"") {
+		t.Errorf("the stdlib import is not rendered under its alias:\n%s", out)
+	}
+	if !strings.Contains(out, "\t\"example.com/app/errors\"\n") {
+		t.Errorf("the user package lost its unaliased line:\n%s", out)
+	}
+}
+
+// TestImportManagerAliasesAPathWhoseEveryPrefixIsTaken is the other way
+// aliasFor runs out: every backward extension of foo/bar/config is
+// already claimed, and so is the underscore-joined whole path. There is
+// no segment left to say anything with, so a numeric suffix is all that
+// remains — worse than "barconfig" at telling a reader which config this
+// is, and still better than an identifier that names two imports.
+func TestImportManagerAliasesAPathWhoseEveryPrefixIsTaken(t *testing.T) {
+	m := NewImportManager()
+	m.Reserve("config", "barconfig", "foobarconfig", "foo_bar_config")
+
+	got := m.Add("foo/bar/config", "config")
+	for _, taken := range []string{"config", "barconfig", "foobarconfig", "foo_bar_config"} {
+		if got == taken {
+			t.Fatalf("Add returned %q, which is already claimed", got)
+		}
+	}
+	if got != "foo_bar_config2" {
+		t.Errorf("Add(%q, %q) = %q, want foo_bar_config2", "foo/bar/config", "config", got)
+	}
+}

@@ -78,7 +78,7 @@ services:
       REDIS_ADDR: redis:6379
       NATS_URL: nats://nats:4222
       JWT_SECRET: dev-secret-do-not-use-in-production
-      OTLP_ENDPOINT: jaeger:4318
+      OBS_OTLP_ENDPOINT: jaeger:4318
     ports:
       - "8080:8080"
       - "8081:8081"

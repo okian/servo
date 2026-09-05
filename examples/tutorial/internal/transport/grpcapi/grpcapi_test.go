@@ -138,22 +138,22 @@ func newTestServer(t *testing.T) *grpcapi.Server {
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), gomock.Any()).Return(nil, domain.ErrNotFound).AnyTimes()
 
-	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
 	metrics := observability.NewMetrics()
-	tracer, err := observability.NewTracer(&observability.Config{})
+	tracer, err := observability.NewTracer(observability.Config{})
 	if err != nil {
 		t.Fatalf("NewTracer: %v", err)
 	}
 
 	return grpcapi.New(
-		&grpcapi.Config{},
+		grpcapi.Config{},
 		service.New(repo, orderCache, pub, quietLogger()),
 		service.NewAuthService(users, issuer),
 		issuer,
 		metrics,
 		tracer,
-		resilience.NewRateLimiter(&resilience.Config{RPS: 1000}, metrics),
-		newFakeSessions(&session.Config{Recent: 10}),
+		resilience.NewRateLimiter(resilience.Config{RPS: 1000}, metrics),
+		newFakeSessions(session.NewSettings(session.Config{Recent: 10})),
 		quietLogger(),
 	)
 }
@@ -163,13 +163,13 @@ func quietLogger() *observability.Logger {
 }
 
 type fakeSessions struct {
-	cfg *session.Config
-	mu  sync.Mutex
-	by  map[session.UserID]*session.Session
+	settings *session.Settings
+	mu       sync.Mutex
+	by       map[session.UserID]*session.Session
 }
 
-func newFakeSessions(cfg *session.Config) *fakeSessions {
-	return &fakeSessions{cfg: cfg, by: map[session.UserID]*session.Session{}}
+func newFakeSessions(settings *session.Settings) *fakeSessions {
+	return &fakeSessions{settings: settings, by: map[session.UserID]*session.Session{}}
 }
 
 func (f *fakeSessions) Acquire(ctx context.Context) (*session.Session, func(), error) {
@@ -182,7 +182,7 @@ func (f *fakeSessions) Acquire(ctx context.Context) (*session.Session, func(), e
 	defer f.mu.Unlock()
 	s, ok := f.by[key]
 	if !ok {
-		s = session.New(key, f.cfg, quietLogger())
+		s = session.New(key, f.settings, quietLogger())
 		f.by[key] = s
 	}
 	return s, func() {}, nil

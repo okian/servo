@@ -88,7 +88,7 @@ you — nothing here is assembled by hand.
 |---|---------|-----------------|
 | 1 | [Architecture overview](01-architecture-overview.md) | Layers, why layered, where servo fits |
 | 2 | [Project setup](02-project-setup.md) | Module layout, tools, the Makefile |
-| 3 | [Configuration](03-configuration.md) | Typed env config, validation, secrets |
+| 3 | [Configuration](03-configuration.md) | Per-package settings via `//servo:config` — generated loaders, secrets, `servo config` |
 | 4 | [Domain layer](04-domain-layer.md) | Core types, framework-free |
 | 5 | [Repository layer](05-repository-layer.md) | Postgres, migrations, connection pooling |
 | 6 | [Caching layer](06-caching-layer.md) | Redis, cache-aside, invalidation |

@@ -2,6 +2,7 @@ package emit
 
 import (
 	"fmt"
+	"go/token"
 	"strings"
 
 	"github.com/okian/servo/v3/internal/resolve"
@@ -14,6 +15,17 @@ func (e *emitter) graphFunc() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "func (a *%s) Graph() %s.Graph {\n", e.appType(), e.servoAlias)
 	fmt.Fprintf(&b, "\treturn %s.Graph{Nodes: []%s.GraphNode{\n", e.servoAlias, e.servoAlias)
+	// Supplied values first, at level 0: the app depends on them before it
+	// builds anything, and a graph view that omitted them would show
+	// consumers with a dependency on nothing.
+	for _, n := range e.resolved.Supplied {
+		e.writeGraphNode(&b, n, 0, "")
+	}
+	// Configs next, also level 0: loaded by New before anything is
+	// constructed, so every consumer sits above them.
+	for _, n := range e.resolved.Configs {
+		e.writeGraphNode(&b, n, 0, "")
+	}
 	for _, n := range e.resolved.Order {
 		e.writeGraphNode(&b, n, n.Level, "")
 	}
@@ -82,8 +94,20 @@ func (e *emitter) writeGraphNode(b *strings.Builder, n *resolve.Node, level int,
 	for i, d := range n.Deps {
 		deps[i] = d.Key.String()
 	}
+	// Read before the provider is touched: a supplied value and a config
+	// have none.
+	var binding string
+	var pos token.Position
+	switch n.Kind {
+	case resolve.NodeSupplied:
+		binding, pos = "supplied", n.SuppliedPos
+	case resolve.NodeConfig:
+		binding, pos = n.Binding, n.Config.Pos
+	default:
+		binding, pos = n.Binding, n.Provider.Pos
+	}
 	fmt.Fprintf(b, "\t\t{Type: %q, Level: %d, Deps: %s, Capabilities: %s, Binding: %q, Pos: %q",
-		n.Key.String(), level, stringSliceLiteral(deps), stringSliceLiteral(n.Capabilities), n.Binding, e.posString(n.Provider.Pos))
+		n.Key.String(), level, stringSliceLiteral(deps), stringSliceLiteral(n.Capabilities), binding, e.posString(pos))
 	if scope != "" {
 		fmt.Fprintf(b, ", Scope: %q", scope)
 	}

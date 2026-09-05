@@ -29,6 +29,14 @@ var methods = map[string]string{
 
 const methodList = "get, post, put, patch, delete, head, options"
 
+// IsDirectiveMethod reports whether name is one of the route verbs this
+// scanner owns. servovet uses it to decide whether an unknown //servo:
+// name belongs to routes or to the config feature.
+func IsDirectiveMethod(name string) bool {
+	_, ok := methods[name]
+	return ok
+}
+
 // bodylessMethods are the methods whose requests the generated decoder
 // refuses to read a body (JSON or form) for.
 var bodylessMethods = map[string]bool{"GET": true, "HEAD": true, "DELETE": true, "OPTIONS": true}
@@ -163,10 +171,21 @@ func scanFile(pkg *packages.Package, file *ast.File, st *servoHTTPTypes, routes 
 
 	handled := map[*ast.FuncDecl]bool{}
 	for _, group := range file.Comments {
+		fd := docOf[group]
 		var claimed []directive
 		bad := false
 		for _, c := range group.List {
 			if !strings.HasPrefix(c.Text, directivePrefix) {
+				continue
+			}
+			// Which //servo: lines this scanner claims: only the route
+			// verbs, plus a verb misplaced off a function (a real mistake
+			// worth reporting). Everything else under the reserved prefix —
+			// //servo:config, or a typo of it on a type — belongs to the
+			// config feature, which reads directives off type declarations;
+			// claiming it here would double-report or mislead.
+			name, _, ok := graph.DirectiveLine(c.Text)
+			if ok && !IsDirectiveMethod(name) && fd == nil {
 				continue
 			}
 			pos := pkg.Fset.Position(c.Pos())
@@ -182,7 +201,6 @@ func scanFile(pkg *packages.Package, file *ast.File, st *servoHTTPTypes, routes 
 			continue
 		}
 
-		fd := docOf[group]
 		if fd == nil {
 			// Report against each directive line: a floating directive
 			// registers nothing, which is exactly the silent failure the

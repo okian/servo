@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"time"
+
+	"example.com/servobasic/migrator"
 )
 
 // shutdownTimeout bounds the whole teardown. servo.RunStop already caps each
@@ -13,9 +16,16 @@ import (
 const shutdownTimeout = 30 * time.Second
 
 func main() {
+	target := flag.String("target", "latest", "schema version to migrate to")
+	flag.Parse()
+
 	ctx := context.Background()
 
-	app, err := New(ctx)
+	// NewWith, not New: the target only exists once flag.Parse has run, so
+	// it is declared with servo.Value and handed in here. New still exists
+	// and would compile, but it can only pass the zero value — which for a
+	// schema version is the empty string, not "latest".
+	app, err := NewWith(ctx, Values{Target: migrator.Target(*target)})
 	if err != nil {
 		log.Fatal(err)
 	}

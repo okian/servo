@@ -17,7 +17,7 @@ import (
 func TestLoginSucceedsWithCorrectPassword(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	users := mocks.NewMockUserRepository(ctrl)
-	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
 
 	hash, err := auth.HashPassword("password123")
 	if err != nil {
@@ -44,7 +44,7 @@ func TestLoginSucceedsWithCorrectPassword(t *testing.T) {
 func TestLoginFailsWithWrongPassword(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	users := mocks.NewMockUserRepository(ctrl)
-	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
 
 	hash, _ := auth.HashPassword("password123")
 	users.EXPECT().GetByUsername(gomock.Any(), "alice").Return(&domain.User{Username: "alice", PasswordHash: hash}, nil)
@@ -60,7 +60,7 @@ func TestLoginFailsWithWrongPassword(t *testing.T) {
 func TestLoginFailsWithUnknownUsernameTheSameWayAsWrongPassword(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	users := mocks.NewMockUserRepository(ctrl)
-	issuer := auth.New(&auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
 
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound)
 

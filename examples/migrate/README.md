@@ -20,10 +20,10 @@ servo migrate report:
   v1 has no constructor parameters, so there is no real dependency graph to derive
   an order from — this only surfaces the OLD order values for review.
 
-  order=1    Logger                         examples/migrate/legacy.go:14:2
-  order=2    DB                             examples/migrate/legacy.go:15:2  <- shares this order with another service: a likely latent ordering bug
-  order=2    Cache                          examples/migrate/legacy.go:16:2  <- shares this order with another service: a likely latent ordering bug
-  order=3    Server                         examples/migrate/legacy.go:17:2
+  order=1    Logger                         examples/migrate/legacy.go:21:2
+  order=2    DB                             examples/migrate/legacy.go:22:2  <- shares this order with another service: a likely latent ordering bug
+  order=2    Cache                          examples/migrate/legacy.go:23:2  <- shares this order with another service: a likely latent ordering bug
+  order=3    Server                         examples/migrate/legacy.go:24:2
 
 Skeleton spec (add real constructor dependencies by hand — v1's global-lookup
 style can't be inferred automatically):

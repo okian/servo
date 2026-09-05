@@ -106,6 +106,14 @@ func checkVariantOverlap(dir, ownName, ownConstraint string) error {
 		if !load.ConstraintsOverlap(own, other) {
 			continue
 		}
+		// The two example constraints are built before the message rather
+		// than interpolated inside it: writing them with an explicit
+		// argument index picked up the generated *file* name instead of
+		// the build tag, and because an explicit index also suppresses
+		// fmt's %!(EXTRA) marker, the message printed a paste-in fix that
+		// was not a build tag at all — with nothing to say so.
+		exclusive := fmt.Sprintf("`//go:build %s && !prod`", load.BuildTag)
+		variant := fmt.Sprintf("`//go:build %s && prod`", load.BuildTag)
 		return fmt.Errorf(`servo: %s and %s would both compile in the same build
 
   %-*s %s
@@ -114,14 +122,14 @@ func checkVariantOverlap(dir, ownName, ownConstraint string) error {
 Some build satisfies both constraints at once, and the package would then
 declare App and New twice. Servo mirrors each spec file's own constraint and
 never invents a negation, so the exclusion has to come from the spec files.
-Either gate them so no configuration matches two — `+"`//go:build %[1]s && !prod`"+`
-on the default spec, `+"`//go:build %[1]s && prod`"+` on the other — or, if this
+Either gate them so no configuration matches two — %s
+on the default spec, %s on the other — or, if this
 injector does not vary with these tags at all, leave it alone and scope the
 run to the one that does with --dir`,
 			ownName, name,
 			len(ownName)+1, name+":", line,
 			len(ownName)+1, ownName+":", ownConstraint,
-			load.BuildTag)
+			exclusive, variant)
 	}
 	return nil
 }

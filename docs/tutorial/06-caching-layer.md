@@ -53,7 +53,6 @@ import (
 	"uuid"
 
 	"example.com/servoorders/internal/cache"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
 	goredis "github.com/redis/go-redis/v9"
 )
@@ -66,18 +65,13 @@ type Cache struct {
 
 var _ cache.OrderCache = (*Cache)(nil)
 
-const envPrefix = "REDIS_"
-
-type Config struct {
-	Addr string `env:"ADDR,required"`
+//servo:config prefix=REDIS
+type config struct {
+	addr string `config:"addr,required"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(cfg *Config) *Cache {
-	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.Addr})}
+func New(cfg config) *Cache {
+	return &Cache{client: goredis.NewClient(&goredis.Options{Addr: cfg.addr})}
 }
 ```
 

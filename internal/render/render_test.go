@@ -61,7 +61,7 @@ func buildTestResolved(t *testing.T) *resolve.Resolved {
 
 func TestToGraphShape(t *testing.T) {
 	resolved := buildTestResolved(t)
-	g := ToGraph(resolved)
+	g := ToGraph(resolved, "")
 	if len(g.Nodes) != 2 {
 		t.Fatalf("got %d nodes, want 2", len(g.Nodes))
 	}
@@ -75,7 +75,7 @@ func TestToGraphShape(t *testing.T) {
 }
 
 func TestJSONRoundTrips(t *testing.T) {
-	g := ToGraph(buildTestResolved(t))
+	g := ToGraph(buildTestResolved(t), "")
 	out, err := JSON(g)
 	if err != nil {
 		t.Fatalf("JSON: %v", err)
@@ -90,7 +90,7 @@ func TestJSONRoundTrips(t *testing.T) {
 }
 
 func TestTextGroupsByLevel(t *testing.T) {
-	out := Text(ToGraph(buildTestResolved(t)))
+	out := Text(ToGraph(buildTestResolved(t), ""))
 	if !strings.Contains(out, "Level 1") || !strings.Contains(out, "Level 2") {
 		t.Errorf("text output missing level headings:\n%s", out)
 	}
@@ -100,7 +100,7 @@ func TestTextGroupsByLevel(t *testing.T) {
 }
 
 func TestDOTContainsNodesAndEdges(t *testing.T) {
-	out := DOT(ToGraph(buildTestResolved(t)))
+	out := DOT(ToGraph(buildTestResolved(t), ""))
 	if !strings.HasPrefix(out, "digraph servo {") {
 		t.Errorf("DOT output missing digraph header:\n%s", out)
 	}
@@ -137,7 +137,7 @@ func TestMermaidSkipsDanglingDependencyEdge(t *testing.T) {
 }
 
 func TestMermaidContainsEdgeAndClass(t *testing.T) {
-	out := Mermaid(ToGraph(buildTestResolved(t)))
+	out := Mermaid(ToGraph(buildTestResolved(t), ""))
 	if !strings.HasPrefix(out, "graph BT") {
 		t.Errorf("mermaid output missing graph header:\n%s", out)
 	}

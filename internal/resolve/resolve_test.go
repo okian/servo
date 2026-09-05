@@ -61,6 +61,19 @@ type Z struct{}
 func NewX(y *Y) *X { return &X{} }
 func NewY(z *Z) *Y { return &Y{} }
 func NewZ(x *X) *Z { return &Z{} }
+
+// Config and Clock are the shape servo.Value exists for: nothing in the
+// module constructs them, so the caller is the only thing that can.
+type Config struct{}
+type Clock struct{}
+
+// Tunable takes Config and not Clock, so one spec can declare both values
+// and have exactly one of them go unused.
+type Tunable struct{}
+func NewTunable(c *Config) *Tunable { return &Tunable{} }
+
+type Timed struct{}
+func NewTimed(c *Config, k *Clock) *Timed { return &Timed{} }
 `
 
 func checkFixture(t *testing.T) (*types.Package, []*graph.Provider) {
@@ -584,5 +597,162 @@ func TestResolveInterfaceWithNoImplementationsAtAll(t *testing.T) {
 	}
 	if strings.Contains(msg, "implement") {
 		t.Errorf("message = %q, want no candidate list when nothing implements DBIface", msg)
+	}
+}
+
+// valueDecl is the servo.Value equivalent of rootDecl: a declaration for
+// the pointer type named by name, positioned on its own line so a
+// diagnostic that quotes the wrong declaration is visible.
+func valueDecl(pkg *types.Package, name string, line int) load.ValueDecl {
+	return load.ValueDecl{Key: ptrKey(pkg, name), Type: ptrType(pkg, name), Pos: token.Position{Filename: "spec.go", Line: line}}
+}
+
+// depByKey returns n's dependency on k, or nil. Deps are matched by key
+// rather than by position so a test does not silently start asserting
+// about a different parameter when a fixture constructor gains one.
+func depByKey(n *Node, k graph.Key) *Node {
+	for _, d := range n.Deps {
+		if d.Key == k {
+			return d
+		}
+	}
+	return nil
+}
+
+// TestSuppliedValueWinsOverAProviderForTheSameType is the one case where a
+// servo.Value and the candidate index can disagree: *Logger has a
+// perfectly good constructor and is also declared as a value. Declaring
+// one is how a spec says "this comes from the caller", which is only
+// meaningful if it wins — resolved the other way, every caller would keep
+// filling in a Values field the app never read while NewLogger quietly
+// supplied the real thing.
+func TestSuppliedValueWinsOverAProviderForTheSameType(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{
+		findProvider(t, all, "NewServer"),
+		findProvider(t, all, "NewLogger"), // the provider the declared value has to beat
+		findProvider(t, all, "NewMemory"),
+	}
+	roots := []load.RootDecl{{Key: ptrKey(pkg, "Server"), Type: ptrType(pkg, "Server"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	in := baseInput(pkg, candidates, roots, nil)
+	in.Spec.Values = []load.ValueDecl{valueDecl(pkg, "Logger", 11)}
+
+	resolved, diags := Resolve(in)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	logger := depByKey(resolved.Roots[0], ptrKey(pkg, "Logger"))
+	if logger == nil {
+		t.Fatalf("Server has no *app.Logger dependency at all, deps: %v", resolved.Roots[0].Deps)
+	}
+	if logger.Kind != NodeSupplied {
+		t.Errorf("Server's Logger dependency Kind = %d, want NodeSupplied (%d)", logger.Kind, NodeSupplied)
+	}
+	if logger.Provider != nil {
+		t.Errorf("Server's Logger dependency selected %s; a declared value must beat every candidate for its type", logger.Provider.Name)
+	}
+	for _, n := range resolved.Order {
+		if n.Key == ptrKey(pkg, "Logger") {
+			t.Fatalf("NewLogger was scheduled for construction anyway; Order = %v", resolved.Order)
+		}
+	}
+	if len(resolved.Supplied) != 1 || resolved.Supplied[0] != logger {
+		t.Errorf("resolved.Supplied = %v, want exactly the one node Server depends on", resolved.Supplied)
+	}
+}
+
+// TestSuppliedValuesStayAtLevelZeroInDeclarationOrder covers the ordinary
+// case the marker was added for: types nothing in the module constructs,
+// which resolve only because the spec says the caller hands them over.
+// Two of them, so the declaration order Values fields are emitted in is
+// pinned, and both at level 0 — a value is not constructed, so it must not
+// push its consumer into a later Init phase than it would otherwise be in.
+func TestSuppliedValuesStayAtLevelZeroInDeclarationOrder(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewTimed")}
+	roots := []load.RootDecl{{Key: ptrKey(pkg, "Timed"), Type: ptrType(pkg, "Timed"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	in := baseInput(pkg, candidates, roots, nil)
+	in.Spec.Values = []load.ValueDecl{valueDecl(pkg, "Config", 11), valueDecl(pkg, "Clock", 12)}
+
+	resolved, diags := Resolve(in)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics (neither *Config nor *Clock has a provider — the value declarations are what make Timed resolvable): %v", diags)
+	}
+	if len(resolved.Order) != 1 || resolved.Order[0].Key != ptrKey(pkg, "Timed") {
+		t.Fatalf("Order = %v, want just Timed: a supplied value is never constructed", resolved.Order)
+	}
+	if resolved.Order[0].Level != 1 {
+		t.Errorf("Timed level = %d, want 1: its only dependencies are supplied, and those sit at level 0", resolved.Order[0].Level)
+	}
+
+	wantKeys := []graph.Key{ptrKey(pkg, "Config"), ptrKey(pkg, "Clock")}
+	if len(resolved.Supplied) != len(wantKeys) {
+		t.Fatalf("resolved.Supplied has %d entries, want %d", len(resolved.Supplied), len(wantKeys))
+	}
+	for i, want := range wantKeys {
+		got := resolved.Supplied[i]
+		if got.Key != want {
+			t.Errorf("resolved.Supplied[%d] = %s, want %s — Supplied must follow declaration order", i, got.Key, want)
+		}
+		if got.Kind != NodeSupplied {
+			t.Errorf("%s Kind = %d, want NodeSupplied (%d)", got.Key, got.Kind, NodeSupplied)
+		}
+		if got.Level != 0 {
+			t.Errorf("%s level = %d, want 0", got.Key, got.Level)
+		}
+		if !types.Identical(got.SuppliedType, in.Spec.Values[i].Type) {
+			t.Errorf("%s SuppliedType = %v, want the declared type %v — nothing else carries it, there is no provider", got.Key, got.SuppliedType, in.Spec.Values[i].Type)
+		}
+		if got.SuppliedPos != in.Spec.Values[i].Pos {
+			t.Errorf("%s SuppliedPos = %v, want the declaration's own position %v", got.Key, got.SuppliedPos, in.Spec.Values[i].Pos)
+		}
+		if dep := depByKey(resolved.Order[0], want); dep != got {
+			t.Errorf("Timed's %s dependency is a different *Node than resolved.Supplied[%d]; one declaration must be one node, or the generator emits a field nothing reads", want, i)
+		}
+	}
+}
+
+// TestUnusedSuppliedValueIsRejectedAndOffersBothWaysOut: *Clock is
+// declared but Tunable only takes *Config, so the generated Values struct
+// would carry a field every caller fills in and nothing ever reads — true
+// for a release and then quietly wrong. servo treats that as a build
+// failure, like any other declaration it cannot make sense of, so the
+// message has to name the type, say why an unused value is a problem at
+// all, and give both ways out.
+func TestUnusedSuppliedValueIsRejectedAndOffersBothWaysOut(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewTunable")}
+	roots := []load.RootDecl{{Key: ptrKey(pkg, "Tunable"), Type: ptrType(pkg, "Tunable"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	in := baseInput(pkg, candidates, roots, nil)
+	in.Spec.Values = []load.ValueDecl{valueDecl(pkg, "Config", 11), valueDecl(pkg, "Clock", 12)}
+
+	resolved, diags := Resolve(in)
+	if resolved != nil {
+		t.Error("Resolved must be nil alongside a diagnostic, never a plan built from a spec servo rejected")
+	}
+	if len(diags) != 1 {
+		t.Fatalf("got %d diagnostics, want exactly 1 — *Config is used, only *Clock is not: %v", len(diags), diags)
+	}
+	if diags[0].Pos != in.Spec.Values[1].Pos {
+		t.Errorf("diagnostic position = %v, want the *Clock declaration at %v: the fix is to delete that line, so it has to be the one the editor jumps to", diags[0].Pos, in.Spec.Values[1].Pos)
+	}
+	msg := diags[0].String()
+	for _, want := range []string{
+		"servo.Value[*example.com/app.Clock]() is declared, but nothing in the graph depends on *example.com/app.Clock",
+		"A declared value becomes a field on the generated Values struct",
+		"supplied by every caller and read by nobody",
+		"take it as a constructor parameter somewhere the roots reach",
+		"func New(v *example.com/app.Clock) *Thing",
+		"delete the servo.Value declaration",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message missing %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "Config") {
+		t.Errorf("message names *app.Config, which Tunable does depend on:\n%s", msg)
 	}
 }

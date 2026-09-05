@@ -45,7 +45,10 @@ func New(ctx context.Context) (*App, error) {
 		err := a.server.Init(ctx)
 		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servovariants/api.Server", Duration: time.Since(start)})
 		if err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}

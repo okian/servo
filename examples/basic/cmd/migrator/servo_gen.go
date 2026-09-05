@@ -4,6 +4,8 @@
 //
 // Resolved graph:
 //
+//	[L0] example.com/servobasic/migrator.Target
+//	      supplied by the caller  cmd/migrator/spec.go:18:3
 //	[L1] *example.com/servobasic/logger.Logger
 //	      deps: none
 //	      capabilities: Finalizer | binding: sole candidate | logger/logger.go:10:6
@@ -11,8 +13,8 @@
 //	      deps: *example.com/servobasic/logger.Logger
 //	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | postgres/postgres.go:13:6
 //	[L3] *example.com/servobasic/migrator.Migrator
-//	      deps: *example.com/servobasic/postgres.DB, *example.com/servobasic/logger.Logger
-//	      capabilities: Initializer | binding: sole candidate | migrator/migrator.go:15:6
+//	      deps: *example.com/servobasic/postgres.DB, *example.com/servobasic/logger.Logger, example.com/servobasic/migrator.Target
+//	      capabilities: Initializer | binding: sole candidate | migrator/migrator.go:26:6
 package main
 
 import (
@@ -38,23 +40,41 @@ type App struct {
 	dbStopOnce       sync.Once
 	dbStopResult     servo.NodeResult
 	migrator         *migrator.Migrator
+	target           migrator.Target
 	startupReport    servo.StartupReport
 }
 
+// Values carries the values servo.Value declares: the ones the caller
+// supplies rather than any provider builds.
+type Values struct {
+	Target migrator.Target
+}
+
+// New builds the app with the zero value of every servo.Value.
+// Prefer NewWith: the zero value is a real value for a struct of
+// options and a nil pointer for anything else, so this is right only when
+// the zero value is what you meant.
 func New(ctx context.Context) (*App, error) {
+	return NewWith(ctx, Values{})
+}
+
+func NewWith(ctx context.Context, v Values) (*App, error) {
 	a := &App{}
+
+	target := v.Target
+	a.target = target
 
 	logger := logger.New()
 	a.logger = logger
 
 	db, err := postgres.New(logger)
 	if err != nil {
-		_ = a.stopLogger(ctx)
+		_ = a.stopLogger(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.db = db
 
-	migrator := migrator.New(db, logger)
+	migrator := migrator.New(db, logger, target)
 	a.migrator = migrator
 
 	{
@@ -62,7 +82,10 @@ func New(ctx context.Context) (*App, error) {
 		err := a.db.Init(ctx)
 		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servobasic/postgres.DB", Duration: time.Since(start)})
 		if err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}
@@ -71,7 +94,10 @@ func New(ctx context.Context) (*App, error) {
 		err := a.migrator.Init(ctx)
 		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servobasic/migrator.Migrator", Duration: time.Since(start)})
 		if err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}
@@ -137,9 +163,10 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
+		{Type: "example.com/servobasic/migrator.Target", Level: 0, Deps: nil, Capabilities: nil, Binding: "supplied", Pos: "cmd/migrator/spec.go:18:3"},
 		{Type: "*example.com/servobasic/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "logger/logger.go:10:6"},
 		{Type: "*example.com/servobasic/postgres.DB", Level: 2, Deps: []string{"*example.com/servobasic/logger.Logger"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "sole candidate", Pos: "postgres/postgres.go:13:6"},
-		{Type: "*example.com/servobasic/migrator.Migrator", Level: 3, Deps: []string{"*example.com/servobasic/postgres.DB", "*example.com/servobasic/logger.Logger"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Pos: "migrator/migrator.go:15:6"},
+		{Type: "*example.com/servobasic/migrator.Migrator", Level: 3, Deps: []string{"*example.com/servobasic/postgres.DB", "*example.com/servobasic/logger.Logger", "example.com/servobasic/migrator.Target"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Pos: "migrator/migrator.go:26:6"},
 	}}
 }
 

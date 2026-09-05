@@ -29,6 +29,11 @@ the result type varies per extractor, so no single interface could match it — 
 [capability interfaces](lifecycle.md#the-seven-capabilities) are found structurally, by
 `types.Implements`.
 
+A [`servo.Value`](spec.md#value) is *not* an exception to the lifetime rule — it is one per app,
+handed to `NewWith` and held for the life of the process, exactly like a constructed singleton. What
+it changes is where the instance comes from: it is supplied rather than built, so it has no
+provider, sits at level 0, and takes precedence over every rule below.
+
 ## Identity is by type
 
 Every value in the graph is identified by one thing: the fully qualified string of its type.
@@ -169,6 +174,21 @@ its own reasons anyway — it's where retries, tracing and connection settings l
 
 For each requested key, in this order. The first step that yields exactly one provider wins.
 
+**0. A declared `servo.Value`.** If the key is one, resolution stops there: the value comes from the
+caller, and no provider is consulted. This is above `Bind`, not beside it — a
+[`servo.Value`](spec.md#value) beats *any* provider that also produces the type, including one an
+explicit `Bind` names, and displacing that provider is not a diagnostic. Declaring the marker is how
+you say "this comes from the caller", which is only meaningful if it wins. (The same step also
+resolves a scope's key type and a scope's accessor interface, for the same reason: both are
+declared, not searched for. See [Scoped instances](scopes.md).)
+
+**0½. A `//servo:config` type.** A key carrying the
+[config directive](config.md) resolves to its generated `ServoConfig` loader, ahead of every
+provider — which is also why a hand-written constructor for such a type is a diagnostic rather
+than a silent loser. Being below `Value`, a `servo.Value` for a config type still wins: "the
+caller supplies this" outranks "the generated loader builds this", and the loader is then not
+consulted and not generated for that graph.
+
 **1. An explicit `Bind` or `Override`.** If the key has one, the request is *redirected* to the
 named concrete type, and resolution continues from step 2 looking for that type instead.
 `Override` beats `Bind` for the same key, and only applies when generating the test variant.
@@ -198,6 +218,9 @@ Nothing here depends on how the *rest* of the graph is written. A dependency's d
 decides how it resolves: declare an interface where a component should accept any of several
 implementations, a concrete type where there's exactly one. Servo follows whichever you wrote and
 never converts one into the other.
+
+The one exception to "nothing else influences this" is step 0, and it is explicit by construction:
+a marker in the spec file, written by you, is the only thing that can pre-empt the search.
 
 Then the same three steps run for each of the selected provider's own parameters, recursively,
 until the graph closes or a diagnostic is produced.
@@ -269,8 +292,12 @@ CI gate:
   order can't perturb it.
 - Ambiguity candidate lists are sorted the same way.
 - Positions embedded in the generated file are rewritten relative to the module root, so two
-  checkouts at different absolute paths produce identical files. (Positions *printed* by the CLI
-  are absolute — they're for you and your editor, not for a diff.)
+  checkouts at different absolute paths produce identical files. `servo graph` applies the same
+  rewriting, because its output has to match the generated `App.Graph()` exactly; `explain`, `why`
+  and `list` print absolute paths, which are for you and your editor rather than for a diff.
 
 One caveat: two different servo versions may legitimately produce two different, both correct,
-files. Pin the version in your `go:generate` directive so everyone generates with the same one.
+files. Pin one for the whole project with `go get -tool github.com/okian/servo/v3/cmd/servo`, which
+records the generator's version in `go.mod` — the `go:generate` directive then just says
+`go tool servo generate`. `servo check`'s stale report names the version it is running for exactly
+this case.

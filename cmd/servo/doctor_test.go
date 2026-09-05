@@ -1,11 +1,16 @@
 package main
 
 import (
+	"fmt"
+	"go/token"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/okian/servo/v3/internal/load"
+	"golang.org/x/tools/go/packages"
 )
 
 // TestRunDoctorAggregatesEveryInjector covers a multi-injector module
@@ -234,5 +239,38 @@ func TestTrackedByGitOnNonRepo(t *testing.T) {
 func TestTrackedByGitFallsBackWhenPathsCannotBeMadeRelative(t *testing.T) {
 	if trackedByGit(".", "/absolute/path/servo_gen.go") {
 		t.Error("trackedByGit with an unrelatable dir/path pair should be false, not panic or true")
+	}
+}
+
+// TestReportVariantsSurfacesAnUnreadableInventory: every other failure in
+// doctor is reported and the run continues, so it would be tempting to let
+// this one return nothing too. It must not. The variant inventory is the
+// only thing in servo that ever notices an orphaned or unverified
+// generated file, and "no other variants" is precisely what it prints for
+// a healthy single-variant project — so an inventory that could not be
+// read has to be distinguishable from an empty one, and nothing may be
+// reported off the back of it.
+func TestReportVariantsSurfacesAnUnreadableInventory(t *testing.T) {
+	// An unmatched '[' in the injector's own directory name is legal on
+	// every filesystem servo runs on, and makes the inventory's glob
+	// pattern invalid.
+	dir := filepath.Join(t.TempDir(), "proj[1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	spec := &load.Spec{
+		Pos:         token.Position{Filename: filepath.Join(dir, "spec.go")},
+		InjectorPkg: &packages.Package{},
+	}
+
+	var reported []string
+	err := reportVariants(spec, generatedFileName, func(_ bool, format string, args ...any) {
+		reported = append(reported, fmt.Sprintf(format, args...))
+	})
+	if err == nil {
+		t.Fatal("reportVariants = nil, want the unreadable inventory reported")
+	}
+	if len(reported) != 0 {
+		t.Errorf("reportVariants drew conclusions from an inventory it could not read: %v", reported)
 	}
 }

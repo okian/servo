@@ -8,6 +8,7 @@ import (
 
 	"github.com/okian/servo/v3/internal/emit"
 	"github.com/okian/servo/v3/internal/load"
+	"github.com/okian/servo/v3/internal/resolve"
 )
 
 // runGenerate processes every injector found within dir's scope. A module
@@ -39,8 +40,23 @@ func runGenerate(cfg load.Config) error {
 		return errors.Join(errs...)
 	}
 
-	for _, p := range pipelines {
-		if err := generateOne(p); err != nil {
+	// Resolution runs for every injector before anything is written, for
+	// the same reason the overlap check does: whether a shared config's
+	// companion loader takes the file map is a property of *all* the
+	// injectors that use it (see checkConfigAgreement), and discovering a
+	// disagreement halfway through would leave companions rewritten for
+	// some injectors and stale for others.
+	resolveds, resolveErrs, agreementErr := resolveAll(pipelines)
+	errs = append(errs, resolveErrs...)
+	if agreementErr != nil {
+		return errors.Join(append(errs, agreementErr)...)
+	}
+
+	for i, p := range pipelines {
+		if resolveds[i] == nil {
+			continue // resolution already failed and is already in errs
+		}
+		if err := generateOne(p, resolveds[i]); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p.spec.InjectorPkg.PkgPath, err))
 		}
 	}
@@ -50,11 +66,7 @@ func runGenerate(cfg load.Config) error {
 	return nil
 }
 
-func generateOne(p *pipeline) error {
-	resolved, err := p.resolve(nil)
-	if err != nil {
-		return err
-	}
+func generateOne(p *pipeline, resolved *resolve.Resolved) error {
 	out, err := emit.Emit(resolved, p.spec, false)
 	if err != nil {
 		return err
@@ -67,6 +79,18 @@ func generateOne(p *pipeline) error {
 	outPath := filepath.Join(dir, name)
 	if err := writeFileAtomic(outPath, out, 0o644); err != nil {
 		return err
+	}
+	// Companion loaders land beside their config types, not the injector.
+	// Two injectors sharing a config write identical bytes (agreement was
+	// checked before any write), so the second write is a harmless no-op.
+	companions, err := companionFiles(resolved, p.spec.ConfigFile != nil)
+	if err != nil {
+		return err
+	}
+	for path, content := range companions {
+		if err := writeFileAtomic(path, content, 0o644); err != nil {
+			return err
+		}
 	}
 
 	if len(p.spec.Overrides) == 0 {
@@ -81,7 +105,23 @@ func generateOne(p *pipeline) error {
 		return err
 	}
 	testOutPath := filepath.Join(dir, variantFileName(p.spec.Variant, true))
-	return writeFileAtomic(testOutPath, testOut, 0o644)
+	if err := writeFileAtomic(testOutPath, testOut, 0o644); err != nil {
+		return err
+	}
+	// An Override can swap in a constructor that consumes a config the
+	// production graph never touches — NewTestApp still calls its loader,
+	// so its companion has to exist. Ones both graphs use rewrite
+	// identically.
+	testCompanions, err := companionFiles(testResolved, p.spec.ConfigFile != nil)
+	if err != nil {
+		return err
+	}
+	for path, content := range testCompanions {
+		if err := writeFileAtomic(path, content, 0o644); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // writeFileAtomic writes data to path by writing a temp file in the same

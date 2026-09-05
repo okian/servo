@@ -4,55 +4,53 @@
 //
 // Resolved graph:
 //
-//	[L1] *example.com/servoorders/internal/config.Env
-//	      deps: none
-//	      capabilities: none | binding: sole implementation | internal/config/config.go:42:6
-//	[L2] *example.com/servoorders/internal/session.Config
-//	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/session/session.go:67:6
-//	[L2] *example.com/servoorders/internal/observability.Config
-//	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/observability/logging.go:21:6
-//	[L3] *example.com/servoorders/internal/observability.Logger
-//	      deps: *example.com/servoorders/internal/observability.Config
-//	      capabilities: none | binding: sole candidate | internal/observability/logging.go:35:6
-//	[L2] *github.com/okian/servo/v3/servo.HTTPConfig
-//	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:88:6
+//	[L0] example.com/servoorders/internal/auth.Config
+//	      servo:config (prefix JWT)  internal/auth/auth.go:34:6
+//	[L0] example.com/servoorders/internal/observability.Config
+//	      servo:config (prefix OBS)  internal/observability/logging.go:19:6
+//	[L0] example.com/servoorders/internal/resilience.Config
+//	      servo:config (prefix RATE_LIMIT)  internal/resilience/ratelimit.go:26:6
+//	[L0] example.com/servoorders/internal/session.Config
+//	      servo:config (prefix SESSION)  internal/session/session.go:59:6
+//	[L0] example.com/servoorders/internal/transport/servoapi.ListenConfig
+//	      servo:config (prefix HTTP)  internal/transport/servoapi/middleware.go:84:6
+//	[L1] *example.com/servoorders/internal/session.Settings
+//	      deps: example.com/servoorders/internal/session.Config
+//	      capabilities: none | binding: sole candidate | internal/session/session.go:74:6
+//	[L1] *example.com/servoorders/internal/observability.Logger
+//	      deps: example.com/servoorders/internal/observability.Config
+//	      capabilities: none | binding: sole candidate | internal/observability/logging.go:34:6
+//	[L1] *github.com/okian/servo/v3/servo.HTTPConfig
+//	      deps: example.com/servoorders/internal/transport/servoapi.ListenConfig
+//	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:91:6
 //	[L1] *example.com/servoorders/internal/transport/servoapi.ClaimsExtractor
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:69:6
+//	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:68:6
 //	[L1] *github.com/okian/servo/v3/middleware.Recover
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/recover.go:17:6
-//	[L2] *example.com/servoorders/internal/resilience.Config
-//	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/resilience/ratelimit.go:29:6
 //	[L1] *example.com/servoorders/internal/observability.Metrics
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | internal/observability/metrics.go:18:6
-//	[L3] *example.com/servoorders/internal/resilience.RateLimiter
-//	      deps: *example.com/servoorders/internal/resilience.Config, *example.com/servoorders/internal/observability.Metrics
-//	      capabilities: none | binding: sole candidate | internal/resilience/ratelimit.go:33:6
-//	[L3] *example.com/servoorders/internal/observability.Tracer
-//	      deps: *example.com/servoorders/internal/observability.Config
+//	[L2] *example.com/servoorders/internal/resilience.RateLimiter
+//	      deps: example.com/servoorders/internal/resilience.Config, *example.com/servoorders/internal/observability.Metrics
+//	      capabilities: none | binding: sole candidate | internal/resilience/ratelimit.go:30:6
+//	[L1] *example.com/servoorders/internal/observability.Tracer
+//	      deps: example.com/servoorders/internal/observability.Config
 //	      capabilities: Finalizer | binding: sole candidate | internal/observability/tracing.go:29:6
 //	[L1] *github.com/okian/servo/v3/middleware.AccessLog
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/accesslog.go:14:6
-//	[L2] *example.com/servoorders/internal/auth.Config
-//	      deps: *example.com/servoorders/internal/config.Env
-//	      capabilities: none | binding: sole candidate | internal/auth/auth.go:35:6
-//	[L3] *example.com/servoorders/internal/auth.Issuer
-//	      deps: *example.com/servoorders/internal/auth.Config
+//	[L1] *example.com/servoorders/internal/auth.Issuer
+//	      deps: example.com/servoorders/internal/auth.Config
 //	      capabilities: none | binding: sole candidate | internal/auth/auth.go:39:6
-//	[L4] *example.com/servoorders/internal/transport/servoapi.Auth
+//	[L2] *example.com/servoorders/internal/transport/servoapi.Auth
 //	      deps: *example.com/servoorders/internal/auth.Issuer
-//	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:32:6
+//	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:31:6
 //	[L1] *example.com/servoorders/internal/mocks.UserRepositoryForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | internal/mocks/servo_adapters.go:34:6
-//	[L4] *example.com/servoorders/internal/service.AuthService
+//	[L2] *example.com/servoorders/internal/service.AuthService
 //	      deps: *example.com/servoorders/internal/mocks.UserRepositoryForServo, *example.com/servoorders/internal/auth.Issuer
 //	      capabilities: none | binding: sole candidate | internal/service/auth_service.go:18:6
 //	[L1] *example.com/servoorders/internal/mocks.OrderRepositoryForServo
@@ -64,7 +62,7 @@
 //	[L1] *example.com/servoorders/internal/mocks.EventPublisherForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | internal/mocks/servo_adapters.go:54:6
-//	[L4] *example.com/servoorders/internal/service.OrderService
+//	[L2] *example.com/servoorders/internal/service.OrderService
 //	      deps: *example.com/servoorders/internal/mocks.OrderRepositoryForServo, *example.com/servoorders/internal/mocks.OrderCacheForServo, *example.com/servoorders/internal/mocks.EventPublisherForServo, *example.com/servoorders/internal/observability.Logger
 //	      capabilities: none | binding: sole candidate | internal/service/service.go:28:6
 //
@@ -74,7 +72,7 @@
 //	accessor: example.com/servoorders/internal/session.Sessions -> *example.com/servoorders/internal/session.Session
 //	[S1] *example.com/servoorders/internal/session.Session
 //	      capabilities: Initializer, Flusher, Finalizer
-//	borrows: *example.com/servoorders/internal/session.Config, *example.com/servoorders/internal/observability.Logger
+//	borrows: *example.com/servoorders/internal/session.Settings, *example.com/servoorders/internal/observability.Logger
 //
 // http (servo.HTTP() at cmd/ordersservo/spec.go:31:3):
 //
@@ -115,7 +113,6 @@ import (
 	"time"
 
 	"example.com/servoorders/internal/auth"
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/mocks"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/resilience"
@@ -127,21 +124,17 @@ import (
 )
 
 type TestApp struct {
-	env                     *config.Env
-	sessionConfig           *session.Config
-	observabilityConfig     *observability.Config
+	settings                *session.Settings
 	logger                  *observability.Logger
 	hTTPConfig              *servo.HTTPConfig
 	claimsExtractor         *servoapi.ClaimsExtractor
 	recover2                *middleware.Recover
-	resilienceConfig        *resilience.Config
 	metrics                 *observability.Metrics
 	rateLimiter             *resilience.RateLimiter
 	tracer                  *observability.Tracer
 	tracerStopOnce          sync.Once
 	tracerStopResult        servo.NodeResult
 	accessLog               *middleware.AccessLog
-	authConfig              *auth.Config
 	issuer                  *auth.Issuer
 	auth                    *servoapi.Auth
 	userRepositoryForServo  *mocks.UserRepositoryForServo
@@ -469,7 +462,7 @@ func (e *testUserIDEntry) evict() {
 func (e *testUserIDEntry) build() error {
 	a := e.scope.app
 
-	session := session.New(e.key, a.sessionConfig, a.logger)
+	session := session.New(e.key, a.settings, a.logger)
 	e.session = session
 	e.built = 1
 
@@ -948,28 +941,41 @@ func testHttpWriteError(w http.ResponseWriter, code int, msg string) {
 func NewTestApp(ctx context.Context) (*TestApp, error) {
 	a := &TestApp{}
 
+	authConfig, err := auth.ServoConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	observabilityConfig, err := observability.ServoConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	resilienceConfig, err := resilience.ServoConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	sessionConfig, err := session.ServoConfig()
+	if err != nil {
+		return nil, err
+	}
+
+	listenConfig, err := servoapi.ServoConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	a.userIDScope = newTestUserIDScope(ctx, a)
 	a.sessions = testSessionsAccessor{s: a.userIDScope}
 
-	env := config.NewEnv()
-	a.env = env
-
-	sessionConfig, err := session.NewConfig(env)
-	if err != nil {
-		return nil, err
-	}
-	a.sessionConfig = sessionConfig
-
-	observabilityConfig, err := observability.NewConfig(env)
-	if err != nil {
-		return nil, err
-	}
-	a.observabilityConfig = observabilityConfig
+	settings := session.NewSettings(sessionConfig)
+	a.settings = settings
 
 	logger := observability.NewLogger(observabilityConfig)
 	a.logger = logger
 
-	hTTPConfig, err := servoapi.NewHTTPConfig(env)
+	hTTPConfig, err := servoapi.NewHTTPConfig(listenConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -980,12 +986,6 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 
 	recover2 := middleware.NewRecover()
 	a.recover2 = recover2
-
-	resilienceConfig, err := resilience.NewConfig(env)
-	if err != nil {
-		return nil, err
-	}
-	a.resilienceConfig = resilienceConfig
 
 	metrics := observability.NewMetrics()
 	a.metrics = metrics
@@ -1001,13 +1001,6 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 
 	accessLog := middleware.NewAccessLog()
 	a.accessLog = accessLog
-
-	authConfig, err := auth.NewConfig(env)
-	if err != nil {
-		_ = a.stopTracer(ctx)
-		return nil, err
-	}
-	a.authConfig = authConfig
 
 	issuer := auth.New(authConfig)
 	a.issuer = issuer
@@ -1156,30 +1149,31 @@ func (a *TestApp) Ready(ctx context.Context) servo.Report {
 
 func (a *TestApp) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/servoorders/internal/config.Env", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole implementation", Pos: "internal/config/config.go:42:6"},
-		{Type: "*example.com/servoorders/internal/session.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/session/session.go:67:6"},
-		{Type: "*example.com/servoorders/internal/observability.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:21:6"},
-		{Type: "*example.com/servoorders/internal/observability.Logger", Level: 3, Deps: []string{"*example.com/servoorders/internal/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:35:6"},
-		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:88:6"},
-		{Type: "*example.com/servoorders/internal/transport/servoapi.ClaimsExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:69:6"},
+		{Type: "example.com/servoorders/internal/auth.Config", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Pos: "internal/auth/auth.go:34:6"},
+		{Type: "example.com/servoorders/internal/observability.Config", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Pos: "internal/observability/logging.go:19:6"},
+		{Type: "example.com/servoorders/internal/resilience.Config", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Pos: "internal/resilience/ratelimit.go:26:6"},
+		{Type: "example.com/servoorders/internal/session.Config", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Pos: "internal/session/session.go:59:6"},
+		{Type: "example.com/servoorders/internal/transport/servoapi.ListenConfig", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Pos: "internal/transport/servoapi/middleware.go:84:6"},
+		{Type: "*example.com/servoorders/internal/session.Settings", Level: 1, Deps: []string{"example.com/servoorders/internal/session.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/session/session.go:74:6"},
+		{Type: "*example.com/servoorders/internal/observability.Logger", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:34:6"},
+		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: []string{"example.com/servoorders/internal/transport/servoapi.ListenConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:91:6"},
+		{Type: "*example.com/servoorders/internal/transport/servoapi.ClaimsExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:68:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/recover.go:17:6"},
-		{Type: "*example.com/servoorders/internal/resilience.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:29:6"},
 		{Type: "*example.com/servoorders/internal/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/metrics.go:18:6"},
-		{Type: "*example.com/servoorders/internal/resilience.RateLimiter", Level: 3, Deps: []string{"*example.com/servoorders/internal/resilience.Config", "*example.com/servoorders/internal/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:33:6"},
-		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 3, Deps: []string{"*example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:29:6"},
+		{Type: "*example.com/servoorders/internal/resilience.RateLimiter", Level: 2, Deps: []string{"example.com/servoorders/internal/resilience.Config", "*example.com/servoorders/internal/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:30:6"},
+		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:29:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.AccessLog", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/accesslog.go:14:6"},
-		{Type: "*example.com/servoorders/internal/auth.Config", Level: 2, Deps: []string{"*example.com/servoorders/internal/config.Env"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/auth/auth.go:35:6"},
-		{Type: "*example.com/servoorders/internal/auth.Issuer", Level: 3, Deps: []string{"*example.com/servoorders/internal/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/auth/auth.go:39:6"},
-		{Type: "*example.com/servoorders/internal/transport/servoapi.Auth", Level: 4, Deps: []string{"*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:32:6"},
+		{Type: "*example.com/servoorders/internal/auth.Issuer", Level: 1, Deps: []string{"example.com/servoorders/internal/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/auth/auth.go:39:6"},
+		{Type: "*example.com/servoorders/internal/transport/servoapi.Auth", Level: 2, Deps: []string{"*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:31:6"},
 		{Type: "*example.com/servoorders/internal/mocks.UserRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:34:6"},
-		{Type: "*example.com/servoorders/internal/service.AuthService", Level: 4, Deps: []string{"*example.com/servoorders/internal/mocks.UserRepositoryForServo", "*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/auth_service.go:18:6"},
+		{Type: "*example.com/servoorders/internal/service.AuthService", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.UserRepositoryForServo", "*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/auth_service.go:18:6"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:24:6"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderCacheForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:44:6"},
 		{Type: "*example.com/servoorders/internal/mocks.EventPublisherForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:54:6"},
-		{Type: "*example.com/servoorders/internal/service.OrderService", Level: 4, Deps: []string{"*example.com/servoorders/internal/mocks.OrderRepositoryForServo", "*example.com/servoorders/internal/mocks.OrderCacheForServo", "*example.com/servoorders/internal/mocks.EventPublisherForServo", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/service.go:28:6"},
-		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:71:6", Scope: "example.com/servoorders/internal/session.UserID"},
+		{Type: "*example.com/servoorders/internal/service.OrderService", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.OrderRepositoryForServo", "*example.com/servoorders/internal/mocks.OrderCacheForServo", "*example.com/servoorders/internal/mocks.EventPublisherForServo", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/service.go:28:6"},
+		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Settings", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:82:6", Scope: "example.com/servoorders/internal/session.UserID"},
 	}, Scopes: []servo.GraphScope{
-		{Key: "example.com/servoorders/internal/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/internal/session.Sessions"}, Members: []string{"*example.com/servoorders/internal/session.Session"}, Borrows: []string{"*example.com/servoorders/internal/session.Config", "*example.com/servoorders/internal/observability.Logger"}},
+		{Key: "example.com/servoorders/internal/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/internal/session.Sessions"}, Members: []string{"*example.com/servoorders/internal/session.Session"}, Borrows: []string{"*example.com/servoorders/internal/session.Settings", "*example.com/servoorders/internal/observability.Logger"}},
 	}, HTTP: &servo.GraphHTTP{
 		Routes: []servo.GraphRoute{
 			{Method: "POST", Pattern: "/auth/login", Handler: "servoapi.Login", Args: []string{"*example.com/servoorders/internal/service.AuthService"}, Pos: "internal/transport/servoapi/handlers.go:18:1"},

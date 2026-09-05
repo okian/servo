@@ -200,3 +200,119 @@ func TestImportClosure(t *testing.T) {
 		t.Errorf("memory should not be in api's import closure (api does not import memory), got %v", c)
 	}
 }
+
+// writeVariantInjectorModule materializes the shape that makes
+// InjectorsInOtherConfigurations necessary: a module where one injector
+// has both a default and a prod spec and the other has only a default one.
+// Under -tags=prod, cmd/worker is not an injector — and its main.go still
+// calls the New only a generated file supplies.
+func writeVariantInjectorModule(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	write := func(rel, content string) { mustWriteFile(t, dir, rel, content) }
+
+	write("go.mod", "module example.com/variantinjectors\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+repoRoot(t)+"\n")
+	write("api/api.go", "package api\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n")
+	write("worker/worker.go", "package worker\n\ntype Consumer struct{}\n\nfunc New() *Consumer { return &Consumer{} }\n")
+
+	write("cmd/api/main.go", "package main\n\nfunc main() {}\n")
+	spec := func(tag, root, pkg string) string {
+		return "//go:build servoinject && " + tag + `
+
+package main
+
+import (
+	"example.com/variantinjectors/` + pkg + `"
+	"github.com/okian/servo/v3/servo"
+)
+
+func wire() {
+	servo.Build(
+		servo.Root[*` + root + `](),
+	)
+}
+`
+	}
+	write("cmd/api/spec_default.go", spec("!prod", "api.Server", "api"))
+	write("cmd/api/spec_prod.go", spec("prod", "api.Server", "api"))
+
+	// The pre-generation state every injector passes through: main.go
+	// calls the constructor `servo generate` writes, which under -tags=prod
+	// nothing generates for this package.
+	write("cmd/worker/main.go", `package main
+
+import "context"
+
+func main() {
+	app, err := New(context.Background())
+	_, _ = app, err
+}
+`)
+	write("cmd/worker/spec.go", spec("!prod", "worker.Consumer", "worker"))
+	// A non-Go source excluded by a constraint, which go/packages reports
+	// in the same list as the excluded spec file. It cannot be parsed as
+	// Go at all, so the scan has to pass over it rather than let it stand
+	// as evidence — either way — about whether this package holds a spec.
+	write("cmd/worker/stub_purego.s", "//go:build purego\n")
+
+	runGoModTidy(t, dir)
+	return dir
+}
+
+// TestInjectorsInOtherConfigurationsNamesTheSpecsThisRunCannotSee covers
+// both directions of the check, because both are load-bearing.
+//
+// Under -tags=prod, cmd/worker's only spec is excluded by its own !prod
+// constraint, so it is not an injector here: servo generates nothing for
+// it, its pre-generation "undefined: New" is not a reason to refuse to
+// generate cmd/api, and the user still has to be told — whether cmd/worker
+// should grow a prod variant or be gated out of the prod build is the
+// author's call, but silence turns it into a compiler error much later.
+//
+// Under the default configuration the situation is reversed: cmd/worker is
+// an ordinary injector, and it is cmd/api that has a spec this run cannot
+// see.
+func TestInjectorsInOtherConfigurationsNamesTheSpecsThisRunCannotSee(t *testing.T) {
+	dir := writeVariantInjectorModule(t)
+	const (
+		apiPkg    = "example.com/variantinjectors/cmd/api"
+		workerPkg = "example.com/variantinjectors/cmd/worker"
+	)
+
+	prod, err := Load(Config{Dir: dir, Build: BuildFlags{Tags: "prod"}})
+	if err != nil {
+		t.Fatalf("Load(-tags=prod): %v", err)
+	}
+	specs, err := FindSpecs(prod)
+	if err != nil {
+		t.Fatalf("FindSpecs(-tags=prod): %v", err)
+	}
+	if len(specs) != 1 || specs[0].InjectorPkg.PkgPath != apiPkg {
+		t.Fatalf("got %d specs under -tags=prod, want only %s", len(specs), apiPkg)
+	}
+	got := prod.InjectorsInOtherConfigurations(apiPkg)
+	if len(got) != 1 || got[0] != workerPkg {
+		t.Errorf("InjectorsInOtherConfigurations = %v, want [%s]", got, workerPkg)
+	}
+	// The claim above is only worth anything if cmd/worker really does
+	// fail to build here, which is what makes ignoring its errors a
+	// decision rather than a coincidence.
+	if worker := prod.ByPath[workerPkg]; worker == nil || len(worker.Errors) == 0 {
+		t.Fatalf("fixture is not exercising anything: %s loads cleanly under -tags=prod", workerPkg)
+	}
+	if err := prod.NonInjectorErrors(apiPkg); err != nil {
+		t.Errorf("NonInjectorErrors = %v, want nil: a package whose spec this run cannot see is not this run's problem", err)
+	}
+
+	def, err := Load(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Load(default): %v", err)
+	}
+	got = def.InjectorsInOtherConfigurations()
+	if len(got) != 1 || got[0] != apiPkg {
+		t.Errorf("InjectorsInOtherConfigurations() under the default configuration = %v, want [%s]: cmd/worker's only spec is visible here, so it is not hiding one", got, apiPkg)
+	}
+	if got := def.InjectorsInOtherConfigurations(apiPkg, workerPkg); len(got) != 0 {
+		t.Errorf("InjectorsInOtherConfigurations(both injectors) = %v, want nothing: a package already known to be an injector must not be reported as one elsewhere", got)
+	}
+}

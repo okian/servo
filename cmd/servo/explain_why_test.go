@@ -70,6 +70,65 @@ func TestRunExplainFailsWhenResolutionFails(t *testing.T) {
 	}
 }
 
+// TestRunExplainASuppliedValue: every other node explain describes has a
+// provider, and the three lines a reader looks at first — provider,
+// position, binding — are all read off it. A servo.Value has none: the
+// caller is the provider, and the node's Provider field is nil. So explain
+// has to answer from the declaration instead, and the position it prints
+// has to be the servo.Value line, which is the only place anyone can go to
+// find out why the type turned up in Values in the first place.
+func TestRunExplainASuppliedValue(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module example.com/explainvalue\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+repoRoot(t)+"\n")
+	mustWriteFile(t, dir, "conf/conf.go", `package conf
+
+// Flags is parsed in main, so nothing in the graph can build it.
+type Flags struct{ DSN string }
+
+type Thing struct{ F Flags }
+
+func NewThing(f Flags) *Thing { return &Thing{F: f} }
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", "package main\n\nfunc main() {}\n")
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/explainvalue/conf"
+	"github.com/okian/servo/v3/servo"
+)
+
+func wire() {
+	servo.Build(
+		servo.Value[conf.Flags](),
+		servo.Root[*conf.Thing](),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+
+	out := captureStdout(t, func() {
+		if err := runExplain(cfg(dir), "conf.Flags", false); err != nil {
+			t.Fatalf("runExplain: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"example.com/explainvalue/conf.Flags",
+		"provider:     the caller, via NewWith",
+		"binding:      supplied",
+		"lifetime:     supplied — handed to NewWith once, held for the life of the process",
+		// The position on the provider line: the servo.Value declaration.
+		"spec.go",
+		// And the dependent, which is the whole reason it has to be supplied.
+		"conf.Thing",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("explain output missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
 func TestRunWhyFromDeeperNode(t *testing.T) {
 	dir := writeAppModule(t, "example.com/why", true, "")
 

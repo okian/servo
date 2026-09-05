@@ -23,38 +23,46 @@ type pipeline struct {
 	rejected   []graph.Rejected
 	caps       *graph.Capabilities
 	scope      map[string]bool
-	// routes is the module's //servo: directives, scanned once per load
-	// like capabilities: a directive names an exported handler, so which
-	// injector serves it is not the scan's question.
+	// routes is the module's //servo: route directives, scanned once per
+	// load like capabilities: a directive names an exported handler, so
+	// which injector serves it is not the scan's question.
 	routes []*route.Route
+	// configs is every //servo:config type in the module, scanned once.
+	configs []*graph.ConfigDecl
 }
 
 // loadModule does the spec-independent work shared regardless of how many
 // injectors end up being processed: load the package graph once, load
-// capabilities once, scan //servo: directives once. A malformed directive
-// fails the load outright — the //servo: prefix is reserved, and a typo
-// silently dropping a route is the failure mode the reservation prevents.
-func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, []*route.Route, error) {
+// capabilities once, scan //servo: route directives and //servo:config
+// declarations once. A malformed directive fails the load outright — the
+// //servo: prefix is reserved, and a typo silently dropping a route or a
+// config setting is the failure mode the reservation prevents.
+func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, []*route.Route, []*graph.ConfigDecl, error) {
 	loaded, err := load.Load(cfg)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	caps, err := graph.LoadCapabilities(loaded.ServoPkg.Types)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, nil, nil, nil, err
 	}
 	routes, rdiags := route.Scan(loaded.All, loaded.ServoPkg.Types)
 	if len(rdiags) > 0 {
-		msg := fmt.Sprintf("servo: %d diagnostic(s):\n", len(rdiags))
+		var b strings.Builder
+		fmt.Fprintf(&b, "servo: %d diagnostic(s):\n", len(rdiags))
 		for _, d := range rdiags {
-			msg += "\n" + d.String()
+			b.WriteString("\n" + d.String())
 		}
-		return nil, nil, nil, fmt.Errorf("%s", msg)
+		return nil, nil, nil, nil, fmt.Errorf("%s", b.String())
 	}
-	return loaded, caps, routes, nil
+	configs, err := graph.ScanConfigs(loaded.All)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	return loaded, caps, routes, configs, nil
 }
 
-func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec, routes []*route.Route) *pipeline {
+func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, routes []*route.Route, configs []*graph.ConfigDecl, spec *load.Spec) *pipeline {
 	candidates, rejected := graph.ScanCandidates(loaded.All, spec.InjectorPkg.PkgPath)
 	return &pipeline{
 		loaded:     loaded,
@@ -64,6 +72,7 @@ func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec,
 		caps:       caps,
 		scope:      mainModuleScope(loaded),
 		routes:     routes,
+		configs:    configs,
 	}
 }
 
@@ -71,7 +80,7 @@ func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec,
 // on a single target and ask the caller to disambiguate with --dir when
 // the scope contains more than one (see load.FindSpec).
 func buildPipeline(cfg load.Config) (*pipeline, error) {
-	loaded, caps, routes, err := loadModule(cfg)
+	loaded, caps, routes, configs, err := loadModule(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +94,7 @@ func buildPipeline(cfg load.Config) (*pipeline, error) {
 	if err := checkRouteGroups([]*load.Spec{spec}, routes); err != nil {
 		return nil, err
 	}
-	return pipelineFor(loaded, caps, spec, routes), nil
+	return pipelineFor(loaded, caps, routes, configs, spec), nil
 }
 
 // buildPipelines resolves every injector found within dir's scope — for
@@ -93,7 +102,7 @@ func buildPipeline(cfg load.Config) (*pipeline, error) {
 // (matching `wire ./...`'s discovery model) rather than erroring when more
 // than one spec exists.
 func buildPipelines(cfg load.Config) ([]*pipeline, error) {
-	loaded, caps, routes, err := loadModule(cfg)
+	loaded, caps, routes, configs, err := loadModule(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -119,7 +128,7 @@ func buildPipelines(cfg load.Config) ([]*pipeline, error) {
 
 	pipelines := make([]*pipeline, len(specs))
 	for i, spec := range specs {
-		pipelines[i] = pipelineFor(loaded, caps, spec, routes)
+		pipelines[i] = pipelineFor(loaded, caps, routes, configs, spec)
 	}
 	return pipelines, nil
 }
@@ -170,6 +179,27 @@ func mainModuleScope(loaded *load.Loaded) map[string]bool {
 	return scope
 }
 
+// resolveAll resolves every pipeline's production graph and runs the one
+// cross-injector check (config agreement) against all of them. resolveds
+// is parallel to pipelines, nil where resolution failed; those failures
+// are in errs, each prefixed with its injector's package path so a
+// multi-injector report says which graph broke. agreementErr is returned
+// separately because the two callers treat it differently: generate must
+// refuse to write anything on a disagreement, while check — which writes
+// nothing — reports it and keeps checking.
+func resolveAll(pipelines []*pipeline) (resolveds []*resolve.Resolved, errs []error, agreementErr error) {
+	resolveds = make([]*resolve.Resolved, len(pipelines))
+	for i, p := range pipelines {
+		resolved, err := p.resolve(nil)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", p.spec.InjectorPkg.PkgPath, err))
+			continue
+		}
+		resolveds[i] = resolved
+	}
+	return resolveds, errs, checkConfigAgreement(pipelines, resolveds)
+}
+
 // resolve resolves p's graph, optionally merging extra binds (servotest
 // overrides) with priority — returning a formatted, non-nil error listing
 // every diagnostic when resolution fails, never a partially resolved graph.
@@ -204,6 +234,7 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 		Caps:       p.caps,
 		Scope:      p.scope,
 		ExtraBinds: extraBinds,
+		Configs:    p.configs,
 		Fset:       fset,
 		Pkgs:       pkgs,
 		HTTP:       httpIn,
@@ -260,7 +291,12 @@ func allNodes(resolved *resolve.Resolved) []*resolve.Node {
 	for _, s := range resolved.Scopes {
 		all = append(all, s.Order...)
 	}
-	return all
+	// Supplied values and configs are nodes the graph genuinely contains,
+	// so `explain` and `why` have to find them: a type the app depends on
+	// that these commands report as unknown is worse than not supporting
+	// them.
+	all = append(all, resolved.Supplied...)
+	return append(all, resolved.Configs...)
 }
 
 func joinOrNone(ss []string) string {
@@ -268,4 +304,14 @@ func joinOrNone(ss []string) string {
 		return "none"
 	}
 	return strings.Join(ss, ", ")
+}
+
+// moduleRoot is the directory generated positions are written relative to.
+// `servo graph` reports the same strings the generated App.Graph() carries
+// only if it trims the same prefix.
+func moduleRoot(spec *load.Spec) string {
+	if mod := spec.InjectorPkg.Module; mod != nil {
+		return mod.Dir
+	}
+	return ""
 }

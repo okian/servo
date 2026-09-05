@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"uuid"
 
-	"example.com/servoorders/internal/config"
 	"example.com/servoorders/internal/domain"
 	"example.com/servoorders/internal/repository"
 	"example.com/servoorders/internal/repository/migrations"
@@ -28,18 +27,26 @@ var (
 	_ repository.UserRepository  = (*Store)(nil)
 )
 
-const envPrefix = "POSTGRES_"
-
-type Config struct {
-	DSN string `env:"DSN,required"`
+// config is this package's own configuration, declared here and nowhere
+// else — adding or removing a setting is a one-file change. The directive
+// makes servo generate the loader (servo_config_gen.go, beside this file):
+// the prefix namespaces the environment variable, so the tag below reads
+// POSTGRES_DSN, and a deployment missing it fails at startup with an error
+// that names it.
+//
+// Unexported, fields included, because nothing outside this package ever
+// constructs or reads it: the generated loader lives in this package, and
+// the injector passes the value through by inference without naming the
+// type. Only the loader that fills it is public — reflection-based config
+// libraries can't offer this at all.
+//
+//servo:config prefix=POSTGRES
+type config struct {
+	dsn string `config:"dsn,required"`
 }
 
-func NewConfig(src config.Source) (*Config, error) {
-	return config.Parse[Config](src, envPrefix)
-}
-
-func New(cfg *Config) (*Store, error) {
-	pool, err := pgxpool.New(context.Background(), cfg.DSN)
+func New(cfg config) (*Store, error) {
+	pool, err := pgxpool.New(context.Background(), cfg.dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: %w", err)
 	}
