@@ -73,6 +73,11 @@ Pointing `--dir` at one injector's own directory narrows the scan to exactly tha
 `package main` can never be imported by another `package main` — sibling injectors are structurally
 unreachable from it.
 
+One scan `--dir` does not narrow: [`//servo:` route directives](http.md) are collected module-wide,
+like capability detection, whatever injector `--dir` selects. Which routes an injector *serves* is
+its spec's decision, made with `servo.HTTP(...)` — the scan just has to see them all, so a group
+token can be checked against every declaration in the module.
+
 ## Build flags
 
 Servo resolves your graph by loading your module the same way the go command does, so it takes the
@@ -260,7 +265,10 @@ servo generate [--dir <path>] [--tags tag,list] [--mod mode] [--modfile file] [-
 ```
 
 Resolves every injector found under `--dir` and writes each one's generated file. **The default
-command.**
+command.** It also scans the module for [`//servo:` route directives](http.md) — module-wide,
+alongside the constructor scan — and, for each spec declaring `servo.HTTP(...)`, emits one HTTP
+server per served group into that injector's file: mux registration, typed request decoding,
+middleware chains, lifecycle.
 
 For each injector it emits its generated file next to that injector's spec file — `servo_gen.go`,
 or a [variant name](#variant-file-names) when `--tags` is given — and additionally the
@@ -437,6 +445,16 @@ scoped node's level counts from its own scope's floor rather than the app's.
 interface is routed to that key: an accessor is generated code, not a resolved node, so the edge
 would otherwise dangle.
 
+### HTTP in the graph output
+
+When the injector declares [`servo.HTTP()`](http.md), the `json` format gains a top-level `http`
+object — [`servo.GraphHTTP`](servo-package.md#graphhttp): the served groups, every route with its
+method, pattern, group, handler and arguments (extracted parameters marked `(extracted)`), each
+`servo.Use` attachment with what it wraps (`"server"`, `"group x"`, `"route METHOD /p"`), and the
+extractors. Like `scopes`, it is `omitempty`, so a graph without HTTP emits exactly the JSON it
+always did. The `text`, `dot` and `mermaid` formats are unchanged: routes and servers are emitted
+machinery, not nodes, so there is nothing for an edge to point at.
+
 An unrecognised format is an error: `servo graph: unknown --format "svg" (want text|json|dot|mermaid)`.
 
 ## `explain`
@@ -533,6 +551,12 @@ A node that resolved but isn't reachable from any root is reported as such:
 `servo why: <type> is not reachable from any root`. Type matching works exactly as in
 [`explain`](#explain). `--json` prints the path as an array of type strings.
 
+[Routes, middleware and extractors](http.md) are declaration-driven, not reached through another
+node's constructor — a route is not a graph node at all — so a dependency only the HTTP surface
+pulls in falls under that same line, and `explain` shows no dependents for it. The attribution
+lives in the diagnostics instead: a failure in such a chain carries a
+`needed by handler app.Order (POST /order/…)` frame, exactly as a root carries its `root` frame.
+
 ## `list`
 
 ```
@@ -553,6 +577,21 @@ queue.NewAuditAccount          queue/queue.go:28:6
 relay.New                      relay/relay.go:24:6
 worker.New                     worker/worker.go:13:6
 ```
+
+In a module with [`//servo:` route directives](http.md), the text output ends with a `routes:`
+section — routes are the other thing servo sees, and "why doesn't servo serve my endpoint" is the
+same question as "why isn't my constructor indexed". One line per directive: method and pattern,
+the group in brackets when there is one, the handler, its position. Module-wide, like the scan
+itself:
+
+```
+routes:
+  POST /order/{category}/                  api.Order                 api/api.go:94:1
+  GET /healthz [telemetry]                 api.Healthz               api/api.go:158:1
+```
+
+The `--json` schema is unchanged — still the bare candidate array — so nothing consuming it needs
+updating.
 
 `--rejected` is the higher-value mode, and the first thing to reach for when you wrote a
 constructor and servo doesn't see it. It lists every function that *looked* like it might be a
@@ -624,7 +663,7 @@ servo doctor [--dir <path>] [--tags tag,list] [--mod mode] [--modfile file] [--o
 ```
 
 Diagnoses setup problems before `go generate` is ever run, across every injector in scope. Every
-line is `[OK  ]`, `[FAIL]`, or `[WARN]`, and any `FAIL` makes the command exit 1 with
+line is `[OK  ]`, `[FAIL]`, `[WARN]`, or `[INFO]`, and any `FAIL` makes the command exit 1 with
 `servo doctor: problems found`.
 
 ```
@@ -653,9 +692,21 @@ What each check means:
 | Generated file present | The generated file — `servo_gen.go`, or the [variant](#build-variants) matching `--tags` — is missing next to the spec |
 | Generated file fresh | Same comparison [`check`](#check) makes |
 | Tracked by git | A `[WARN]`, never a `FAIL` — best-effort, so no git, no repo, or a different VCS just means "can't tell" |
+| Route groups declared | A [`//servo:` directive](http.md)'s trailing token names a group no spec declares: ``group "x" is not declared by any injector`` |
+| Routes have a server | An `[INFO]`, never a `FAIL` — routes exist but no injector in this configuration declares `servo.HTTP()`, so nothing serves them. Legitimate when a variant spec declares it under flags this run wasn't given, which is exactly why it informs rather than fails |
 
-The generated file *should* be committed, which is what that last check is nudging: a checkout
+The generated file *should* be committed, which is what that git check is nudging: a checkout
 should build without anyone having to run `servo generate` first.
+
+`[INFO]` marks a fact worth knowing that fails nothing. The unserved-routes line above is one:
+
+```
+  [INFO] 3 //servo: route(s) found, but no injector in this configuration declares servo.HTTP(), so nothing serves them
+```
+
+The other is the variant inventory — a run only checks the variant its flags select, so doctor
+names the generated files it saw and did not verify (`not checked by this run, being other
+variants: …`).
 
 ## `migrate`
 
@@ -751,12 +802,13 @@ go run github.com/okian/servo/v3/cmd/servo-vet ./...
 ```
 
 A standalone [`go/analysis`](https://pkg.go.dev/golang.org/x/tools/go/analysis) analyzer (named
-`servovet`) for the two servo mistakes the compiler cannot catch.
+`servovet`) for the servo mistakes the compiler cannot catch.
 
 **A marker call without the build tag.** Calls to `servo.Build`, `Root`, `Bind`, `Override`,
-`Scoped`, `Linger` or `Max` in any file that doesn't carry a build constraint requiring
-`servoinject`. The markers panic when actually executed, so such a call compiles straight into your
-real binary and panics at runtime. This catches it in the editor instead:
+`Scoped`, `Linger`, `Max`, or any of the [HTTP markers](http.md) (`HTTP`, `Group`, `Use`, `Route`,
+`Extract`) in any file that doesn't carry a build constraint requiring `servoinject`. The markers
+panic when actually executed, so such a call compiles straight into your real binary and panics at
+runtime. This catches it in the editor instead:
 
 ```
 spec.go:9:2: servo: servo.Build called in a file without a `//go:build servoinject` constraint —
@@ -775,8 +827,16 @@ so a receiver the body can reach is a nil dereference in production; write
 
 The check is narrowed to methods that really are key extractors — `context.Context` first, `(K,
 error)` out, `K` a defined non-interface type — so an unrelated method that happens to share the
-name is left alone. `servo generate` makes both checks too; the analyzer runs them everywhere,
-including in packages no injector has reached yet.
+name is left alone.
+
+**A malformed `//servo:` comment.** The whole [directive prefix](http.md#the-directive) is
+reserved, and this mirrors `servo generate`'s rule in the editor, where the typo is cheapest to
+fix — an unknown method is `unknown //servo: directive "pots"`, a bad pattern gets net/http's own
+message. Grammar and pattern syntax only: handler-shape and cross-route checks stay with
+`generate`, which has the resolved module.
+
+`servo generate` makes all three checks too; the analyzer runs them everywhere, including in
+packages no injector has reached yet.
 
 Because it's a `singlechecker` binary, it plugs into anything that speaks `go vet`'s analyzer
 protocol, including `golangci-lint`'s custom-analyzer support and most editor integrations.

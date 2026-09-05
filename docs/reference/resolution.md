@@ -19,6 +19,16 @@ levelling) and add three of their own: the key type resolves to the extracted ke
 provider, an accessor interface resolves to generated code rather than to a candidate, and a node
 becomes scoped by transitively depending on either. The page above covers all three.
 
+The other non-singleton shape is an [extracted handler parameter](http.md): like a scope key, the
+value exists once per request, produced by an extractor's `Extract` method rather than by a
+provider. The extractor itself is an ordinary singleton node; what it produces is
+never resolved from the graph, and a type with both a provider and an extractor is a generate-time
+error. Both the extractor's `Extract(r *http.Request) (V, error)` and a middleware's
+`Middleware(next http.Handler) http.Handler` are validated **by name**, the way `ScopeKey` is —
+the result type varies per extractor, so no single interface could match it — where the seven
+[capability interfaces](lifecycle.md#the-seven-capabilities) are found structurally, by
+`types.Implements`.
+
 ## Identity is by type
 
 Every value in the graph is identified by one thing: the fully qualified string of its type.
@@ -213,10 +223,18 @@ between them, so their `Init` calls can run concurrently. Construction itself is
 concurrent — it's cheap, and sequential construction keeps the generated code readable. See
 [Lifecycle](lifecycle.md#init).
 
-**Reachability.** The graph is the transitive closure of the declared roots. A perfectly good
-candidate that nothing reaches is not an error and not a warning — it simply isn't in the generated
-file. `servo why <type>` reports which root pulled a node in; `servo list` shows everything that
-was a candidate, reachable or not.
+Emitted [HTTP servers](http.md) sit outside the level scheme entirely: they are machinery, not
+nodes, constructed at the **end** of `New` after every level has run — every singleton they hand a
+handler already exists by then, and no node's level accounts for them.
+
+**Reachability.** The graph is the transitive closure of the declared roots — plus, when the spec
+declares [`servo.HTTP()`](http.md), the emitted servers' own requirements, resolved as root-like
+entry points through the same recursion: `*servo.HTTPConfig`, every served handler's dependencies,
+every `servo.Use` middleware, and every `servo.Extract` extractor. Diagnostic chains label them
+(`needed by handler app.Order (POST /order/…)`), exactly as a root labels its subtree. A perfectly
+good candidate that nothing reaches is not an error and not a warning — it simply isn't in the
+generated file. `servo why <type>` reports which root pulled a node in; `servo list` shows
+everything that was a candidate, reachable or not.
 
 ## Scoped nodes and levels
 

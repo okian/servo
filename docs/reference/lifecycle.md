@@ -38,6 +38,12 @@ This page describes the lifecycle of a **singleton** — one instance, built in 
 per instance and on its own schedule; see
 [Per-instance lifecycle](scopes.md#per-instance-lifecycle) for the two places the two differ.
 
+The third case is an emitted [HTTP server](http.md) — machinery, not a graph node, so it implements
+no capability and appears in no level. It is folded into the same three calls at fixed points:
+constructed at the **end** of `New` (fallibly — a declared group missing from `HTTPConfig.Groups`
+fails `New` with the usual rollback), run inside `Run`'s errgroup, drained **first** in `Shutdown`,
+and reported per group by `Ready`.
+
 `servo explain <type>` prints the capabilities detected for any node, and the generated file's
 header comment lists them for the whole graph, so what servo saw is never a mystery.
 
@@ -126,6 +132,10 @@ Launches every `Runner`. The shape depends on how many there are:
   returning an error cancels every other runner, and `Run` doesn't return until all of them have
   returned.
 
+Emitted HTTP servers count here too: each group's server joins the same errgroup, binds its
+listener, flips its readiness flag and serves until the context ends — so "none" means no runners
+*and* no servers, and a failing runner takes the listeners down with it.
+
 `Run` blocks for as long as the application is running. It does **not** call `Shutdown` — that's
 your `main`'s job, so that the same code path handles both "a runner failed" and "we got a signal".
 The canonical `main` is:
@@ -168,7 +178,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report
 ```
 
 Stops every node with something to stop, in **reverse dependency order** — so a server stops
-before the database it queries. For each node, in this order:
+before the database it queries. Emitted HTTP servers stop before any of it: they are the inbound
+edges, and draining them is what lets everything beneath quiesce. For each node, in this order:
 
 1. `Drain(ctx)` — stop accepting new work and let in-flight work finish
 2. `Flush(ctx)` — push buffered state somewhere durable
@@ -233,6 +244,14 @@ reverse-dependency order: after every singleton that could still call `Acquire` 
 every singleton its instances depend on. Each scope reports **one `NodeResult`**, merged from every
 entry it tore down — one line per live chat room would not be a report.
 
+### HTTP servers in the shutdown sequence
+
+An app that declares [`servo.HTTP()`](http.md) stops its emitted servers **first**, before every
+singleton — the mirror image of them being constructed last. Each group's server drains through
+`net/http.Server.Shutdown`, under `servo.DefaultStopBudget` like any other phase, and reports one
+`NodeResult` named `"http"` or `"http:<group>"`. The stop methods are nil-guarded, because
+construction rollback can reach a server `New` never got to build.
+
 ## Health and Ready
 
 ```go
@@ -262,6 +281,10 @@ blocks the whole call. Respect the context you're given.
 The distinction between the two is yours to define, and the conventional one is worth keeping:
 `Health` means "this process is not broken" (restart me if it fails), `Ready` means "send me
 traffic" (take me out of the load balancer if it fails).
+
+Emitted HTTP servers follow that convention rather than you defining it: `Ready` gets one entry
+per group (`"http"`, `"http:<group>"`) meaning exactly "that listener is bound", and `Health` says
+nothing about them — a bound socket is not a health claim.
 
 ## The cleanup func
 

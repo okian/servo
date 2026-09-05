@@ -23,7 +23,9 @@ binaries share most of their wiring. `wire` has these; servo doesn't.
 
 **Value group.** A way of saying "collect *every* constructor that produces a `Handler`, and give
 me all of them as a slice." It's how you build plugin registries and middleware chains where the
-pieces don't know about each other. `fx` and `dig` have these; servo and wire don't.
+pieces don't know about each other. `fx` and `dig` have these; servo and wire don't. (servo does
+compose HTTP middleware chains, but by a different mechanism: each `servo.Use` is named explicitly
+in the spec, an ordered list rather than a collection the pieces join themselves.)
 
 That last one matters more than it sounds, and it comes up again below.
 
@@ -40,13 +42,13 @@ Everything below follows from those two.
 
 ## At a glance
 
-| | How it works | Errors surface | Startup/shutdown | Reflection at runtime | Code you can read | Two of the same type | "All implementations of X" | Keyed instances |
-|---|---|---|---|---|---|---|---|---|
-| **servo** | Reads constructors, generates Go | Build time | Built in | No | Yes — `servo_gen.go` | No | No | Yes — scopes, with lifecycle |
-| **google/wire** | Reads constructors, generates Go | Build time | You write it | No | Yes — `wire_gen.go` | Via distinct types | No | No |
-| **uber-go/fx** | Container | App startup | Built in | Yes | No | Yes — name tags | Yes — value groups | Roll your own |
-| **uber-go/dig** | Container | First `Invoke` | You write it | Yes | No | Yes — names | Yes — groups | Roll your own |
-| **By hand** | You write it | Compile time | You write it | No | It *is* your code | Yes — variables | Yes — a slice | Roll your own |
+| | How it works | Errors surface | Startup/shutdown | Generated HTTP transport | Reflection at runtime | Code you can read | Two of the same type | "All implementations of X" | Keyed instances |
+|---|---|---|---|---|---|---|---|---|---|
+| **servo** | Reads constructors, generates Go | Build time | Built in | Yes — opt-in, emitted | No | Yes — `servo_gen.go` | No | No | Yes — scopes, with lifecycle |
+| **google/wire** | Reads constructors, generates Go | Build time | You write it | No | No | Yes — `wire_gen.go` | Via distinct types | No | No |
+| **uber-go/fx** | Container | App startup | Built in | No | Yes | No | Yes — name tags | Yes — value groups | Roll your own |
+| **uber-go/dig** | Container | First `Invoke` | You write it | No | Yes | No | Yes — names | Yes — groups | Roll your own |
+| **By hand** | You write it | Compile time | You write it | You write it | No | It *is* your code | Yes — variables | Yes — a slice | Roll your own |
 
 Two of servo's cells say "No." Those are real, and they're the honest price of resolving everything
 before the program runs. Don't skim past them — if either one is something you need, that decision
@@ -75,7 +77,8 @@ constructor can return a `func()` that runs on teardown, but that's resource cle
 application lifecycle. There's no notion of "start the server after the database is ready."
 
 This is the single biggest structural difference between the two tools, and it's most of the reason
-servo exists.
+servo exists — and the same line now covers the transport half, since servo can also emit the HTTP
+servers themselves from `//servo:` directives, which wire has no analogue for.
 
 **Wire has provider sets; servo doesn't.** With wire you build up named bundles of constructors and
 compose them:
@@ -186,9 +189,10 @@ on a code generator and a committed generated file.
 ## The honest summary
 
 servo's argument is narrow and specific: it's the only tool here that resolves the graph at build
-time *and* manages the lifecycle *and* leaves you an artifact you can read. Miss a dependency and
-the build stops. Give a component a `Stop` method and it gets called, in the right order, under a
-budget, with a report at the end.
+time *and* manages the lifecycle *and* leaves you an artifact you can read — and, opted into, that
+artifact now includes the HTTP servers themselves. Miss a dependency and the build stops. Give a
+component a `Stop` method and it gets called, in the right order, under a budget, with a report at
+the end.
 
 Against that: servo can't give you two instances of a type, can't collect every implementation of
 an interface, can't vary the graph by environment, and can't hand you a component at runtime. fx

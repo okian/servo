@@ -12,7 +12,8 @@
 
 Servo is a build-time code generator that resolves a Go application's object graph from
 constructor signatures and emits plain Go source that constructs, starts, supervises, and shuts
-down the application in dependency order.
+down the application in dependency order — and, for routes declared as `//servo:` comments, the
+HTTP servers that serve them.
 
 No reflection. No runtime registry. No `init()`. No hand-written wiring.
 
@@ -24,8 +25,9 @@ readable by a human at 3am.
 [how servo compares](https://okian.github.io/servo/comparison.html) if you are weighing it against
 wire, fx, or dig, and [limitations](https://okian.github.io/servo/limitations.html) before you
 adopt it. The [reference](https://okian.github.io/servo/reference/) documents every CLI command and
-flag, the spec-file markers, the resolution rules, every diagnostic, scoped instances, the
-lifecycle contract, the generated API, and every exported identifier in `servo` and `servotest`.
+flag, the spec-file markers, the resolution rules, every diagnostic, scoped instances, HTTP routes
+and the shipped middleware package, the lifecycle contract, the generated API, and every exported
+identifier in `servo` and `servotest`.
 
 **v3 is a from-scratch rewrite of `servo` and shares no API with what came before it (informally,
 v1).** v1 was a runtime lifecycle sequencer built on a global registry, a hand-maintained
@@ -96,7 +98,10 @@ func wire() {
 Run `servo generate`. It emits `servo_gen.go` next to the spec file, containing `New`, `Run`,
 `Shutdown`, `Health`, `Ready`, `Graph`, and `Report` — construction in dependency order, lifecycle
 calls only for the capabilities a type actually implements, reverse-order shutdown with budgets
-and a per-node report. `main.go` never grows with the graph — it stays this same shape:
+and a per-node report. A spec declaring `servo.HTTP(...)` additionally gets one emitted server per
+listener group and an `HTTPHandler(group)` method for driving it in tests — see
+[HTTP routes](#http-routes) below. `main.go` never grows with the graph — it stays this same
+shape:
 
 ```go
 // servo.RunStop caps each node at servo.DefaultStopBudget, but nothing caps
@@ -445,14 +450,14 @@ isolation.
 
 | Command | Purpose |
 | --- | --- |
-| `servo generate [--dir]` | Resolve and emit `servo_gen.go` for **every** injector found under `--dir` (and `servo_gen_test.go` per injector that declares `servo.Override`). Default command. |
+| `servo generate [--dir]` | Resolve and emit `servo_gen.go` for **every** injector found under `--dir` (and `servo_gen_test.go` per injector that declares `servo.Override`). Scans `//servo:` route directives module-wide and emits the servers for specs declaring `servo.HTTP`. Default command. |
 | `servo check [--dir]` | Verify every injector found under `--dir` matches a fresh generation; prints a diff and reports every stale one, not just the first. |
 | `servo graph [--dir] [--format=text\|json\|dot\|mermaid]` | Export one injector's resolved graph. |
 | `servo explain <type> [--dir]` | Which provider was selected and why, its dependencies, dependents, level, and capabilities. |
 | `servo why <type> [--dir]` | Shortest path from a root to that node. |
-| `servo list [--rejected] [--all] [--dir]` | The candidate index, or every excluded function and the rule that excluded it. Defaults to the main module; `--all` includes stdlib/third-party. |
+| `servo list [--rejected] [--all] [--dir]` | The candidate index, or every excluded function and the rule that excluded it — plus a `routes:` section when the module declares any. Defaults to the main module; `--all` includes stdlib/third-party. |
 | `servo init [--dir]` | Scaffold a spec file with the correct build tag and a `go:generate` directive. |
-| `servo doctor [--dir]` | Diagnose setup problems (missing build tag, stale/absent generated file) before `go generate` ever runs. |
+| `servo doctor [--dir]` | Diagnose setup problems (missing build tag, stale/absent generated file, a route naming an undeclared group, routes no injector serves) before `go generate` ever runs. |
 | `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v3 skeleton plus a report flagging duplicate order values. See [`examples/migrate`](./examples/migrate) for a worked example. |
 | `servo new component <Name>` / `servo new adapter <pkg>` | Scaffold a component or third-party wrapper. Never imports `servo`. |
 | `servo new mock-adapter <moq\|mockery\|gomock> <GeneratedTypeName>` | Scaffold the adapter file a generated mock needs to become a valid provider (see [Mocking](#mocking)). |
@@ -663,8 +668,10 @@ examples/tutorial/ full layered microservice built in docs/tutorial/ (separate m
 
 Core (`internal/*`, `cmd/servo`) depends on nothing beyond `golang.org/x/tools`; `servotest` alone
 depends on `go.uber.org/goleak`. Neither the runtime package nor any generated output imports
-`reflect`, and the generated package compiles with the `servo` module deleted save for the
-small runtime it calls into — both enforced as conformance checks, not just claimed.
+`reflect` for servo's own wiring (`encoding/json`, used by emitted HTTP servers, reflects
+internally like it does for everyone), and the generated package compiles with the `servo` module
+deleted save for the small runtime it calls into — both enforced as conformance checks, not just
+claimed.
 
 ## Contributing
 

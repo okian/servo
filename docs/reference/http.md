@@ -5,8 +5,11 @@
 servo can generate an HTTP server: the router, the typed request decoding, the response encoding
 and the listener's lifecycle are all emitted into `servo_gen.go`, in the same sense the rest of the
 file is — plain Go you can read, derived from declarations you wrote. The `servo` package itself
-still ships no handler, no router and no middleware; what it gains for this feature is three
-runtime types (`Json`, `HTTPStatus` with its `Status` table, and `HTTPConfig`) and one marker.
+still ships no handler and no router; what it gains for this feature is the sealed
+[response family](servo-package.md#the-response-family), `HTTPStatus` with its `Status` table,
+`HTTPConfig` with its per-group `HTTPListener`, and five markers — `HTTP`, `Group`, `Use`, `Route`,
+`Extract`. The commodity middleware ships as its own package,
+[`middleware`](middleware.md), as ordinary graph nodes rather than anything the runtime wires.
 
 Two declarations opt in:
 
@@ -161,7 +164,7 @@ provider and an extractor is an error ("constructed once or extracted per reques
 ## The handler signature
 
 ```go
-func Name(ctx context.Context [, req *ReqT] [, deps...]) (servo.Json[T], error)
+func Name(ctx context.Context [, req *ReqT] [, deps...]) (R, error)
 ```
 
 - The first parameter is `context.Context` — the request's context, so cancellation propagates and
@@ -278,12 +281,14 @@ every server binds explicitly, flips its readiness flag, and serves until the co
 is bound". In `Shutdown` the servers stop **first**, before every singleton: they are the inbound
 edges, and draining them (`net/http.Server.Shutdown`, under `servo.DefaultStopBudget`) is what
 lets everything beneath quiesce. `Health` says nothing about them — a bound socket is not a health
-claim.
+claim. For tests, the App gains one method: `HTTPHandler(group)` returns a group's routed,
+middleware-wrapped handler for `httptest`, with no listener bound — see
+[Generated API](generated-api.md#httphandler).
 
 ## What this does not do
 
-- **No content negotiation.** Responses are `application/json`; `Json[T]` is the only response
-  shape.
+- **No content negotiation.** The handler picks its encoding — a typed wrapper, or a
+  `servo.Response` chosen at runtime — and nothing inspects `Accept` to pick one for it.
 - **No response-typed middleware.** `Middleware` wraps `http.Handler`s; nothing gives a wrapper
   typed access to a handler's decoded request or encoded response.
 - **No opting out of the default group.** Every `servo.HTTP(...)` injector serves the default

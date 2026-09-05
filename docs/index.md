@@ -1,24 +1,27 @@
 ## One pipeline, seven views
 
 `generate`, `check`, `graph`, `explain`, `why`, `list` and `doctor` are not seven
-tools. They are seven windows onto the same five stages, which run in the same
+tools. They are seven windows onto the same six stages, which run in the same
 order every time — though only `generate` and `check` reach the last one.
 
 ```mermaid
 flowchart LR
     L["load<br/>one type-checked<br/>go/packages session"]
-    F["find spec<br/>roots, Bind,<br/>Override, Scoped"]
+    F["find spec<br/>roots, Bind, Override,<br/>Scoped, HTTP"]
     S["scan<br/>every constructor-shaped<br/>function, classified"]
+    RT["routes<br/>every //servo: directive,<br/>validated module-wide"]
     R["resolve<br/>closure → precedence →<br/>cycles → levels"]
     E["emit<br/>one deterministic,<br/>gofmt-clean file"]
 
-    L --> F --> S --> R --> E
+    L --> F --> S --> RT --> R --> E
 ```
 
-Loading happens once per module, however many injectors it contains. Everything
-after it runs per injector, because a monorepo's `cmd/api`, `cmd/worker` and
-`cmd/migrator` do not share a graph even when they share a type-checking
-session.
+Loading happens once per module, however many injectors it contains, and so does
+the route scan: a `//servo:get /healthz` comment declares an HTTP route wherever
+it lives, and a spec declaring `servo.HTTP()` gets the servers for it emitted —
+mux, typed request decoding, middleware, lifecycle. Everything else runs per
+injector, because a monorepo's `cmd/api`, `cmd/worker` and `cmd/migrator` do not
+share a graph even when they share a type-checking session.
 
 Resolution has exactly two outcomes: a complete ordered plan, or a set of
 diagnostics. Never a partial graph.
@@ -26,7 +29,8 @@ diagnostics. Never a partial graph.
 ## What the generated app does when it runs
 
 `New`, `Run` and `Shutdown` are the whole lifecycle. Start-up follows dependency
-order and unwinds if any step fails. Shutdown runs the same list backwards under
+order and unwinds if any step fails; emitted HTTP servers are constructed last,
+serve inside `Run`, and drain first. Shutdown runs the same list backwards under
 a time budget, and reports anything that refused to stop rather than hanging on
 it forever.
 

@@ -2,9 +2,11 @@
 
 **Who this is for:** anyone writing or changing the one file that tells servo what to build.
 
-The spec file is the entire input you author. It declares the roots of the object graph and any
-bindings that resolution can't work out on its own — and nothing else. It is read as syntax and
-never executed, which drives almost every rule on this page.
+The spec file is the entire input you author. It declares the roots of the object graph, any
+bindings that resolution can't work out on its own, and — for an injector that serves
+[`//servo:` routes](http.md) — the listener groups, middleware and extractors its emitted servers
+get. Nothing else. It is read as syntax and never executed, which drives almost every rule on this
+page.
 
 ## What a spec file is
 
@@ -37,7 +39,10 @@ func wire() {
 ```
 
 That is [`examples/basic`](https://github.com/okian/servo/blob/master/examples/basic/cmd/basic/spec.go)'s
-real spec file, and it uses every marker there is.
+real spec file, and it uses every marker a service without scopes or HTTP needs. `Scoped` appears
+in [`examples/scoped`](https://github.com/okian/servo/blob/master/examples/scoped/cmd/chat/spec.go)'s
+spec, and the HTTP markers — `HTTP` with its `Group`/`Use`/`Route` options, and `Extract` — in
+[`examples/http`](https://github.com/okian/servo/blob/master/examples/http/cmd/app/spec.go)'s.
 
 Four facts about it that matter:
 
@@ -69,7 +74,8 @@ spec.go:16:2: spec file is missing a `//go:build servoinject` constraint —
 as written it would compile into the real binary
 ```
 
-The reason is the markers themselves. `Build`, `Root`, `Bind` and `Override` all `panic` when
+The reason is the markers themselves. `Build`, `Root`, `Bind`, `Override`, `Scoped` (with its
+`Linger`/`Max` options), `HTTP` (with `Group`/`Use`/`Route`) and `Extract` all `panic` when
 executed — they exist to be *read*, and a marker call that actually runs means generation was
 skipped or the tag was missing. Rather than silently returning a nil app, they fail loudly. The
 build tag is what guarantees they never run: `servo generate` loads your module with
@@ -124,8 +130,8 @@ servo: multiple servo.Build(...) calls found in the same package example.com/app
 func Build(...Marker)
 ```
 
-Declares the injector. Every argument must be a `Root`, `Bind`, `Override` or `Scoped` call
-written inline with explicit type arguments.
+Declares the injector. Every argument must be a `Root`, `Bind`, `Override`, `Scoped`, `HTTP` or
+`Extract` call written inline with explicit type arguments.
 
 That last part is a real constraint, not a style preference. Servo reads the type arguments out of
 the type-checker's instantiation info for the call it found in the syntax tree. A marker value

@@ -22,6 +22,10 @@ layout: default
       build</strong>, and writes out plain Go that constructs, starts, supervises
       and shuts down your application in dependency order.
     </p>
+    <p class="hero__lede">
+      Declare a route as a comment — <code>//servo:post /order/{category}/</code>
+      on a plain function — and the HTTP server is generated too.
+    </p>
     <p class="hero__negative">no reflection · no runtime registry · no init() · no hand-written wiring</p>
     <div class="hero__install">go install {{ site.go_module }}/cmd/servo@latest</div>
     <div class="hero__cta">

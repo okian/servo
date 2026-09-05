@@ -134,7 +134,10 @@ Putting the key in the context is your job, in your own middleware, at the trans
 ctx = chat.WithRoom(r.Context(), chat.RoomKey(r.PathValue("room")))
 ```
 
-servo ships no `net/http` or gRPC adapter. The moment it does, it stops being a codegen tool.
+The servo *runtime* ships no `net/http` or gRPC adapter — the moment it does, it stops being a
+codegen tool. What `servo generate` can do, behind [`servo.HTTP()`](http.md), is emit an optional
+transport into your own package; on an emitted server, a `servo.Use` middleware is where this
+exact line lives, and the handlers run innermost, so the key is planted before any `Acquire`.
 
 ## What belongs to a scope
 
@@ -402,6 +405,12 @@ Widening is the feature's reason to exist. A singleton holding a scoped instance
 instance for the life of the process — the first room anyone joins becomes everyone's room — and
 nothing about the running program says so. A hand-written registry beside servo gets no such check.
 
+The rule covers [`//servo:` handlers](http.md) too: a handler parameter naming a scoped type is
+rejected with the same reasoning — the emitted server is a singleton, and would capture one key's
+instance for every caller — and the fix is the same, take the accessor interface and `Acquire(ctx)`
+per request. It works in a handler because the handler receives the request's context, with the key
+already planted by whatever middleware knows it.
+
 Those four are the named ones. Thirty-seven narrower messages — a stray scope key, a node two
 scopes both claim, a scoped type declared as a `servo.Root`, an accessor someone tried to `Bind`,
 every malformed `ScopeKey` signature and every rejected marker argument — are tabulated in
@@ -415,7 +424,8 @@ every malformed `ScopeKey` signature and every rejected marker argument — are 
   per key *pair* means two reference counts and two linger windows with no single owner, and no
   obvious answer for what happens when the outer one evicts while the inner one is still held.
 - **Persistence.** Instances are in memory and die with the process.
-- **Transport integration.** You put the key in the context.
+- **Transport integration in the runtime.** You put the key in the context — in your own
+  middleware, or in a `servo.Use` middleware on an [emitted server](http.md).
 
 See [Limitations](../limitations.md#scopes-are-in-process-only) for the full list.
 

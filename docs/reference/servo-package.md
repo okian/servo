@@ -46,6 +46,7 @@ having the method.
 | [`RunStop`](#runstop) | func | Runs a stop call under a budget |
 | [`DefaultStopBudget`](#defaultstopbudget) | var | The budget every stop call gets |
 | [`Graph`](#graph-and-graphnode), [`GraphNode`](#graph-and-graphnode), [`GraphScope`](#graphscope) | types | The resolved graph as data |
+| [`GraphHTTP`](#graphhttp), [`GraphRoute`](#graphhttp), [`GraphUse`](#graphhttp), [`GraphExtractor`](#graphhttp) | types | The emitted HTTP plan as data |
 | [`StartupReport`](#startupreport-and-startupnode), [`StartupNode`](#startupreport-and-startupnode) | types | Per-node `Init` timings |
 | [`Response`](#the-response-family) | type | The sealed base every response kind implements |
 | [`Json`](#the-response-family), [`Xml`](#the-response-family) | types | Typed response wrappers — the signature carries the schema |
@@ -507,6 +508,7 @@ teardown around a graph.
 type Graph struct {
 	Nodes  []GraphNode  `json:"nodes"`
 	Scopes []GraphScope `json:"scopes,omitempty"`
+	HTTP   *GraphHTTP   `json:"http,omitempty"`
 }
 
 type GraphNode struct {
@@ -556,6 +558,42 @@ string in its `Scope` field, and its `Level` counts from the scope's own floor.
 
 Both `GraphNode.Scope` and `Graph.Scopes` are `omitempty`, so a graph with nothing scoped
 serialises exactly as it did before scopes existed.
+
+### `GraphHTTP`
+
+```go
+type GraphHTTP struct {
+	Groups     []string         `json:"groups,omitempty"`
+	Routes     []GraphRoute     `json:"routes"`
+	Uses       []GraphUse       `json:"uses,omitempty"`
+	Extractors []GraphExtractor `json:"extractors,omitempty"`
+}
+
+type GraphRoute struct {
+	Method  string   `json:"method"`
+	Pattern string   `json:"pattern"`
+	Group   string   `json:"group,omitempty"` // "" = the default group
+	Handler string   `json:"handler"`
+	Args    []string `json:"args,omitempty"` // extracted parameters marked "(extracted)"
+	Pos     string   `json:"pos,omitempty"`
+}
+
+type GraphUse struct {
+	Type  string `json:"type"`
+	Scope string `json:"scope"` // "server", "group <name>", or "route <METHOD /pattern>"
+}
+
+type GraphExtractor struct {
+	Type     string `json:"type"`
+	Produces string `json:"produces"`
+}
+```
+
+The emitted HTTP plan as data, in `Graph.HTTP`: the declared groups (the default group is
+implicit), every served route with its handler and arguments, each `servo.Use` attachment with
+what it wraps, and each extractor with the parameter type it produces. `Graph.HTTP` is omitted
+entirely when the spec declares no `servo.HTTP()`, so a graph without it serialises exactly as
+before.
 
 ### `StartupReport` and `StartupNode`
 

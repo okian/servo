@@ -11,7 +11,7 @@ and reviewable like any other file. What follows is exactly what it contains.
 
 | File | When | Contains |
 | --- | --- | --- |
-| `servo_gen.go` | Always | `App`, `New`, the full method set, and one registry per declared scope |
+| `servo_gen.go` | Always | `App`, `New`, the full method set, one registry per declared scope, and one `http*Server` per served group when the spec declares `servo.HTTP()` |
 | `servo_gen_test.go` | Only when the spec declares at least one `servo.Override` | `TestApp`, `NewTestApp`, and the same method set |
 
 Both land in the **same directory as the spec file**, in that directory's package — which is why
@@ -80,6 +80,26 @@ and the singletons it borrows from the app:
 //	borrows: *example.com/servoscoped/logger.Logger
 ```
 
+An app that declares [`servo.HTTP()`](http.md) gets an `http` block too, below the node list — the
+config node, the declared groups, each `use:` and `extract:` attachment, and one line per served
+route naming its handler and the arguments it receives, with extracted parameters marked. From
+[`examples/http`](https://github.com/okian/servo/blob/master/examples/http/cmd/app/servo_gen.go)'s
+real output:
+
+```go
+// http (servo.HTTP() at cmd/app/spec.go:23:3):
+//
+//	config: *github.com/okian/servo/v3/servo.HTTPConfig
+//	groups: internal, telemetry
+//	use: *github.com/okian/servo/v3/middleware.Recover -> every group
+//	use: *example.com/servohttp/mw.Auth -> group internal
+//	extract: *example.com/servohttp/mw.UserExtractor -> *example.com/servohttp/mw.User
+//	POST /order/{category}/ -> api.Order (api/api.go:94:1)
+//	      args: *example.com/servohttp/store.Store
+//	GET /whoami -> api.Whoami (api/api.go:145:1)
+//	      args: *example.com/servohttp/mw.User (extracted)
+```
+
 ## The `App` type
 
 ```go
@@ -109,6 +129,7 @@ One field per node, in construction order, plus bookkeeping only where it's need
 | `<name>Cleanup func()` | The constructor returned a cleanup func |
 | `<name>StopOnce sync.Once` | The node has something to stop (`Drain`, `Flush`, `Stop`, or a cleanup func) |
 | `<name>StopResult servo.NodeResult` | Same condition — memoises the result so the stop path is idempotent |
+| `http<Group>Server`, with its own `StopOnce`/`StopResult` pair | The spec declares `servo.HTTP()` — one triple per served group (`httpServer` for the default group) |
 | `startupReport` | Always |
 
 In the example above, `consumer` implements only `Runner` and the two queue accounts implement
@@ -126,6 +147,15 @@ When the spec declares a [scope](scopes.md), the `App` gains four more fields pe
 
 The registry, its entry type and its accessors are package-level declarations in the same file. The
 override variant prefixes all of them with `test`, since both files land in the same package.
+
+When the spec declares [`servo.HTTP()`](http.md), the `App` gains one server triple per served
+group — `httpServer` for the default group, `httpTelemetryServer` for a group named `telemetry` —
+with the same `StopOnce`/`StopResult` bookkeeping every stoppable node gets. The server types are
+package-level declarations in the same file, and like a scope registry they are emitted machinery
+rather than graph nodes: each holds its listener config, its `*http.Server` and a readiness flag.
+They are constructed at the **end** of `New`, after every node — fallibly, because a declared
+group missing from `HTTPConfig.Groups` is the one wiring error only runtime values can reveal, and
+it fails `New` with the same rollback any `Init` failure gets.
 
 **Every field is unexported.** The generated file is part of *your* package, so code in that package
 — including its tests — can reach any component directly, and code outside it cannot. That boundary
@@ -155,7 +185,9 @@ fine — just expect to update them when you rename things.
 
 ## Method set
 
-This is the stable surface. Every generated `App` has exactly these methods.
+This is the stable surface. Every generated `App` has exactly these methods — plus
+[`HTTPHandler`](#httphandler), the one conditional member, emitted only when the spec declares
+`servo.HTTP()`.
 
 ### `New`
 
@@ -176,9 +208,10 @@ so a Ctrl-C during a slow startup unwinds instead of hanging.
 func (a *App) Run(ctx context.Context) error
 ```
 
-Runs every `Runner` until they return, one failing runner cancelling the rest. Returns `nil`
-immediately if the graph has no runners. Does not shut anything down — see
-[Lifecycle](lifecycle.md#run).
+Runs every `Runner` until they return, one failing runner cancelling the rest. Emitted HTTP
+servers join the same errgroup: each binds its listener, flips its readiness flag, and serves
+until the context ends. Returns `nil` immediately if the graph has no runners and no servers.
+Does not shut anything down — see [Lifecycle](lifecycle.md#run).
 
 ### `Shutdown`
 
@@ -187,9 +220,10 @@ func (a *App) Shutdown(ctx context.Context) servo.Report
 ```
 
 Stops every stoppable node in reverse dependency order, each phase under a budget, and returns a
-per-node [`servo.Report`](servo-package.md#report). Idempotent. Never returns an error type; check
-`report.Clean()`. Details, including the second-signal force-exit, in
-[Lifecycle](lifecycle.md#shutdown).
+per-node [`servo.Report`](servo-package.md#report). Emitted HTTP servers stop **first**, before
+every singleton — they are the inbound edges, and draining them is what lets everything beneath
+quiesce. Idempotent. Never returns an error type; check `report.Clean()`. Details, including the
+second-signal force-exit, in [Lifecycle](lifecycle.md#shutdown).
 
 ### `Health` and `Ready`
 
@@ -202,6 +236,22 @@ Call every `Healther` / `Readier` once, in construction order, and report each r
 transitive aggregation, and not called automatically by anything. A graph with no such components
 returns an empty report, which is `Clean()`. See
 [Lifecycle](lifecycle.md#health-and-ready).
+
+An emitted HTTP server adds one entry per group to `Ready` — named `"http"` for the default group,
+`"http:<group>"` for the rest — meaning exactly "that listener is bound". `Health` says nothing
+about them: a bound socket is not a health claim.
+
+### `HTTPHandler`
+
+```go
+func (a *App) HTTPHandler(group string) http.Handler
+```
+
+Emitted only when the spec declares `servo.HTTP()` — the one method whose presence depends on the
+spec. Returns the named group's routed, middleware-wrapped handler, so a test can drive the full
+stack through `httptest` without binding a listener. `""` and `"default"` both name the default
+group; an unknown name returns `nil`. `TestApp` gets it too, so the same seam works against the
+override graph.
 
 ### `Graph`
 
@@ -221,8 +271,11 @@ line, or asserting graph shape in a test. It serialises to the same JSON schema
 
 Scoped nodes appear here too, after the singletons, each carrying its scope's key in `Scope` and
 its level *within that scope* in `Level`. The scopes themselves are listed in `Graph.Scopes`, with
-their policy, their accessor interfaces, their members and the singletons they borrow. Both fields
-are `omitempty`: an app with no scopes serialises exactly as it did before scopes existed.
+their policy, their accessor interfaces, their members and the singletons they borrow. When the
+spec declares `servo.HTTP()`, `Graph.HTTP` carries the emitted plan the same way — the served
+groups, every route with its handler and arguments (extracted ones marked), the middleware
+attachments and the extractors, as [`servo.GraphHTTP`](servo-package.md#graphhttp). All of these fields are
+`omitempty`: an app with no scopes and no HTTP serialises exactly as it always did.
 
 ### Scope accessors
 
@@ -265,6 +318,11 @@ One per stoppable node, called by `Shutdown` and by construction rollback. Guard
 `sync.Once`, so both callers can invoke it and the component's teardown still happens once.
 Unexported deliberately: shutdown order is a property of the graph, and stopping one node out of
 order is not a supported operation.
+
+Emitted HTTP servers get the same treatment — a `stopHttpServer` (or `stopHttp<Group>Server`) per
+group, draining via `net/http.Server.Shutdown` under the stop budget. Each is nil-guarded: the
+servers are built last in `New`, so a rollback can reach a server that was never constructed, and
+the guard reports it as a clean no-op instead of dereferencing nothing.
 
 ## The test variant
 
@@ -312,8 +370,10 @@ never to one consumer.
 ## What is stable
 
 **Stable, and safe to write code against:** the method set above, its signatures, and the semantics
-of each. The JSON schema of `servo.Graph`. The types in the
-[`servo` package](servo-package.md).
+of each — `HTTPHandler` included, under its condition. The JSON schema of `servo.Graph`. The types
+in the [`servo` package](servo-package.md), which for HTTP means the sealed
+[response family](servo-package.md#the-response-family), `HTTPStatus` and its `Status` table, and
+`HTTPConfig`/`HTTPListener`.
 
 **Not stable:** field names, the exact statements emitted, the header comment's formatting, variable
 names inside `New`. Treat the file's *contents* as an implementation detail of your own package — you

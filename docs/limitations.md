@@ -20,7 +20,7 @@ different kind of tool. Treat them as permanent.
 day one, and most have a straightforward answer.
 
 If you're short on time: skip to [servo is the wrong tool if…](#servo-is-the-wrong-tool-if) at the
-bottom. It's six lines and it'll tell you whether the rest is worth reading.
+bottom. It's seven lines and it'll tell you whether the rest is worth reading.
 
 ## Consequences of resolving at build time
 
@@ -135,13 +135,16 @@ behind the old promise here ("the moment servo ships transport code it stops bei
 still holds in the way that matters: the `servo` package contains no handler, no router and no
 framework adapter. Declaring `servo.HTTP()` gets you an emitted one, in your own package, derived
 from `//servo:` directives you wrote; declining it gets you a runtime that still knows nothing
-about HTTP. There is no gRPC equivalent and no middleware seam in the emitted server yet — a
-handler needing per-request policy enforces it itself.
+about HTTP. There is no gRPC equivalent. The emitted server does carry a middleware seam:
+[`servo.Use`](reference/http.html) attaches ordinary graph nodes at server, group or route level,
+the commodity kinds ship in the [`middleware`](reference/middleware.html) package, and
+`servo.Extract` turns per-request policy into a typed handler parameter.
 
 Scope keys still come out of `context.Context`. A `//servo:` handler receives the request's
-context, so a `ScopeKey` method reading a value planted there works unchanged — and for any
-transport you write yourself, putting the key into the context remains your middleware's one-line
-job: `ctx = context.WithValue(r.Context(), roomCtxKey{}, chat.RoomKey(...))`.
+context, so a `ScopeKey` method reading a value planted there works unchanged — on an emitted
+server, a `servo.Use` middleware is the natural place to plant it, since handlers run innermost.
+For any transport you write yourself, putting the key into the context remains your middleware's
+one-line job: `ctx = context.WithValue(r.Context(), roomCtxKey{}, chat.RoomKey(...))`.
 
 ### A scoped instance is memory, and dies with the process
 
@@ -304,6 +307,8 @@ resolving to each other because they happen to share a type.
 - Your graph is assembled dynamically, or varies by environment or feature flag.
 - You need a genuinely fresh instance per call, with no sharing by key.
 - You need to pull components out of a container at runtime.
+- You need content negotiation, a router other than `net/http`'s ServeMux, or a gRPC transport —
+  the emitted server is deliberately ServeMux and JSON-first, not a web framework.
 - Your service has five components and a `main.go` you're happy with. Write it by hand.
 
 For the first three, `uber-go/fx` is the better tool, and

@@ -34,6 +34,12 @@ of the graph that is not built once and held for the life of the process. It has
 write, its own marker, its own generated code, and its own diagnostics.
 → [Scoped instances](scopes.md)
 
+**HTTP routes** cut across the surfaces the same way: a `//servo:` directive you write on a plain
+function, markers in the spec, servers in the generated file, and response types your handlers
+return.
+→ [HTTP routes](http.md), with the shipped middleware on its own page:
+[middleware package](middleware.md)
+
 ## Find it by question
 
 | You want to know | Page |
@@ -48,6 +54,10 @@ write, its own marker, its own generated code, and its own diagnostics.
 | How to get one instance per tenant, room, or region | [Scoped instances](scopes.md) |
 | Why a singleton can't depend on a scoped type | [Scoped instances](scopes.md#diagnostics) |
 | When a scoped instance is actually torn down | [Scoped instances](scopes.md#lifetimes) |
+| How to declare an HTTP route, and what a handler may look like | [HTTP routes](http.md) |
+| What a handler can return, and which status the caller sees | [HTTP routes](http.md#responses) |
+| How routes split across listeners | [HTTP routes](http.md#groups--one-listener-per-port) |
+| How middleware attaches, and what ships ready-made | [middleware package](middleware.md) |
 | The seven lifecycle methods and when each is called | [Lifecycle](lifecycle.md#the-seven-capabilities) |
 | What happens when a component refuses to stop | [Lifecycle](lifecycle.md#the-stop-budget) |
 | The signature of every method on the generated `App` | [Generated API](generated-api.md) |
@@ -63,6 +73,9 @@ surface, [`examples/mocking`](https://github.com/okian/servo/tree/master/example
 three mock-library integrations,
 [`examples/scoped`](https://github.com/okian/servo/tree/master/examples/scoped) for keyed,
 refcounted instances and the race suite that gates them,
+[`examples/http`](https://github.com/okian/servo/tree/master/examples/http) for `//servo:` routes
+end to end — three listeners, every binding source, middleware, an extractor, every response kind —
+against a real listener,
 [`examples/diagnostics`](https://github.com/okian/servo/tree/master/examples/diagnostics) for
 permanently broken fixtures that each print one diagnostic,
 [`examples/variants`](https://github.com/okian/servo/tree/master/examples/variants) for one

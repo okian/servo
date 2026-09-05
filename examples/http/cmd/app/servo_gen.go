@@ -717,6 +717,27 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*github.com/okian/servo/v3/middleware.CORS", Level: 2, Deps: []string{"*github.com/okian/servo/v3/middleware.CORSConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/cors.go:44:6"},
 		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:17:6"},
 		{Type: "*example.com/servohttp/store.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "store/store.go:22:6"},
+	}, HTTP: &servo.GraphHTTP{
+		Groups: []string{"internal", "telemetry"},
+		Routes: []servo.GraphRoute{
+			{Method: "POST", Pattern: "/feedback", Handler: "api.Feedback", Pos: "api/api.go:193:1"},
+			{Method: "GET", Pattern: "/old-orders", Handler: "api.OldOrders", Pos: "api/api.go:208:1"},
+			{Method: "POST", Pattern: "/order/{category}/", Handler: "api.Order", Args: []string{"*example.com/servohttp/store.Store"}, Pos: "api/api.go:94:1"},
+			{Method: "GET", Pattern: "/search", Handler: "api.Search", Pos: "api/api.go:131:1"},
+			{Method: "GET", Pattern: "/version", Handler: "api.Version", Pos: "api/api.go:200:1"},
+			{Method: "GET", Pattern: "/whoami", Handler: "api.Whoami", Args: []string{"*example.com/servohttp/mw.User (extracted)"}, Pos: "api/api.go:145:1"},
+			{Method: "POST", Pattern: "/replicate/{shard}", Group: "internal", Handler: "api.Replicate", Args: []string{"*example.com/servohttp/mw.User (extracted)"}, Pos: "api/api.go:175:1"},
+			{Method: "GET", Pattern: "/healthz", Group: "telemetry", Handler: "api.Healthz", Pos: "api/api.go:158:1"},
+		},
+		Uses: []servo.GraphUse{
+			{Type: "*github.com/okian/servo/v3/middleware.Recover", Scope: "server"},
+			{Type: "*github.com/okian/servo/v3/middleware.RequestID", Scope: "server"},
+			{Type: "*github.com/okian/servo/v3/middleware.CORS", Scope: "group default"},
+			{Type: "*example.com/servohttp/mw.Auth", Scope: "group internal"},
+		},
+		Extractors: []servo.GraphExtractor{
+			{Type: "*example.com/servohttp/mw.UserExtractor", Produces: "*example.com/servohttp/mw.User"},
+		},
 	}}
 }
 

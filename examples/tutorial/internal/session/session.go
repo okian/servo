@@ -25,9 +25,10 @@ type UserID string
 type ctxKey struct{}
 
 // WithUser is what the auth middleware calls once it knows who is asking.
-// servo ships no HTTP adapter on purpose — putting the key in the context
+// The servo runtime ships no HTTP adapter — putting the key in the context
 // is the application's job, and it is the only line of transport code this
-// whole feature needs.
+// whole feature needs. (On a server emitted by servo.HTTP(), the same line
+// lives in a servo.Use middleware.)
 func WithUser(ctx context.Context, id UserID) context.Context {
 	return context.WithValue(ctx, ctxKey{}, id)
 }
