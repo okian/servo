@@ -38,3 +38,7 @@ func TestBindPanics(t *testing.T) {
 func TestOverridePanics(t *testing.T) {
 	expectPanic(t, "servo: Override executed at runtime", func() { Override[int, int]() })
 }
+
+func TestHTTPPanics(t *testing.T) {
+	expectPanic(t, "servo: HTTP executed at runtime", func() { HTTP() })
+}

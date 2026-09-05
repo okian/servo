@@ -371,6 +371,58 @@ Spec-parsing stage — read as syntax, before resolution, and reported without t
 | `servo.Linger(...) must not be negative` | Use `servo.Linger(0)` for die-with-the-last-holder |
 | `servo.Max(N) must be positive` | A scope that can hold no instances can never hand one out |
 
+## HTTP routes
+
+The `//servo:` comment prefix is reserved in full, so nothing under it can silently no-op: a typo'd
+method is an error, not an unserved route. The scan runs module-wide on every load, whether or not
+any spec declares `servo.HTTP()`.
+
+The directive itself:
+
+| Message | Cause |
+| --- | --- |
+| `unknown //servo: directive "pots"` | The method must be one of get/post/put/patch/delete/head/options |
+| `//servo:post needs a route pattern` | No pattern after the method |
+| `route pattern "order" must start with "/"` | Patterns are rooted |
+| `//servo:post takes exactly one pattern` | Trailing text after the pattern |
+| `route GET /a/{x}suffix cannot be registered on net/http.ServeMux: …` | net/http's own words, for a malformed pattern — the same registration that would panic at startup, run at generate time |
+| `//servo: directive must be the doc comment of a top-level function` | A floating directive registers nothing |
+| `//servo: directives need a servo version that exports servo.Json` | The CLI is newer than the module's `servo/v3` |
+
+The handler it documents:
+
+| Message | Cause |
+| --- | --- |
+| `handlers must be top-level functions, not methods` | Directive on a method |
+| `handler app.order must be exported` | The generated server has to call it from the injector package |
+| `handler app.Order must not be generic` / `must not be variadic` | Same rules as providers |
+| `first parameter must be context.Context` | The request's context is the contract |
+| `must return exactly (servo.Json[T], error)` | Any other result shape, including a concrete error type |
+
+The request struct and its pattern:
+
+| Message | Cause |
+| --- | --- |
+| `request struct type app.orderReq must be exported` | The generated server constructs one |
+| `field X … must be a scalar (string, bool, int/uint families, float32/64)` | A bound field the generated `strconv` parsing can't decode |
+| `field X … has more than one binding tag` | A field binds from exactly one source |
+| `field x … is unexported but carries a binding tag` | The decoder cannot assign it |
+| `fields Page and P … both bind query "page"` | Last-write-wins would be silent |
+| `request struct … mixes form fields with JSON body fields` | A body is a form or JSON, not both |
+| `request struct … declares JSON body fields, but GET requests carry no body` | Body/form fields on GET/HEAD/DELETE/OPTIONS |
+| `field Category … binds path "category", but the pattern "/order" has no {category} segment` | Tag without a segment reads empty forever |
+| `pattern segment {category} … has no path:"category" field` | Routing data the handler never sees |
+
+The route set and the graph:
+
+| Message | Cause |
+| --- | --- |
+| `duplicate route POST /order — first declared at …` | Exact method+pattern collision, both positions named |
+| `route … cannot be registered on net/http.ServeMux: … conflicts with pattern …` | A wildcard overlap net/http itself refuses |
+| `no provider for *….servo.HTTPConfig` + `needed by HTTP server (servo.HTTP())` | `servo.HTTP()` declared, no config provider |
+| `no provider for *app.Missing` + `needed by handler app.Order (POST /order/…)` | An unresolvable handler dependency — with a hint about binding tags when the type looks like a forgotten request struct |
+| `*chat.Session is scoped, but handler app.Me (GET /me) receives it from the HTTP server` | The widening rule, with the emitted server as the capturing singleton; depend on the accessor instead |
+
 ## Emission
 
 ```

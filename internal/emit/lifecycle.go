@@ -63,18 +63,31 @@ func (e *emitter) runFunc() string {
 		}
 	}
 
+	// The generated server is one more runner — its run method is emitted
+	// directly rather than detected, but it joins the same errgroup so one
+	// failing runner still cancels the rest.
+	total := len(runners)
+	if e.http != nil {
+		total++
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "func (a *%s) Run(ctx context.Context) error {\n", e.appType())
-	switch len(runners) {
-	case 0:
+	switch {
+	case total == 0:
 		b.WriteString("\treturn nil\n")
-	case 1:
+	case total == 1 && e.http != nil:
+		fmt.Fprintf(&b, "\treturn a.%s.run(ctx)\n", e.http.Field)
+	case total == 1:
 		fmt.Fprintf(&b, "\treturn a.%s.Run(ctx)\n", e.varName[runners[0].Key])
 	default:
 		e.imports.Add("golang.org/x/sync/errgroup", "errgroup")
 		b.WriteString("\tg, gctx := errgroup.WithContext(ctx)\n")
 		for _, n := range runners {
 			fmt.Fprintf(&b, "\tg.Go(func() error { return a.%s.Run(gctx) })\n", e.varName[n.Key])
+		}
+		if e.http != nil {
+			fmt.Fprintf(&b, "\tg.Go(func() error { return a.%s.run(gctx) })\n", e.http.Field)
 		}
 		b.WriteString("\treturn g.Wait()\n")
 	}
@@ -106,6 +119,12 @@ func (e *emitter) shutdownFunc() string {
 	b.WriteString("\tgo func() {\n\t\tselect {\n\t\tcase <-forceExit:\n\t\t\tos.Exit(1)\n\t\tcase <-watcherDone:\n\t\t}\n\t}()\n\n")
 
 	fmt.Fprintf(&b, "\tvar nodes []%s.NodeResult\n", e.servoAlias)
+	// The server stops first, before every node: it is the inbound edge,
+	// and draining it is what lets everything beneath it quiesce — the
+	// same reason a root leads the reverse topological order.
+	if e.http != nil {
+		fmt.Fprintf(&b, "\tnodes = append(nodes, a.%s(ctx))\n", e.http.StopMethod)
+	}
 	for _, step := range e.shutdownSteps() {
 		switch {
 		case step.scope != nil:
@@ -212,6 +231,17 @@ func (e *emitter) healthReadyFunc(methodName, capName, callName string) string {
 		fmt.Fprintf(&b, "\t\tnodes = append(nodes, %s.NodeResult{Name: %q, Status: %s.StatusFailed, Err: err})\n", e.servoAlias, n.Key.String(), e.servoAlias)
 		b.WriteString("\t} else {\n")
 		fmt.Fprintf(&b, "\t\tnodes = append(nodes, %s.NodeResult{Name: %q, Status: %s.StatusOK})\n", e.servoAlias, n.Key.String(), e.servoAlias)
+		b.WriteString("\t}\n")
+	}
+	// Ready (and only Ready) reports the emitted server: readiness is "the
+	// listener is bound", which is exactly what its atomic tracks. Health
+	// has nothing to say about it — a bound socket is not a health claim.
+	if methodName == "Ready" && e.http != nil {
+		e.imports.Add("errors", "errors")
+		fmt.Fprintf(&b, "\tif a.%s != nil && a.%s.ready.Load() {\n", e.http.Field, e.http.Field)
+		fmt.Fprintf(&b, "\t\tnodes = append(nodes, %s.NodeResult{Name: \"http\", Status: %s.StatusOK})\n", e.servoAlias, e.servoAlias)
+		b.WriteString("\t} else {\n")
+		fmt.Fprintf(&b, "\t\tnodes = append(nodes, %s.NodeResult{Name: \"http\", Status: %s.StatusFailed, Err: errors.New(\"http: not accepting connections yet\")})\n", e.servoAlias, e.servoAlias)
 		b.WriteString("\t}\n")
 	}
 	fmt.Fprintf(&b, "\treturn %s.Report{Nodes: nodes}\n", e.servoAlias)

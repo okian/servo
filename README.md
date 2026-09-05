@@ -270,6 +270,49 @@ contract is documented at
 what belongs to a scope, the linger window, the `Max` cap, the teardown ordering, and the four
 diagnostics.
 
+## HTTP routes
+
+servo can generate the HTTP layer too: the router, the typed request decoding, the response
+encoding and the server lifecycle, all emitted into `servo_gen.go`. A route is a directive comment
+on an ordinary exported function — context first, an optional request struct second, then
+graph-resolved dependencies:
+
+```go
+type OrderReq struct {
+	Category string `path:"category"`
+	Priority int    `query:"priority"`
+	Item     string `json:"item"`
+}
+
+//servo:post /order/{category}/
+func Order(ctx context.Context, req *OrderReq, st *store.Store) (servo.Json[*OrderResp], error) {
+	cat, err := st.Category(req.Category)
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, servo.Status.NOT_FOUND.Wrapf("category %q: %w", req.Category, err)
+	}
+	if !cat.Open {
+		return nil, servo.Status.FORBIDDEN.New("category is closed")
+	}
+	...
+	return servo.JSON(resp), servo.Status.CREATED
+}
+```
+
+The spec opts in with `servo.HTTP()`, and the listen address, optional TLS files and body limit
+come from a `*servo.HTTPConfig` provider you write yourself. Patterns are Go 1.22+
+`http.ServeMux` patterns, verbatim — conflicts are caught at generate time by registering them on
+a scratch mux, so `servo generate` fails with net/http's own message instead of your process
+panicking at boot. `path`/`query`/`header`/`form` tags bind scalars with generated `strconv`
+parsing (malformed input is a 400 naming the source); remaining fields decode from the JSON body.
+A 2xx `servo.Status` returned in the error position picks the success code; 4xx messages go to the
+client, 5xx bodies carry canonical text only while the wrapped detail goes to the log. The
+directive prefix is reserved: a typo'd `//servo:` comment is a generate-time error, never a
+silently unserved route.
+
+The runnable version is [`examples/http`](./examples/http); the full contract — signature rules,
+binding table, status semantics, lifecycle — is documented at
+[HTTP routes](https://okian.github.io/servo/reference/http.html).
+
 ## Multiple instances of the same type
 
 This section is about a narrower problem than [interface vs. concrete-type
@@ -588,13 +631,15 @@ cmd/servo/         CLI: generate, check, graph, explain, why, list, init, doctor
 cmd/servo-vet/     standalone go/analysis binary
 internal/load/     go/packages → typed syntax, spec-file discovery
 internal/graph/    Key, Provider, candidate index, capability detection
+internal/route/    //servo: HTTP directive scan and validation
 internal/resolve/  roots → closure → order, levels, diagnostics
 internal/emit/     source emission, import manager, name allocator
 internal/render/   text, JSON, DOT, Mermaid graph renderers
-servo/             markers + ~430-line runtime
+servo/             markers + small runtime (reports, stop budget, HTTP types)
 servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout, Linger, PanicReporter
 examples/basic/    a complete, runnable example (separate module)
 examples/scoped/   keyed, refcounted instances + the race suite (separate module)
+examples/http/     //servo: routes end to end against a real listener (separate module)
 examples/mocking/  moq/mockery/gomock integrations, one binary each (separate module)
 examples/tutorial/ full layered microservice built in docs/tutorial/ (separate module)
 ```
@@ -602,7 +647,7 @@ examples/tutorial/ full layered microservice built in docs/tutorial/ (separate m
 Core (`internal/*`, `cmd/servo`) depends on nothing beyond `golang.org/x/tools`; `servotest` alone
 depends on `go.uber.org/goleak`. Neither the runtime package nor any generated output imports
 `reflect`, and the generated package compiles with the `servo` module deleted save for the
-~430-line runtime it calls into — both enforced as conformance checks, not just claimed.
+small runtime it calls into — both enforced as conformance checks, not just claimed.
 
 ## Contributing
 

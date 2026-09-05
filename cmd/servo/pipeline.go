@@ -10,6 +10,7 @@ import (
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
 	"github.com/okian/servo/v3/internal/resolve"
+	"github.com/okian/servo/v3/internal/route"
 )
 
 // pipeline is everything shared by generate/check/graph/explain/why/list:
@@ -22,24 +23,38 @@ type pipeline struct {
 	rejected   []graph.Rejected
 	caps       *graph.Capabilities
 	scope      map[string]bool
+	// routes is the module's //servo: directives, scanned once per load
+	// like capabilities: a directive names an exported handler, so which
+	// injector serves it is not the scan's question.
+	routes []*route.Route
 }
 
 // loadModule does the spec-independent work shared regardless of how many
 // injectors end up being processed: load the package graph once, load
-// capabilities once.
-func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, error) {
+// capabilities once, scan //servo: directives once. A malformed directive
+// fails the load outright — the //servo: prefix is reserved, and a typo
+// silently dropping a route is the failure mode the reservation prevents.
+func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, []*route.Route, error) {
 	loaded, err := load.Load(cfg)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	caps, err := graph.LoadCapabilities(loaded.ServoPkg.Types)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return loaded, caps, nil
+	routes, rdiags := route.Scan(loaded.All, loaded.ServoPkg.Types)
+	if len(rdiags) > 0 {
+		msg := fmt.Sprintf("servo: %d diagnostic(s):\n", len(rdiags))
+		for _, d := range rdiags {
+			msg += "\n" + d.String()
+		}
+		return nil, nil, nil, fmt.Errorf("%s", msg)
+	}
+	return loaded, caps, routes, nil
 }
 
-func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec) *pipeline {
+func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec, routes []*route.Route) *pipeline {
 	candidates, rejected := graph.ScanCandidates(loaded.All, spec.InjectorPkg.PkgPath)
 	return &pipeline{
 		loaded:     loaded,
@@ -48,6 +63,7 @@ func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec)
 		rejected:   rejected,
 		caps:       caps,
 		scope:      mainModuleScope(loaded),
+		routes:     routes,
 	}
 }
 
@@ -55,7 +71,7 @@ func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, spec *load.Spec)
 // on a single target and ask the caller to disambiguate with --dir when
 // the scope contains more than one (see load.FindSpec).
 func buildPipeline(cfg load.Config) (*pipeline, error) {
-	loaded, caps, err := loadModule(cfg)
+	loaded, caps, routes, err := loadModule(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +82,7 @@ func buildPipeline(cfg load.Config) (*pipeline, error) {
 	if err := loaded.NonInjectorErrors(spec.InjectorPkg.PkgPath); err != nil {
 		return nil, fmt.Errorf("servo: module has build errors:\n%w", err)
 	}
-	return pipelineFor(loaded, caps, spec), nil
+	return pipelineFor(loaded, caps, spec, routes), nil
 }
 
 // buildPipelines resolves every injector found within dir's scope — for
@@ -74,7 +90,7 @@ func buildPipeline(cfg load.Config) (*pipeline, error) {
 // (matching `wire ./...`'s discovery model) rather than erroring when more
 // than one spec exists.
 func buildPipelines(cfg load.Config) ([]*pipeline, error) {
-	loaded, caps, err := loadModule(cfg)
+	loaded, caps, routes, err := loadModule(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +112,7 @@ func buildPipelines(cfg load.Config) ([]*pipeline, error) {
 
 	pipelines := make([]*pipeline, len(specs))
 	for i, spec := range specs {
-		pipelines[i] = pipelineFor(loaded, caps, spec)
+		pipelines[i] = pipelineFor(loaded, caps, spec, routes)
 	}
 	return pipelines, nil
 }
@@ -132,6 +148,19 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 	if p.loaded != nil {
 		fset, pkgs = p.loaded.Fset, p.loaded.All
 	}
+	// The HTTP input exists only for specs that declared servo.HTTP() —
+	// and needs a loaded module for the *servo.HTTPConfig key, which the
+	// couple of tests that hand-build a pipeline never have.
+	var httpIn *resolve.HTTPInput
+	if p.spec.HTTP != nil && p.loaded != nil {
+		configKey, configType := route.HTTPConfigKey(p.loaded.ServoPkg.Types)
+		httpIn = &resolve.HTTPInput{
+			Pos:        p.spec.HTTP.Pos,
+			Routes:     p.routes,
+			ConfigKey:  configKey,
+			ConfigType: configType,
+		}
+	}
 	resolved, diags := resolve.Resolve(resolve.Input{
 		Spec:       p.spec,
 		Candidates: p.candidates,
@@ -140,6 +169,7 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 		ExtraBinds: extraBinds,
 		Fset:       fset,
 		Pkgs:       pkgs,
+		HTTP:       httpIn,
 	})
 	if len(diags) > 0 {
 		msg := fmt.Sprintf("servo: %d diagnostic(s):\n", len(diags))

@@ -128,15 +128,20 @@ This is a rejection with its own diagnostic, not an oversight.
 the method that needs it. That edge crosses no scope boundary, because an accessor is not an
 instance.
 
-### Scopes do not reach the transport, and servo will not put them there
+### The transport is emitted on request, never shipped
 
-The key comes out of `context.Context`, and putting it there is your middleware's job. servo ships
-no `net/http` handler, no gRPC interceptor and no framework adapter, and the moment it did it would
-stop being a codegen tool and start being a framework with opinions about your router.
+servo can generate an HTTP server — see [HTTP routes](reference/http.html) — but the position
+behind the old promise here ("the moment servo ships transport code it stops being a codegen tool")
+still holds in the way that matters: the `servo` package contains no handler, no router and no
+framework adapter. Declaring `servo.HTTP()` gets you an emitted one, in your own package, derived
+from `//servo:` directives you wrote; declining it gets you a runtime that still knows nothing
+about HTTP. There is no gRPC equivalent and no middleware seam in the emitted server yet — a
+handler needing per-request policy enforces it itself.
 
-*What to do instead:* one line in the middleware you already have — `ctx =
-context.WithValue(r.Context(), roomCtxKey{}, chat.RoomKey(...))` — and a `ScopeKey` method that
-reads it back out.
+Scope keys still come out of `context.Context`. A `//servo:` handler receives the request's
+context, so a `ScopeKey` method reading a value planted there works unchanged — and for any
+transport you write yourself, putting the key into the context remains your middleware's one-line
+job: `ctx = context.WithValue(r.Context(), roomCtxKey{}, chat.RoomKey(...))`.
 
 ### A scoped instance is memory, and dies with the process
 

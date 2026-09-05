@@ -98,6 +98,15 @@ jobs:
           go build ./...
           go test -race ./...
 
+      # examples/http exercises the //servo: directive feature end to end:
+      # its test binds a real listener and drives every binding source and
+      # status path through the generated server.
+      - name: Build and test examples/http
+        working-directory: examples/http
+        run: |
+          go build ./...
+          go test -race ./...
+
       # examples/diagnostics is deliberately unresolvable, so it has no
       # generated file and nothing to run `servo check` against — only that
       # it's otherwise ordinary, valid Go. The seven diagnostics it's meant
@@ -120,6 +129,9 @@ jobs:
 
       - name: servo check (examples/mocking)
         run: go run ./cmd/servo check --dir examples/mocking
+
+      - name: servo check (examples/http)
+        run: go run ./cmd/servo check --dir examples/http
 
       # examples/variants holds two generated variants of one injector, so
       # everything is done once per build configuration — which is exactly
@@ -186,7 +198,7 @@ jobs:
       - name: Lint every module
         run: |
           fail=0
-          for dir in . examples/basic examples/mocking examples/scoped examples/diagnostics examples/variants examples/tutorial; do
+          for dir in . examples/basic examples/http examples/mocking examples/scoped examples/diagnostics examples/variants examples/tutorial; do
             echo "--- $dir ---"
             (cd "$dir" && golangci-lint run --timeout=5m ./...) || fail=1
           done

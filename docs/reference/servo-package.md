@@ -7,10 +7,12 @@ import "github.com/okian/servo/v3/servo"
 **Who this is for:** anyone reading a generated file's calls into the runtime, or handling a
 `Report` in their own code.
 
-This package is two unrelated halves. The **markers** (`Build`, `Root`, `Bind`, `Override`) are read
-as syntax by `servo generate` and panic if they ever execute. The **runtime** — around 430 lines —
-is what generated code actually calls at run time. It imports nothing outside the standard library,
-and neither it nor any generated output imports `reflect`.
+This package is two unrelated halves. The **markers** (`Build`, `Root`, `Bind`, `Override`,
+`Scoped`, `HTTP`) are read as syntax by `servo generate` and panic if they ever execute. The
+**runtime** is what generated code — and, for the HTTP types, your handlers — actually calls at run
+time. It imports nothing outside the standard library, and neither it nor any generated output
+imports `reflect` for servo's own wiring (`encoding/json`, used by emitted HTTP servers, reflects
+internally like it does for everyone).
 
 Your components never import this package. Capability interfaces are satisfied structurally, by
 having the method.
@@ -24,6 +26,7 @@ having the method.
 | [`Bind`](#bind) | func | Binds an interface to a concrete type (marker) |
 | [`Override`](#override) | func | Test-only binding (marker) |
 | [`Scoped`](#scoped) | func | Declares a keyed, refcounted instance (marker) |
+| [`HTTP`](#http) | func | Opts the injector into serving `//servo:` routes (marker) |
 | [`Linger`](#linger-and-max), [`Max`](#linger-and-max) | funcs | Scope policy (markers) |
 | [`Marker`](#marker) | type | The markers' opaque return type |
 | [`ScopeOption`](#scopeoption) | type | `Linger`/`Max`'s opaque return type |
@@ -41,6 +44,11 @@ having the method.
 | [`DefaultStopBudget`](#defaultstopbudget) | var | The budget every stop call gets |
 | [`Graph`](#graph-and-graphnode), [`GraphNode`](#graph-and-graphnode), [`GraphScope`](#graphscope) | types | The resolved graph as data |
 | [`StartupReport`](#startupreport-and-startupnode), [`StartupNode`](#startupreport-and-startupnode) | types | Per-node `Init` timings |
+| [`Json`](#json-and-json) | type | A `//servo:` handler's response wrapper |
+| [`JSON`](#json-and-json) | func | Constructs a `Json` |
+| [`HTTPStatus`](#httpstatus-and-status) | type | One HTTP status, usable as an error |
+| [`Status`](#httpstatus-and-status) | var | The table of statuses (`Status.NOT_FOUND`, …) |
+| [`HTTPConfig`](#httpconfig) | type | The emitted server's listen/TLS/limit config |
 
 ## Markers
 
@@ -95,6 +103,18 @@ through the accessor interface `I` that you declare in your own package. `T` mus
 method. Panics if it ever runs.
 
 Full treatment: [Scoped instances](scopes.md).
+
+### `HTTP`
+
+```go
+func HTTP() Marker
+```
+
+Declares that this injector serves the module's `//servo:` route directives: `servo generate`
+emits the router, the typed request decoding and the server lifecycle into the generated file. The
+graph must provide a [`*HTTPConfig`](#httpconfig). At most one per `Build`. Panics if it ever runs.
+
+Full treatment: [HTTP routes](http.md).
 
 ### `Linger` and `Max`
 
@@ -329,6 +349,73 @@ window. `LingerOverride` replaces every declared window when it is non-negative 
 Set it through [`servotest.Linger`](servotest-package.md#linger) rather than directly. Like
 `DefaultStopBudget`, it is a package variable, so tests that use it must not run in parallel with
 each other or with tests that depend on a scope's real window, and must set it before `New`.
+
+## HTTP
+
+The types a `//servo:` handler and its emitted server exchange. Full semantics — the directive
+grammar, binding rules, and the status contract — live on [HTTP routes](http.md); this is the API
+surface only.
+
+### `Json` and `JSON`
+
+```go
+type Json[T any] interface {
+	Value() T
+	// sealed: only servo.JSON constructs one
+}
+
+func JSON[T any](v T) Json[T]
+```
+
+`Json[T]` is the response wrapper in a handler's signature; `JSON` wraps the payload the emitted
+adapter encodes as `application/json`. It is an interface so the error path can `return nil, err`,
+and sealed so a non-nil value always came from `JSON`. The constructor is spelled `JSON` because Go
+permits one identifier per name per package, and the type owns `Json`.
+
+### `HTTPStatus` and `Status`
+
+```go
+type HTTPStatus struct{ /* unexported */ }
+
+func (s HTTPStatus) Code() int
+func (s HTTPStatus) Error() string // canonical RFC 9110 text
+func (s HTTPStatus) New(msg string) error
+func (s HTTPStatus) Newf(format string, args ...any) error
+func (s HTTPStatus) Wrap(err error) error
+func (s HTTPStatus) Wrapf(format string, args ...any) error
+
+var Status = struct{ CONTINUE, OK, CREATED, /* … the full RFC 9110 + IANA set */ HTTPStatus }{…}
+```
+
+`Status`'s fields are the only `HTTPStatus` values, named as the registry spells them
+(`NOT_FOUND`, `UNPROCESSABLE_CONTENT`, `CONTENT_TOO_LARGE`). An `HTTPStatus` is an error, and the
+constructors return errors carrying both the status and your message, so `errors.As` recovers the
+code and `errors.Is` still finds a `%w`-wrapped cause — and `errors.Is(err, Status.NOT_FOUND)`
+holds too. A bare 2xx entry returned in a handler's error position is the deliberate way to pick a
+success code other than 200. `Wrap(nil)` returns the bare status.
+
+### `HTTPConfig`
+
+```go
+type HTTPConfig struct {
+	IP   string // empty = all interfaces
+	Port uint16
+
+	CertFile string // both set → TLS
+	KeyFile  string
+
+	MaxBodyBytes int64 // <= 0 = the generated 1 MiB default
+
+	ReadTimeout  time.Duration // zero = none, matching net/http.Server
+	WriteTimeout time.Duration
+	IdleTimeout  time.Duration
+}
+```
+
+The emitted server's configuration node. servo never constructs one — you write an ordinary
+provider (`func NewHTTPConfig() (*servo.HTTPConfig, error)`) and it resolves like any other
+dependency, which is also why it is a struct and not options: where the values come from is your
+module's business.
 
 ## Stop budget
 

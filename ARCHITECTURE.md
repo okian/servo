@@ -18,6 +18,9 @@ load.FindSpec(s)       → *load.Spec, ...          parse servo.Build(...)'s AST
                                                    package
 graph.ScanCandidates   → []*graph.Provider,       every constructor-shaped function in scope,
                           []graph.Rejected         classified; non-candidates kept with a reason
+route.Scan             → []*route.Route           every //servo: HTTP directive in the main
+                                                   module, validated against its handler; the
+                                                   reserved prefix makes malformed ones fatal
 resolve.Resolve        → *resolve.Resolved        roots → transitive closure → selection
                                                    precedence → cycle detection → levels →
                                                    ordered plan, or diagnostics (never a partial
@@ -28,8 +31,8 @@ emit.Emit              → []byte                   the resolved plan → one de
                                                    instead
 ```
 
-`load.Load` and `graph.LoadCapabilities` run once per module directory regardless of how many
-injectors it contains (`loadModule` in pipeline.go). Everything after that is per-injector: each
+`load.Load`, `graph.LoadCapabilities` and `route.Scan` run once per module directory regardless of
+how many injectors it contains (`loadModule` in pipeline.go). Everything after that is per-injector: each
 `servo.Build(...)` call in scope gets its own `*pipeline` (candidates, capabilities, main-module
 scope), because a monorepo's `cmd/api`, `cmd/worker`, and `cmd/migrator` roots don't share a
 resolved graph even though they share one type-checking session.
@@ -119,6 +122,38 @@ Golden files cannot catch a torn-down-while-live race, so the gate on this featu
 acquire at the linger boundary, cancellation as the only release path, `Shutdown` racing in-flight
 acquires, constructor failure under concurrency, and a thousand distinct keys — all under `-race`,
 each ending in a goroutine-leak check.
+
+## HTTP directives
+
+`//servo:<method> <pattern>` comments are servo's first comment directive, and they get their own
+stage: `internal/route` scans every main-module file's comment groups, matches each claimed group
+back to the function it documents by pointer identity against `decl.Doc`, and validates the
+handler's signature, the request struct's binding tags, and the pattern — including registering
+every route on a scratch `net/http.ServeMux`, so pattern syntax and wildcard conflicts are judged
+by the exact code that would otherwise panic at startup. The scan is module-wide and
+injector-agnostic (like capability loading, unlike the constructor scan): a directive names an
+exported handler, and *which* injector serves it is the spec's decision, made with the
+`servo.HTTP()` marker. The whole `//servo:` prefix is reserved — anything under it that doesn't
+parse is a diagnostic, because a typo'd method silently dropping a route is the failure mode the
+reservation exists to prevent.
+
+Resolution treats the server's requirements as root-like entry points into the ordinary
+`resolveKey` recursion: `*servo.HTTPConfig` plus every handler dependency, each with a chain frame
+(`needed by handler app.Order (POST /order/…)`) so failures read exactly like a root's. The server
+itself is not a node — like a scope registry, it is emitted machinery — so the one HTTP-specific
+rule lives in the pass: a handler dependency must be a singleton, and a scoped one is rejected with
+the widening rule's reasoning, pointed at the accessor interface instead.
+
+`internal/emit/http.go` follows `scope.go`'s discipline: every identifier allocated up front
+(server type, adapter per route, App field with its stop bookkeeping), every hard-coded local
+reserved against user package names, and the section spliced into the same file. What varies with
+types is generated — one adapter per route with exact `strconv` parsing per bound field, the
+handler call with `a.<dep>` arguments — and what doesn't is three small runtime types (`Json`,
+`HTTPStatus`/`Status`, `HTTPConfig`). The server is a pseudo-root: constructed last in `New`
+(wiring only; the listener binds in `Run`, which is what `Ready`'s `"http"` entry reports), joined
+into `Run`'s errgroup, and stopped **first** in `Shutdown` — it is the inbound edge, and draining
+it is what lets everything beneath it quiesce. A spec with no `servo.HTTP()` emits a byte-identical
+file, the same invariant scopes hold.
 
 ## Canonical type identity
 

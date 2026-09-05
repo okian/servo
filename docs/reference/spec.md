@@ -275,6 +275,31 @@ Two `Scoped` declarations whose `ScopeKey` methods return the same key type shar
 therefore one policy: declaring different `Linger` or `Max` values across them is an error, because
 there is only one of each to set.
 
+## `HTTP`
+
+```go
+func HTTP() Marker
+```
+
+Declares that this injector serves the module's `//servo:` route directives: `servo generate`
+emits an HTTP server — router, typed request decoding, response encoding, lifecycle — into the
+generated file.
+
+```go
+servo.Build(
+	servo.HTTP(),
+)
+```
+
+It takes no arguments: routes come from the directives, and the listen address, optional TLS files
+and body limit come from a `*servo.HTTPConfig` node your own provider supplies. At most one per
+`Build` — one spec gets one server, and a second declaration is reported against the first.
+
+Which injector declares it is the whole point of it being explicit: multiple injectors share one
+module's handlers, and a worker binary must not sprout a listener because a sibling API binary's
+handlers exist. The directive grammar, handler signature and binding rules are on their own page:
+[HTTP routes](http.md).
+
 ## The `go:generate` directive
 
 ```go
@@ -298,6 +323,7 @@ Everything the spec parser can reject, in one place:
 | `servo.Build argument is not a marker call` | Something other than a call in the argument list |
 | `servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments` | A marker without inline type arguments |
 | `unrecognized servo marker "X" inside Build(...)` | A `servo` function that isn't a marker |
+| `servo.HTTP() declared twice` | Two `HTTP()` markers in one `Build` |
 | `servo.Root expects exactly one type argument` | `Root` with the wrong arity |
 | `servo.Bind/Override expects exactly two type arguments` | `Bind`/`Override` with the wrong arity |
 | `second type argument must be a concrete type, not an interface` | Binding an interface to an interface |

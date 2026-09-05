@@ -26,6 +26,28 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
 ## [Unreleased]
 
 ### Added
+- **HTTP routes: `//servo:<method> <pattern>` directives and a generated server.** A route is a
+  directive comment on an exported function — `func Order(ctx context.Context, req *OrderReq,
+  st *store.Store) (servo.Json[*OrderResp], error)` — and a spec opts into serving the module's
+  routes with the new `servo.HTTP()` marker. `servo generate` emits the `net/http.ServeMux`
+  registration, typed request decoding (`path`/`query`/`header`/`form` tags with exact `strconv`
+  parsing, JSON bodies under `http.MaxBytesReader`), response encoding, and the server's
+  bind/serve/drain lifecycle into `servo_gen.go`; handler dependencies resolve from the graph like
+  any constructor's, with the same needed-by diagnostics, and a scoped dependency is rejected with
+  the widening rule's reasoning. The `servo` package gains `Json[T]`/`JSON`, `HTTPStatus` with the
+  `Status` table (RFC 9110 names; a 2xx status returned in the error position picks the success
+  code, 4xx messages reach the client, 5xx bodies carry canonical text while the detail goes to
+  `log/slog`), and `HTTPConfig` (IP, port, optional TLS files, body limit, timeouts — constructed
+  by the user's own provider). The `//servo:` comment prefix is reserved: anything under it that
+  doesn't parse is a generate-time error, and pattern conflicts are caught by probing a real
+  ServeMux at generate time. This deliberately reverses the "servo ships no transport" stance in
+  `docs/limitations.md` — with the distinction that the transport is *emitted* into your package
+  behind an explicit marker; the runtime still contains no handler, router or middleware, and stays
+  stdlib-only. Additive: an app with no `servo.HTTP()` generates byte-identical output, and the
+  generated public method set keeps every signature (`Ready`'s report gains an `"http"` node —
+  content, not signature — only for apps that declare the server). Worked example with an
+  end-to-end suite: `examples/http`; reference: [HTTP routes](docs/reference/http.md).
+
 - **Build flags, and one generated file per build configuration.** The seven commands that load
   packages (`generate`, `check`, `graph`, `explain`, `why`, `list`, `doctor`) now accept `--tags`,
   `--mod`, `--modfile` and `--overlay`, with the same names, syntax and meaning as `go build`.

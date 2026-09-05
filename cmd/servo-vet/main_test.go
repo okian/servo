@@ -233,3 +233,29 @@ func wire() {
 		t.Fatalf("got %d diagnostics for unrelated calls, want 0: %v", len(got), got)
 	}
 }
+
+// servo.HTTP() is a marker like any other: calling it in an untagged file
+// compiles into the real binary and panics at runtime, so it must be in
+// markerNames — this test is what notices a new marker being forgotten.
+func TestFlagsHTTPMarkerCall(t *testing.T) {
+	const src = `package fixture
+
+import "github.com/okian/servo/v3/servo"
+
+func wire() {
+	servo.Build(
+		servo.HTTP(),
+	)
+}
+`
+	got := runOn(t, src)
+	if len(got) != 2 {
+		t.Fatalf("got %d diagnostics, want 2 (Build and the nested HTTP): %v", len(got), got)
+	}
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{"servo.Build", "servo.HTTP"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("diagnostics %v do not mention %q", got, want)
+		}
+	}
+}

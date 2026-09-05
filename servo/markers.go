@@ -35,3 +35,13 @@ func Bind[I, C any]() Marker {
 func Override[I, C any]() Marker {
 	panic("servo: Override executed at runtime — run `servo generate`")
 }
+
+// HTTP declares that this injector serves the module's //servo: route
+// directives: `servo generate` emits an HTTP server that registers every
+// directive handler, decodes requests into their typed structs, and calls
+// them with graph-resolved dependencies. The server's listen address, TLS
+// and limits come from a *servo.HTTPConfig node the user provides. At most
+// one HTTP() per Build.
+func HTTP() Marker {
+	panic("servo: HTTP executed at runtime — run `servo generate`")
+}

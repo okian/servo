@@ -38,6 +38,10 @@ type emitter struct {
 	scopeByScope   map[*resolve.Scope]*scopeEmit
 	rootByAccessor map[*resolve.ScopeRoot]*rootEmit
 	memberField    map[*resolve.Node]string
+
+	// http is the emitted server's plan and identifiers, nil unless the
+	// spec declared servo.HTTP().
+	http *httpEmit
 }
 
 // Emit renders the full generated file for resolved. When testMode is true,
@@ -102,11 +106,13 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 		e.varName[n.Key] = allocateAppField(e.names, base[n])
 	}
 	e.planScopes()
+	e.planHTTP()
 
 	scopeDecls := e.scopeDecls()
+	httpDecls := e.httpDecls()
 	appStruct := e.appStruct()
 	newFunc := e.newFunc()
-	stopMethods := e.stopMethods() + e.scopeStopMethods()
+	stopMethods := e.stopMethods() + e.scopeStopMethods() + e.httpStopMethod()
 	runFunc := e.runFunc()
 	shutdownFunc := e.shutdownFunc()
 	healthFunc := e.healthReadyFunc("Health", "Healther", "Health")
@@ -121,6 +127,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	body.WriteString("\n")
 	body.WriteString(appStruct)
 	body.WriteString(scopeDecls)
+	body.WriteString(httpDecls)
 	body.WriteString(newFunc)
 	body.WriteString(stopMethods)
 	body.WriteString(runFunc)
@@ -172,6 +179,7 @@ func (e *emitter) header() string {
 			n.Level, n.Key.String(), deps, caps, n.Binding, e.posString(n.Provider.Pos))
 	}
 	b.WriteString(e.scopeHeader())
+	b.WriteString(e.httpHeader())
 	b.WriteString("//\n")
 	return b.String()
 }
@@ -251,6 +259,7 @@ func (e *emitter) appStruct() string {
 		}
 	}
 	b.WriteString(e.scopeAppFields())
+	b.WriteString(e.httpAppFields())
 	fmt.Fprintf(&b, "\tstartupReport %s.StartupReport\n", e.servoAlias)
 	b.WriteString("}\n\n")
 	return b.String()

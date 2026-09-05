@@ -27,6 +27,12 @@ type Spec struct {
 	Overrides   []BindDecl
 	Scopes      []ScopeDecl
 
+	// HTTP is non-nil when the Build call declares servo.HTTP(): this
+	// injector serves the module's //servo: route directives. Only the
+	// declaration and its position live here — the routes themselves come
+	// from a separate module-wide scan.
+	HTTP *HTTPDecl
+
 	// Variant is the canonical tag set the load ran under, copied from
 	// Loaded.Tags. Empty for a plain `servo generate`, which is what
 	// keeps that case writing servo_gen.go exactly as it always has.
@@ -43,6 +49,13 @@ type RootDecl struct {
 	Key  graph.Key
 	Type types.Type
 	Pos  token.Position
+}
+
+// HTTPDecl records a servo.HTTP() marker. It carries no configuration —
+// the server reads *servo.HTTPConfig from the graph — so the position is
+// the whole declaration, kept for diagnostics that need a "declared here".
+type HTTPDecl struct {
+	Pos token.Position
 }
 
 type BindDecl struct {
@@ -221,6 +234,11 @@ func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (
 				return nil, err
 			}
 			spec.Scopes = append(spec.Scopes, decl)
+		case "HTTP":
+			if spec.HTTP != nil {
+				return nil, fmt.Errorf("%s: servo.HTTP() declared twice — first at %s", pos, spec.HTTP.Pos)
+			}
+			spec.HTTP = &HTTPDecl{Pos: pos}
 		case "Linger", "Max":
 			return nil, fmt.Errorf("%s: servo.%s is a scope option, not a Build marker — it belongs inside a servo.Scoped[T, I](...) argument list", pos, name)
 		default:

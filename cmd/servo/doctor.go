@@ -29,7 +29,7 @@ func runDoctor(cfg load.Config) error {
 		fmt.Printf("  [%s] %s\n", status, fmt.Sprintf(format, args...))
 	}
 
-	loaded, caps, err := loadModule(cfg)
+	loaded, caps, routes, err := loadModule(cfg)
 	if err != nil {
 		report(false, "load module: %v", err)
 		return fmt.Errorf("servo doctor: problems found")
@@ -60,6 +60,23 @@ func runDoctor(cfg load.Config) error {
 		report(false, "%s holds a spec file this configuration cannot see, so nothing generates its New — either give it a variant for these flags, or gate the package itself out of this build", pkgPath)
 	}
 
+	// Routes with no server are not an error — a variant spec may declare
+	// servo.HTTP() under flags this run wasn't given — but silently unserved
+	// endpoints are exactly the kind of gap only doctor is positioned to
+	// name.
+	if len(routes) > 0 {
+		served := false
+		for _, s := range specs {
+			if s.HTTP != nil {
+				served = true
+				break
+			}
+		}
+		if !served {
+			fmt.Printf("  [INFO] %d //servo: route(s) found, but no injector in this configuration declares servo.HTTP(), so nothing serves them\n", len(routes))
+		}
+	}
+
 	multi := len(specs) > 1
 	for _, spec := range specs {
 		if multi {
@@ -74,7 +91,7 @@ func runDoctor(cfg load.Config) error {
 		}
 		report(true, "generated file present: %s", outPath)
 
-		if err := checkOne(pipelineFor(loaded, caps, spec)); err != nil {
+		if err := checkOne(pipelineFor(loaded, caps, spec, routes)); err != nil {
 			report(false, "generated file is stale (run %s): %v", regenerateCommand(spec.Variant), err)
 		} else {
 			report(true, "generated file matches a fresh generation")

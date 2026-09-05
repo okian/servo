@@ -55,6 +55,11 @@ type Resolved struct {
 	Roots  []*Node
 	ByKey  map[graph.Key]*Node // every resolved node, keyed by its own result key
 	Scopes []*Scope            // declared scopes, ordered by key type
+
+	// HTTP is the emitted server's plan, nil unless the spec declares
+	// servo.HTTP(). Its config and dependency nodes are ordinary members
+	// of Order; only the routing table lives here.
+	HTTP *HTTPPlan
 }
 
 // Input is everything Resolve needs: the spec's roots/binds/scopes, the
@@ -75,6 +80,11 @@ type Input struct {
 	// looks at them.
 	Fset *token.FileSet
 	Pkgs []*packages.Package
+
+	// HTTP is non-nil when the spec declares servo.HTTP(): the module's
+	// scanned routes plus the config key the emitted server requires. Nil
+	// leaves resolution byte-for-byte as before.
+	HTTP *HTTPInput
 }
 
 const (
@@ -205,6 +215,11 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		}
 	}
 
+	// After the roots so shared subtrees keep their root-attributed
+	// positions, before checkScopeEdges so nodes only HTTP reaches are in
+	// r.order for the widening walk.
+	httpPlan := r.resolveHTTP(in.HTTP)
+
 	if len(r.diags) > 0 {
 		return nil, r.diags
 	}
@@ -214,7 +229,7 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		return nil, r.diags
 	}
 
-	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes}, nil
+	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, HTTP: httpPlan}, nil
 }
 
 // resolveKey resolves k (statically typed kType). chain is the active path

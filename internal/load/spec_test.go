@@ -424,3 +424,77 @@ func Wire() {
 		t.Fatalf("got err=%v, want a 'not a servo marker call' error", err)
 	}
 }
+
+// TestFindSpecAcceptsHTTPMarker covers servo.HTTP(): a plain, no-type-param
+// marker that opts this injector into the generated HTTP server. The spec
+// records only that it was declared and where — routes are discovered
+// module-wide by a separate scan.
+func TestFindSpecAcceptsHTTPMarker(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/httpmarker\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
+
+package spec
+
+import (
+	"github.com/okian/servo/v3/servo"
+)
+
+func Wire() {
+	servo.Build(
+		servo.HTTP(),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+
+	loaded, err := Load(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	spec, err := FindSpec(loaded)
+	if err != nil {
+		t.Fatalf("FindSpec: %v", err)
+	}
+	if spec.HTTP == nil {
+		t.Fatalf("Spec.HTTP is nil, want the HTTP declaration recorded")
+	}
+	if spec.HTTP.Pos.Line == 0 || !strings.HasSuffix(spec.HTTP.Pos.Filename, "spec.go") {
+		t.Fatalf("Spec.HTTP.Pos = %v, want the marker's position in spec.go", spec.HTTP.Pos)
+	}
+}
+
+// TestFindSpecRejectsDuplicateHTTPMarker: one spec gets one server, so a
+// second servo.HTTP() is reported against the first rather than silently
+// collapsed.
+func TestFindSpecRejectsDuplicateHTTPMarker(t *testing.T) {
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/duphttp\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
+
+package spec
+
+import (
+	"github.com/okian/servo/v3/servo"
+)
+
+func Wire() {
+	servo.Build(
+		servo.HTTP(),
+		servo.HTTP(),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+
+	loaded, err := Load(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	_, err = FindSpec(loaded)
+	if err == nil || !strings.Contains(err.Error(), "servo.HTTP() declared twice") {
+		t.Fatalf("got err=%v, want a 'servo.HTTP() declared twice' error", err)
+	}
+}

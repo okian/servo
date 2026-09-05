@@ -20,6 +20,7 @@ func (e *emitter) newFunc() string {
 	}
 
 	b.WriteString(e.initPhase())
+	b.WriteString(e.httpSetup())
 
 	b.WriteString("\treturn a, nil\n")
 	b.WriteString("}\n\n")

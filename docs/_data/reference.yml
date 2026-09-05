@@ -63,6 +63,18 @@ sections:
           window and Max cap, per-instance lifecycle, and the four scope
           diagnostics.
 
+  - title: The HTTP server
+    summary: Routes declared as comments, decoded requests, and a generated listener.
+    pages:
+      - title: HTTP routes
+        url: /reference/http.html
+        blurb: The //servo:<method> directive, typed request binding, and the status contract.
+        description: >-
+          Reference for servo's HTTP directives: the //servo:<method> pattern
+          comment, the handler signature, path/query/header/form/JSON request
+          binding, the servo.Status contract, HTTPConfig, and the emitted
+          server's lifecycle.
+
   - title: The generated application
     summary: The code servo writes, and what it does when it runs.
     pages:
@@ -86,7 +98,7 @@ sections:
     pages:
       - title: servo package
         url: /reference/servo-package.html
-        blurb: The markers, the capability interfaces, and the ~430-line runtime.
+        blurb: The markers, the capability interfaces, and the small stdlib-only runtime.
         description: >-
           Complete API reference for the servo package — markers, capability
           interfaces, Report, NodeResult, NodeStatus, Graph, GraphScope,
