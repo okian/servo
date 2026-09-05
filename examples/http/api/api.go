@@ -11,12 +11,24 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 
+	"github.com/okian/servo/v3/middleware"
 	"github.com/okian/servo/v3/servo"
 
 	"example.com/servohttp/mw"
 	"example.com/servohttp/store"
 )
+
+// NewCORSConfig feeds the shipped CORS middleware — the origins are this
+// deployment's facts, so the values live here, not in servo.
+func NewCORSConfig() *middleware.CORSConfig {
+	return &middleware.CORSConfig{
+		AllowedOrigins: []string{"https://app.example.com"},
+		ExposedHeaders: []string{"X-Request-Id"},
+		MaxAge:         10 * time.Minute,
+	}
+}
 
 // NewHTTPConfig is the config node servo.HTTP() requires: constructed by
 // the user, resolved like any other provider — so where the values come
@@ -132,7 +144,7 @@ type WhoamiResp struct {
 //
 //servo:get /whoami
 func Whoami(ctx context.Context, user *mw.User) (servo.Json[*WhoamiResp], error) {
-	return servo.JSON(&WhoamiResp{User: user.Name, RequestID: mw.IDFromContext(ctx)}), nil
+	return servo.JSON(&WhoamiResp{User: user.Name, RequestID: middleware.RequestIDFromContext(ctx)}), nil
 }
 
 type HealthzResp struct {
@@ -145,7 +157,7 @@ type HealthzResp struct {
 //
 //servo:get /healthz telemetry
 func Healthz(ctx context.Context) (servo.Json[*HealthzResp], error) {
-	return servo.JSON(&HealthzResp{OK: true, RequestID: mw.IDFromContext(ctx)}), nil
+	return servo.JSON(&HealthzResp{OK: true, RequestID: middleware.RequestIDFromContext(ctx)}), nil
 }
 
 type ReplicateReq struct {
@@ -181,4 +193,19 @@ type FeedbackResp struct {
 //servo:post /feedback
 func Feedback(ctx context.Context, req *FeedbackReq) (servo.Json[*FeedbackResp], error) {
 	return servo.JSON(&FeedbackResp{Subject: req.Subject, Stars: req.Stars}), nil
+}
+
+// Version responds as plain text — the response family is not only JSON.
+//
+//servo:get /version
+func Version(ctx context.Context) (servo.Response, error) {
+	return servo.Text("servohttp 1.0"), nil
+}
+
+// OldOrders shows a redirect: the Location comes from the response, the
+// 3xx kind from the status in the error position.
+//
+//servo:get /old-orders
+func OldOrders(ctx context.Context) (servo.Response, error) {
+	return servo.Redirect("/search"), servo.Status.FOUND
 }

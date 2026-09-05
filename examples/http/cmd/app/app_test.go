@@ -250,9 +250,10 @@ func TestHTTPEndToEnd(t *testing.T) {
 		if code != http.StatusOK || body["ok"] != true {
 			t.Fatalf("status=%d body=%v", code, body)
 		}
-		// The server-level middleware wraps this group too.
-		if body["request_id"] != "generated-1" {
-			t.Fatalf("request_id = %v", body["request_id"])
+		// The server-level middleware wraps this group too — the shipped
+		// RequestID generated an id and the handler saw it in its context.
+		if id, _ := body["request_id"].(string); id == "" {
+			t.Fatalf("request_id = %v, want a generated id", body["request_id"])
 		}
 		code, _, _ = call(t, get(t, base+"/healthz"))
 		if code != http.StatusNotFound {
@@ -318,6 +319,72 @@ func TestHTTPEndToEnd(t *testing.T) {
 		code, body, _ := call(t, post(t, base+"/feedback", "application/x-www-form-urlencoded", form.Encode()))
 		if code != http.StatusBadRequest || body["error"] != `form value "stars" is not a valid int` {
 			t.Fatalf("status=%d body=%v", code, body)
+		}
+	})
+
+	t.Run("plain text response", func(t *testing.T) {
+		req := get(t, base+"/version")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK || string(raw) != "servohttp 1.0" {
+			t.Fatalf("status=%d body=%q", resp.StatusCode, raw)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "text/plain; charset=utf-8" {
+			t.Fatalf("Content-Type = %q", ct)
+		}
+	})
+
+	t.Run("redirect flows through the success path", func(t *testing.T) {
+		noFollow := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+		resp, err := noFollow.Get(base + "/old-orders")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusFound || resp.Header.Get("Location") != "/search" {
+			t.Fatalf("status=%d location=%q", resp.StatusCode, resp.Header.Get("Location"))
+		}
+	})
+
+	t.Run("shipped CORS answers preflights on the public group", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodOptions, base+"/search", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Origin", "https://app.example.com")
+		req.Header.Set("Access-Control-Request-Method", "GET")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("preflight status = %d, want 204", resp.StatusCode)
+		}
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+			t.Fatalf("Allow-Origin = %q", got)
+		}
+		// The telemetry group has no CORS attachment: same preflight there
+		// falls through to the mux.
+		req2, err := http.NewRequest(http.MethodOptions, telemetry+"/healthz", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req2.Header.Set("Origin", "https://app.example.com")
+		req2.Header.Set("Access-Control-Request-Method", "GET")
+		resp2, err := http.DefaultClient.Do(req2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp2.Body.Close() }()
+		if resp2.Header.Get("Access-Control-Allow-Origin") != "" {
+			t.Fatalf("telemetry group must not carry the default group's CORS")
 		}
 	})
 

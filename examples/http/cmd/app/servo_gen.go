@@ -6,38 +6,53 @@
 //
 //	[L1] *github.com/okian/servo/v3/servo.HTTPConfig
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | api/api.go:26:6
+//	      capabilities: none | binding: sole candidate | api/api.go:38:6
 //	[L1] *example.com/servohttp/mw.UserExtractor
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | mw/mw.go:64:6
-//	[L1] *example.com/servohttp/mw.RequestID
+//	      capabilities: none | binding: sole candidate | mw/mw.go:35:6
+//	[L1] *github.com/okian/servo/v3/middleware.Recover
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | mw/mw.go:21:6
+//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/recover.go:17:6
+//	[L1] *github.com/okian/servo/v3/middleware.RequestID
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/requestid.go:17:6
+//	[L1] *github.com/okian/servo/v3/middleware.CORSConfig
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | api/api.go:25:6
+//	[L2] *github.com/okian/servo/v3/middleware.CORS
+//	      deps: *github.com/okian/servo/v3/middleware.CORSConfig
+//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/cors.go:44:6
 //	[L1] *example.com/servohttp/mw.Auth
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | mw/mw.go:46:6
+//	      capabilities: none | binding: sole candidate | mw/mw.go:17:6
 //	[L1] *example.com/servohttp/store.Store
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | store/store.go:22:6
 //
-// http (servo.HTTP() at cmd/app/spec.go:19:3):
+// http (servo.HTTP() at cmd/app/spec.go:23:3):
 //
 //	config: *github.com/okian/servo/v3/servo.HTTPConfig
 //	groups: internal, telemetry
-//	use: *example.com/servohttp/mw.RequestID -> every group
+//	use: *github.com/okian/servo/v3/middleware.Recover -> every group
+//	use: *github.com/okian/servo/v3/middleware.RequestID -> every group
+//	use: *github.com/okian/servo/v3/middleware.CORS -> group default
 //	use: *example.com/servohttp/mw.Auth -> group internal
 //	extract: *example.com/servohttp/mw.UserExtractor -> *example.com/servohttp/mw.User
-//	POST /feedback -> api.Feedback (api/api.go:181:1)
+//	POST /feedback -> api.Feedback (api/api.go:193:1)
 //	      args: none
-//	POST /order/{category}/ -> api.Order (api/api.go:82:1)
+//	GET /old-orders -> api.OldOrders (api/api.go:208:1)
+//	      args: none
+//	POST /order/{category}/ -> api.Order (api/api.go:94:1)
 //	      args: *example.com/servohttp/store.Store
-//	GET /search -> api.Search (api/api.go:119:1)
+//	GET /search -> api.Search (api/api.go:131:1)
 //	      args: none
-//	GET /whoami -> api.Whoami (api/api.go:133:1)
+//	GET /version -> api.Version (api/api.go:200:1)
+//	      args: none
+//	GET /whoami -> api.Whoami (api/api.go:145:1)
 //	      args: *example.com/servohttp/mw.User (extracted)
-//	POST /replicate/{shard} [internal] -> api.Replicate (api/api.go:163:1)
+//	POST /replicate/{shard} [internal] -> api.Replicate (api/api.go:175:1)
 //	      args: *example.com/servohttp/mw.User (extracted)
-//	GET /healthz [telemetry] -> api.Healthz (api/api.go:146:1)
+//	GET /healthz [telemetry] -> api.Healthz (api/api.go:158:1)
 //	      args: none
 package main
 
@@ -59,6 +74,7 @@ import (
 	"example.com/servohttp/api"
 	"example.com/servohttp/mw"
 	"example.com/servohttp/store"
+	"github.com/okian/servo/v3/middleware"
 	"github.com/okian/servo/v3/servo"
 	"golang.org/x/sync/errgroup"
 )
@@ -66,7 +82,10 @@ import (
 type App struct {
 	hTTPConfig                    *servo.HTTPConfig
 	userExtractor                 *mw.UserExtractor
-	requestID                     *mw.RequestID
+	recover2                      *middleware.Recover
+	requestID                     *middleware.RequestID
+	cORSConfig                    *middleware.CORSConfig
+	cors                          *middleware.CORS
 	auth                          *mw.Auth
 	store                         *store.Store
 	httpServer                    *httpServer
@@ -115,11 +134,15 @@ func newHttpServer(a *App) (*httpServer, error) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /feedback", s.handleFeedback)
+	mux.HandleFunc("GET /old-orders", s.handleOldOrders)
 	mux.HandleFunc("POST /order/{category}/", s.handleOrder)
 	mux.HandleFunc("GET /search", s.handleSearch)
+	mux.HandleFunc("GET /version", s.handleVersion)
 	mux.HandleFunc("GET /whoami", s.handleWhoami)
 	var handler http.Handler = mux
+	handler = a.cors.Middleware(handler)
 	handler = a.requestID.Middleware(handler)
+	handler = a.recover2.Middleware(handler)
 	s.srv = &http.Server{
 		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
 		Handler:      handler,
@@ -151,13 +174,29 @@ func (s *httpServer) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Feedback(r.Context(), req)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
 		httpWriteFailure(w, "api.Feedback", "POST /feedback", err)
+		return
+	}
+	httpRespond(w, http.StatusOK, res)
+}
+
+func (s *httpServer) handleOldOrders(w http.ResponseWriter, r *http.Request) {
+	res, err := api.OldOrders(r.Context())
+	if err != nil {
+		var hs servo.HTTPStatus
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
+			httpRespond(w, hs.Code(), res)
+			return
+		}
+		httpWriteFailure(w, "api.OldOrders", "GET /old-orders", err)
 		return
 	}
 	httpRespond(w, http.StatusOK, res)
@@ -185,9 +224,9 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Order(r.Context(), req, s.app.store)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -228,13 +267,29 @@ func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Search(r.Context(), req)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
 		httpWriteFailure(w, "api.Search", "GET /search", err)
+		return
+	}
+	httpRespond(w, http.StatusOK, res)
+}
+
+func (s *httpServer) handleVersion(w http.ResponseWriter, r *http.Request) {
+	res, err := api.Version(r.Context())
+	if err != nil {
+		var hs servo.HTTPStatus
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
+			httpRespond(w, hs.Code(), res)
+			return
+		}
+		httpWriteFailure(w, "api.Version", "GET /version", err)
 		return
 	}
 	httpRespond(w, http.StatusOK, res)
@@ -249,9 +304,9 @@ func (s *httpServer) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Whoami(r.Context(), user)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -313,6 +368,7 @@ func newHttpInternalServer(a *App) (*httpInternalServer, error) {
 	var handler http.Handler = mux
 	handler = a.auth.Middleware(handler)
 	handler = a.requestID.Middleware(handler)
+	handler = a.recover2.Middleware(handler)
 	s.srv = &http.Server{
 		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
 		Handler:      handler,
@@ -334,9 +390,9 @@ func (s *httpInternalServer) handleReplicate(w http.ResponseWriter, r *http.Requ
 	res, err := api.Replicate(r.Context(), req, user)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -397,6 +453,7 @@ func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error) {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	var handler http.Handler = mux
 	handler = a.requestID.Middleware(handler)
+	handler = a.recover2.Middleware(handler)
 	s.srv = &http.Server{
 		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
 		Handler:      handler,
@@ -411,9 +468,9 @@ func (s *httpTelemetryServer) handleHealthz(w http.ResponseWriter, r *http.Reque
 	res, err := api.Healthz(r.Context())
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -451,13 +508,17 @@ func (s *httpTelemetryServer) run(ctx context.Context) error {
 	}
 }
 
-// httpRespond writes one success response; a nil Json means status only, no body.
-func httpRespond[T any](w http.ResponseWriter, code int, res servo.Json[T]) {
+// httpRespond writes one success response; a nil response means status only,
+// no body. Encoding lives in the runtime's sealed Response family, so a
+// handler may return any of its kinds through this one helper.
+func httpRespond(w http.ResponseWriter, code int, res servo.Response) {
 	if res == nil {
 		w.WriteHeader(code)
 		return
 	}
-	httpWriteJSON(w, code, res.Value())
+	if err := servo.WriteResponse(w, code, res); err != nil {
+		slog.Error("servo: writing response failed", "error", err)
+	}
 }
 
 // httpWriteFailure maps a handler or extractor error onto the response: a status in
@@ -477,14 +538,6 @@ func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
 		return
 	}
 	httpWriteError(w, code, err.Error())
-}
-
-func httpWriteJSON(w http.ResponseWriter, code int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		slog.Error("servo: encoding response failed", "error", err)
-	}
 }
 
 func httpWriteError(w http.ResponseWriter, code int, msg string) {
@@ -507,8 +560,20 @@ func New(ctx context.Context) (*App, error) {
 	userExtractor := mw.NewUserExtractor()
 	a.userExtractor = userExtractor
 
-	requestID := mw.NewRequestID()
+	recover2 := middleware.NewRecover()
+	a.recover2 = recover2
+
+	requestID := middleware.NewRequestID()
 	a.requestID = requestID
+
+	cORSConfig := api.NewCORSConfig()
+	a.cORSConfig = cORSConfig
+
+	cors, err := middleware.NewCORS(cORSConfig)
+	if err != nil {
+		return nil, err
+	}
+	a.cors = cors
 
 	auth := mw.NewAuth()
 	a.auth = auth
@@ -629,10 +694,13 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:26:6"},
-		{Type: "*example.com/servohttp/mw.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:64:6"},
-		{Type: "*example.com/servohttp/mw.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:21:6"},
-		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:46:6"},
+		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:38:6"},
+		{Type: "*example.com/servohttp/mw.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:35:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/recover.go:17:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/requestid.go:17:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.CORSConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:25:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.CORS", Level: 2, Deps: []string{"*github.com/okian/servo/v3/middleware.CORSConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/cors.go:44:6"},
+		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:17:6"},
 		{Type: "*example.com/servohttp/store.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "store/store.go:22:6"},
 	}}
 }
