@@ -82,6 +82,9 @@ func buildPipeline(cfg load.Config) (*pipeline, error) {
 	if err := loaded.NonInjectorErrors(spec.InjectorPkg.PkgPath); err != nil {
 		return nil, fmt.Errorf("servo: module has build errors:\n%w", err)
 	}
+	if err := checkRouteGroups([]*load.Spec{spec}, routes); err != nil {
+		return nil, err
+	}
 	return pipelineFor(loaded, caps, spec, routes), nil
 }
 
@@ -110,11 +113,42 @@ func buildPipelines(cfg load.Config) ([]*pipeline, error) {
 		return nil, fmt.Errorf("servo: module has build errors:\n%w", err)
 	}
 
+	if err := checkRouteGroups(specs, routes); err != nil {
+		return nil, err
+	}
+
 	pipelines := make([]*pipeline, len(specs))
 	for i, spec := range specs {
 		pipelines[i] = pipelineFor(loaded, caps, spec, routes)
 	}
 	return pipelines, nil
+}
+
+// checkRouteGroups errors when a route names a group no spec declares —
+// the typo that would otherwise silently leave the route unserved. It is a
+// module-wide check, not a per-injector one: an injector legitimately skips
+// groups it does not declare, but a group nobody declares is a mistake.
+func checkRouteGroups(specs []*load.Spec, routes []*route.Route) error {
+	declared := map[string]bool{}
+	for _, s := range specs {
+		if s.HTTP == nil {
+			continue
+		}
+		for _, g := range s.HTTP.Groups {
+			declared[g.Name] = true
+		}
+	}
+	var msgs []string
+	for _, rt := range routes {
+		if rt.Group == "" || declared[rt.Group] {
+			continue
+		}
+		msgs = append(msgs, fmt.Sprintf("%s: servo: group %q is not declared by any injector — declare it with servo.Group(%q) inside servo.HTTP(...)", rt.Pos, rt.Group, rt.Group))
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("servo: %d diagnostic(s):\n\n%s", len(msgs), strings.Join(msgs, "\n"))
 }
 
 // mainModuleScope bounds structural interface search to the main module.
@@ -157,6 +191,9 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 		httpIn = &resolve.HTTPInput{
 			Pos:        p.spec.HTTP.Pos,
 			Routes:     p.routes,
+			Groups:     p.spec.HTTP.Groups,
+			Uses:       p.spec.HTTP.Uses,
+			Extracts:   p.spec.Extracts,
 			ConfigKey:  configKey,
 			ConfigType: configType,
 		}

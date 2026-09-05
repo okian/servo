@@ -60,6 +60,10 @@ func runDoctor(cfg load.Config) error {
 		report(false, "%s holds a spec file this configuration cannot see, so nothing generates its New — either give it a variant for these flags, or gate the package itself out of this build", pkgPath)
 	}
 
+	if err := checkRouteGroups(specs, routes); err != nil {
+		report(false, "route groups: %v", err)
+	}
+
 	// Routes with no server are not an error — a variant spec may declare
 	// servo.HTTP() under flags this run wasn't given — but silently unserved
 	// endpoints are exactly the kind of gap only doctor is positioned to
