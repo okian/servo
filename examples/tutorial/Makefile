@@ -18,10 +18,10 @@ test-integration:
 	TEST_NATS_URL="nats://localhost:4222" \
 	go test ./... -v
 
-# Three transports over the same service layer — see
-# docs/tutorial/10-api-layer.md, 11-gin-transport.md and
-# 12-grpc-transport.md. Each is its own injector, so `generate` and `check`
-# below cover all three at once.
+# Four transports over the same service layer — see
+# docs/tutorial/10-api-layer.md, 11-gin-transport.md, 12-grpc-transport.md
+# and 13-directive-transport.md. Each is its own injector, so `generate`
+# and `check` below cover all four at once.
 run:
 	go run ./cmd/orders
 
@@ -31,6 +31,10 @@ run-gin:
 # Serves gRPC and REST on the same port.
 run-grpc:
 	go run ./cmd/ordersgrpc
+
+# The //servo: directive transport: no hand-written server at all.
+run-servo:
+	go run ./cmd/ordersservo
 
 generate:
 	go run github.com/okian/servo/v3/cmd/servo generate
