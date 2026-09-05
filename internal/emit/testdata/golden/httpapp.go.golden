@@ -138,9 +138,9 @@ func (s *httpServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	res, err := httpapp.Health(r.Context())
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -159,9 +159,9 @@ func (s *httpServer) handleMe(w http.ResponseWriter, r *http.Request) {
 	res, err := httpapp.Me(r.Context(), user)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -183,9 +183,9 @@ func (s *httpServer) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 	res, err := httpapp.CreateNote(r.Context(), req)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -210,9 +210,9 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	res, err := httpapp.Order(r.Context(), req, s.app.repo)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -288,9 +288,9 @@ func (s *httpTelemetryServer) handleHealthz(w http.ResponseWriter, r *http.Reque
 	res, err := httpapp.Healthz(r.Context())
 	if err != nil {
 		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 300 {
-			// A 2xx status in the error position is the contract's way of
-			// picking a success code other than 200.
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
 			httpRespond(w, hs.Code(), res)
 			return
 		}
@@ -328,13 +328,17 @@ func (s *httpTelemetryServer) run(ctx context.Context) error {
 	}
 }
 
-// httpRespond writes one success response; a nil Json means status only, no body.
-func httpRespond[T any](w http.ResponseWriter, code int, res servo.Json[T]) {
+// httpRespond writes one success response; a nil response means status only,
+// no body. Encoding lives in the runtime's sealed Response family, so a
+// handler may return any of its kinds through this one helper.
+func httpRespond(w http.ResponseWriter, code int, res servo.Response) {
 	if res == nil {
 		w.WriteHeader(code)
 		return
 	}
-	httpWriteJSON(w, code, res.Value())
+	if err := servo.WriteResponse(w, code, res); err != nil {
+		slog.Error("servo: writing response failed", "error", err)
+	}
 }
 
 // httpWriteFailure maps a handler or extractor error onto the response: a status in
@@ -354,14 +358,6 @@ func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
 		return
 	}
 	httpWriteError(w, code, err.Error())
-}
-
-func httpWriteJSON(w http.ResponseWriter, code int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		slog.Error("servo: encoding response failed", "error", err)
-	}
 }
 
 func httpWriteError(w http.ResponseWriter, code int, msg string) {

@@ -212,10 +212,14 @@ func TestEmitHTTPServer(t *testing.T) {
 		"user, err := s.app.userExtractor.Extract(r)",
 		`httpWriteFailure(w, "httpapp.Me", "GET /me", err)`,
 		"httpapp.Me(r.Context(), user)",
-		// The shared helpers exist once, package-level.
+		// The shared helpers exist once, package-level; encoding lives in
+		// the runtime so a new response kind never touches this file.
 		"func httpWriteFailure(w http.ResponseWriter, handler, route string, err error)",
 		`httpWriteError(w, http.StatusInternalServerError, "Internal Server Error")`,
-		"func httpRespond[T any](w http.ResponseWriter, code int, res servo.Json[T])",
+		"func httpRespond(w http.ResponseWriter, code int, res servo.Response)",
+		"servo.WriteResponse(w, code, res)",
+		// Redirect statuses flow through the success path.
+		"errors.As(err, &hs) && hs.Code() < 400",
 		// Typed decode and the handler call are unchanged in spirit.
 		`req.Category = r.PathValue("category")`,
 		"strconv.ParseInt(raw, 10, 0)",

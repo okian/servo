@@ -29,7 +29,6 @@ type httpEmit struct {
 	routeUses  map[*resolve.HTTPRoute][]*resolve.HTTPUse
 
 	RespondFunc  string // httpRespond
-	WriteJSON    string // httpWriteJSON
 	WriteError   string // httpWriteError
 	WriteFailure string // httpWriteFailure
 	MaxBodyConst string // defaultMaxBodyBytes, allocated only when needed
@@ -106,7 +105,6 @@ func (e *emitter) planHTTP() {
 		routeUses: map[*resolve.HTTPRoute][]*resolve.HTTPUse{},
 	}
 	h.RespondFunc = e.types.AllocateName(e.testPrefixed("httpRespond"))
-	h.WriteJSON = e.types.AllocateName(e.testPrefixed("httpWriteJSON"))
 	h.WriteError = e.types.AllocateName(e.testPrefixed("httpWriteError"))
 	h.WriteFailure = e.types.AllocateName(e.testPrefixed("httpWriteFailure"))
 
@@ -300,10 +298,13 @@ func (e *emitter) httpDecls() string {
 		e.writeHTTPGroup(&b, g)
 	}
 
-	fmt.Fprintf(&b, "// %s writes one success response; a nil Json means status only, no body.\n", h.RespondFunc)
-	fmt.Fprintf(&b, "func %s[T any](w http.ResponseWriter, code int, res %s.Json[T]) {\n", h.RespondFunc, e.servoAlias)
+	fmt.Fprintf(&b, "// %s writes one success response; a nil response means status only,\n", h.RespondFunc)
+	b.WriteString("// no body. Encoding lives in the runtime's sealed Response family, so a\n")
+	b.WriteString("// handler may return any of its kinds through this one helper.\n")
+	fmt.Fprintf(&b, "func %s(w http.ResponseWriter, code int, res %s.Response) {\n", h.RespondFunc, e.servoAlias)
 	b.WriteString("\tif res == nil {\n\t\tw.WriteHeader(code)\n\t\treturn\n\t}\n")
-	fmt.Fprintf(&b, "\t%s(w, code, res.Value())\n}\n\n", h.WriteJSON)
+	fmt.Fprintf(&b, "\tif err := %s.WriteResponse(w, code, res); err != nil {\n", e.servoAlias)
+	b.WriteString("\t\tslog.Error(\"servo: writing response failed\", \"error\", err)\n\t}\n}\n\n")
 
 	fmt.Fprintf(&b, "// %s maps a handler or extractor error onto the response: a status in\n", h.WriteFailure)
 	b.WriteString("// the chain picks the code, 4xx bodies carry the message, 5xx bodies only\n")
@@ -318,12 +319,6 @@ func (e *emitter) httpDecls() string {
 	b.WriteString("\t\tslog.Error(\"servo: handler \"+handler+\" failed\", \"route\", route, \"status\", code, \"error\", err)\n")
 	fmt.Fprintf(&b, "\t\t%s(w, code, hs.Error())\n\t\treturn\n\t}\n", h.WriteError)
 	fmt.Fprintf(&b, "\t%s(w, code, err.Error())\n}\n\n", h.WriteError)
-
-	fmt.Fprintf(&b, "func %s(w http.ResponseWriter, code int, payload any) {\n", h.WriteJSON)
-	b.WriteString("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")
-	b.WriteString("\tw.WriteHeader(code)\n")
-	b.WriteString("\tif err := json.NewEncoder(w).Encode(payload); err != nil {\n")
-	b.WriteString("\t\tslog.Error(\"servo: encoding response failed\", \"error\", err)\n\t}\n}\n\n")
 
 	fmt.Fprintf(&b, "func %s(w http.ResponseWriter, code int, msg string) {\n", h.WriteError)
 	b.WriteString("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")
@@ -525,9 +520,9 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 	fmt.Fprintf(b, "\tres, err := %s(%s)\n", e.httpFuncRef(rt.Func), strings.Join(args, ", "))
 	b.WriteString("\tif err != nil {\n")
 	fmt.Fprintf(b, "\t\tvar hs %s.HTTPStatus\n", e.servoAlias)
-	b.WriteString("\t\tif errors.As(err, &hs) && hs.Code() < 300 {\n")
-	b.WriteString("\t\t\t// A 2xx status in the error position is the contract's way of\n")
-	b.WriteString("\t\t\t// picking a success code other than 200.\n")
+	b.WriteString("\t\tif errors.As(err, &hs) && hs.Code() < 400 {\n")
+	b.WriteString("\t\t\t// A 2xx or 3xx status in the error position is the contract's\n")
+	b.WriteString("\t\t\t// way of picking a success or redirect code.\n")
 	fmt.Fprintf(b, "\t\t\t%s(w, hs.Code(), res)\n\t\t\treturn\n\t\t}\n", h.RespondFunc)
 	fmt.Fprintf(b, "\t\t%s(w, %q, %q, err)\n\t\treturn\n\t}\n", h.WriteFailure, rt.Name, routeLabel)
 	fmt.Fprintf(b, "\t%s(w, http.StatusOK, res)\n", h.RespondFunc)
