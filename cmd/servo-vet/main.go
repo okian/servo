@@ -75,7 +75,8 @@ To check a tagged configuration, drive servo-vet through the go command, which d
 
 var markerNames = map[string]bool{
 	"Build": true, "Root": true, "Bind": true, "Override": true,
-	"Scoped": true, "Linger": true, "Max": true, "HTTP": true,
+	"Scoped": true, "Linger": true, "Max": true,
+	"HTTP": true, "Group": true, "Use": true, "Route": true, "Extract": true,
 }
 
 func run(pass *analysis.Pass) (any, error) {

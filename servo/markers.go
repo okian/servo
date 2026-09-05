@@ -40,8 +40,57 @@ func Override[I, C any]() Marker {
 // directives: `servo generate` emits an HTTP server that registers every
 // directive handler, decodes requests into their typed structs, and calls
 // them with graph-resolved dependencies. The server's listen address, TLS
-// and limits come from a *servo.HTTPConfig node the user provides. At most
-// one HTTP() per Build.
-func HTTP() Marker {
+// and limits come from a *servo.HTTPConfig node the user provides. Options
+// declare extra listener groups and attach middleware — see Group, Use and
+// Route. At most one HTTP() per Build.
+func HTTP(...HTTPOption) Marker {
 	panic("servo: HTTP executed at runtime — run `servo generate`")
+}
+
+// HTTPOption is the opaque return type of Group, Use and Route — read as
+// syntax inside servo.HTTP's argument list, never executed, for the same
+// reason ScopeOption exists.
+type HTTPOption struct{}
+
+// Group, inside servo.HTTP(...), declares a named listener group: routes
+// carrying the name as their directive's trailing token
+// (`//servo:get /healthz telemetry`) are served on the listener
+// HTTPConfig.Groups[name] describes. Inside servo.Use(...), it selects the
+// group the middleware wraps. The default group needs no declaration;
+// "default" names it in a Use selector. The name must be a constant string
+// matching [A-Za-z0-9_-]+.
+func Group(name string) HTTPOption {
+	panic("servo: Group executed at runtime — run `servo generate`")
+}
+
+// Use attaches middleware: T is an ordinary graph node whose
+//
+//	Middleware(next http.Handler) http.Handler
+//
+// method wraps the emitted server. With no selector it wraps every group;
+// Group selectors wrap one group's whole mux; Route selectors wrap single
+// routes. One Use selects groups or routes, never both. Declaration order
+// is outermost-first, stacked server → group → route.
+func Use[T any](...HTTPOption) HTTPOption {
+	panic("servo: Use executed at runtime — run `servo generate`")
+}
+
+// Route, inside servo.Use(...), selects one route by its full
+// "METHOD /pattern" spelling — a constant string that must exactly match a
+// served route, checked at generate time.
+func Route(pattern string) HTTPOption {
+	panic("servo: Route executed at runtime — run `servo generate`")
+}
+
+// Extract declares T as an extractor: its
+//
+//	Extract(r *http.Request) (V, error)
+//
+// method makes every //servo: handler parameter of type V a per-request
+// value produced from the request, instead of a graph dependency. An
+// extraction error short-circuits through the same status contract as a
+// handler error, so servo.Status.UNAUTHORIZED.Wrap(err) is a 401 before
+// the handler runs.
+func Extract[T any]() Marker {
+	panic("servo: Extract executed at runtime — run `servo generate`")
 }

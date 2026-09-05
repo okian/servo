@@ -42,3 +42,19 @@ func TestOverridePanics(t *testing.T) {
 func TestHTTPPanics(t *testing.T) {
 	expectPanic(t, "servo: HTTP executed at runtime", func() { HTTP() })
 }
+
+func TestGroupPanics(t *testing.T) {
+	expectPanic(t, "servo: Group executed at runtime", func() { Group("telemetry") })
+}
+
+func TestUsePanics(t *testing.T) {
+	expectPanic(t, "servo: Use executed at runtime", func() { Use[int]() })
+}
+
+func TestRoutePanics(t *testing.T) {
+	expectPanic(t, "servo: Route executed at runtime", func() { Route("GET /x") })
+}
+
+func TestExtractPanics(t *testing.T) {
+	expectPanic(t, "servo: Extract executed at runtime", func() { Extract[int]() })
+}

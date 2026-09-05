@@ -259,3 +259,28 @@ func wire() {
 		}
 	}
 }
+
+// Every new HTTP marker is a panic waiting for an untagged file, exactly
+// like the originals — this test is what notices one being forgotten in
+// markerNames.
+func TestFlagsGroupUseRouteExtractMarkerCalls(t *testing.T) {
+	const src = `package fixture
+
+import "github.com/okian/servo/v3/servo"
+
+func wire() {
+	servo.Build(
+		servo.HTTP(
+			servo.Group("telemetry"),
+			servo.Use[int](servo.Route("GET /x")),
+		),
+		servo.Extract[int](),
+	)
+}
+`
+	got := runOn(t, src)
+	// Build, HTTP, Group, Use, Route, Extract — six calls, six diagnostics.
+	if len(got) != 6 {
+		t.Fatalf("got %d diagnostics, want 6: %v", len(got), got)
+	}
+}
