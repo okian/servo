@@ -278,27 +278,63 @@ there is only one of each to set.
 ## `HTTP`
 
 ```go
-func HTTP() Marker
+func HTTP(...HTTPOption) Marker
 ```
 
 Declares that this injector serves the module's `//servo:` route directives: `servo generate`
-emits an HTTP server — router, typed request decoding, response encoding, lifecycle — into the
-generated file.
+emits one HTTP server per served group — router, typed request decoding, response encoding,
+middleware chain, lifecycle — into the generated file.
 
 ```go
 servo.Build(
-	servo.HTTP(),
+	servo.HTTP(
+		servo.Group("telemetry"),
+		servo.Use[*mw.Recover](),
+		servo.Use[*mw.Auth](servo.Group("telemetry")),
+		servo.Use[*mw.Audit](servo.Route("POST /order/{category}/")),
+	),
 )
 ```
 
-It takes no arguments: routes come from the directives, and the listen address, optional TLS files
-and body limit come from a `*servo.HTTPConfig` node your own provider supplies. At most one per
-`Build` — one spec gets one server, and a second declaration is reported against the first.
+Routes come from the directives; listen addresses, optional TLS files and body limits come from a
+`*servo.HTTPConfig` node your own provider supplies. At most one `HTTP` per `Build` — a second
+declaration is reported against the first.
 
 Which injector declares it is the whole point of it being explicit: multiple injectors share one
 module's handlers, and a worker binary must not sprout a listener because a sibling API binary's
-handlers exist. The directive grammar, handler signature and binding rules are on their own page:
+handlers exist. The directive grammar, groups, middleware and binding rules are on their own page:
 [HTTP routes](http.md).
+
+### `Group` and `Use` and `Route`
+
+```go
+func Group(name string) HTTPOption
+func Use[T any](...HTTPOption) HTTPOption
+func Route(pattern string) HTTPOption
+```
+
+`Group("telemetry")` inside `HTTP(...)` declares a named listener group — this injector then
+serves routes carrying that trailing token, on the listener `HTTPConfig.Groups["telemetry"]`
+describes. The name must be a constant string matching `[A-Za-z0-9_-]+`, and `"default"` (the
+implicit group every `HTTP()` injector serves) needs no declaration.
+
+`Use[T](selectors...)` attaches middleware: `T` is a graph node with a
+`Middleware(next http.Handler) http.Handler` method. No selector wraps every group; `Group("x")`
+selectors wrap one group's mux; `Route("METHOD /pattern")` selectors wrap single routes — one
+`Use` selects groups or routes, never both. Declaration order is the wrap order, outermost first.
+`Route` is only legal inside a `Use`, and its pattern must exactly match a served route.
+
+## `Extract`
+
+```go
+func Extract[T any]() Marker
+```
+
+Declares `T` — a graph node with an `Extract(r *http.Request) (V, error)` method — as an
+extractor: every `//servo:` handler parameter of type `V` becomes a per-request value produced
+from the request, instead of a graph dependency. An extraction error short-circuits through the
+same status contract as a handler error. One extractor per produced type, and a type with both a
+provider and an extractor is a generate-time error.
 
 ## The `go:generate` directive
 
@@ -324,6 +360,14 @@ Everything the spec parser can reject, in one place:
 | `servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments` | A marker without inline type arguments |
 | `unrecognized servo marker "X" inside Build(...)` | A `servo` function that isn't a marker |
 | `servo.HTTP() declared twice` | Two `HTTP()` markers in one `Build` |
+| `servo.Group belongs inside servo.HTTP(...)` | A `Group`/`Use` at `Build`'s top level |
+| `servo.Route belongs inside servo.Use(...)` | A `Route` anywhere but a `Use` selector list |
+| `"default" is the implicit group` | Declaring `servo.Group("default")` |
+| `group name "x y" must match [A-Za-z0-9_-]+` | A name the directive token grammar can't spell |
+| `servo.Group("x") declared twice` | Duplicate group declaration in one `HTTP` |
+| `servo.Use[T] selects groups or routes, not both` | Mixed selector kinds in one `Use` |
+| `servo.Group's argument must be a constant string` | The spec is read, never run |
+| `servo.Extract[T] declared twice` | Duplicate extractor declaration |
 | `servo.Root expects exactly one type argument` | `Root` with the wrong arity |
 | `servo.Bind/Override expects exactly two type arguments` | `Bind`/`Override` with the wrong arity |
 | `second type argument must be a concrete type, not an interface` | Binding an interface to an interface |

@@ -27,6 +27,9 @@ having the method.
 | [`Override`](#override) | func | Test-only binding (marker) |
 | [`Scoped`](#scoped) | func | Declares a keyed, refcounted instance (marker) |
 | [`HTTP`](#http) | func | Opts the injector into serving `//servo:` routes (marker) |
+| [`Group`](#http), [`Use`](#http), [`Route`](#http) | funcs | Listener groups and middleware attachment (markers) |
+| [`Extract`](#http) | func | Declares a per-request parameter extractor (marker) |
+| [`HTTPOption`](#http) | type | `Group`/`Use`/`Route`'s opaque return type |
 | [`Linger`](#linger-and-max), [`Max`](#linger-and-max) | funcs | Scope policy (markers) |
 | [`Marker`](#marker) | type | The markers' opaque return type |
 | [`ScopeOption`](#scopeoption) | type | `Linger`/`Max`'s opaque return type |
@@ -48,7 +51,8 @@ having the method.
 | [`JSON`](#json-and-json) | func | Constructs a `Json` |
 | [`HTTPStatus`](#httpstatus-and-status) | type | One HTTP status, usable as an error |
 | [`Status`](#httpstatus-and-status) | var | The table of statuses (`Status.NOT_FOUND`, …) |
-| [`HTTPConfig`](#httpconfig) | type | The emitted server's listen/TLS/limit config |
+| [`HTTPConfig`](#httpconfig) | type | The emitted servers' listen/TLS/limit config |
+| [`HTTPListener`](#httpconfig) | type | One named group's listener inside `HTTPConfig.Groups` |
 
 ## Markers
 
@@ -107,14 +111,27 @@ Full treatment: [Scoped instances](scopes.md).
 ### `HTTP`
 
 ```go
-func HTTP() Marker
+func HTTP(...HTTPOption) Marker
+
+type HTTPOption struct{}
+
+func Group(name string) HTTPOption
+func Use[T any](...HTTPOption) HTTPOption
+func Route(pattern string) HTTPOption
+func Extract[T any]() Marker
 ```
 
-Declares that this injector serves the module's `//servo:` route directives: `servo generate`
-emits the router, the typed request decoding and the server lifecycle into the generated file. The
-graph must provide a [`*HTTPConfig`](#httpconfig). At most one per `Build`. Panics if it ever runs.
+`HTTP` declares that this injector serves the module's `//servo:` route directives: `servo
+generate` emits one server per served group — router, typed request decoding, middleware chain,
+lifecycle — into the generated file. The graph must provide a [`*HTTPConfig`](#httpconfig).
+`Group` declares a named listener group (and, inside `Use`, selects one); `Use[T]` attaches a
+middleware node (`Middleware(next http.Handler) http.Handler`) server-, group- or route-wide;
+`Route` selects one route inside a `Use`; `Extract[T]` declares an extractor node
+(`Extract(r *http.Request) (V, error)`) that turns handler parameters of type `V` into per-request
+values. All panic if they ever run.
 
-Full treatment: [HTTP routes](http.md).
+Full treatment: [HTTP routes](http.md); the marker grammar is on
+[Spec file and markers](spec.md).
 
 ### `Linger` and `Max`
 
@@ -409,13 +426,25 @@ type HTTPConfig struct {
 	ReadTimeout  time.Duration // zero = none, matching net/http.Server
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
+
+	Groups map[string]HTTPListener // one listener per declared group
+}
+
+type HTTPListener struct {
+	IP   string
+	Port uint16
+	CertFile, KeyFile string
+	MaxBodyBytes int64
+	ReadTimeout, WriteTimeout, IdleTimeout time.Duration
 }
 ```
 
-The emitted server's configuration node. servo never constructs one — you write an ordinary
-provider (`func NewHTTPConfig() (*servo.HTTPConfig, error)`) and it resolves like any other
-dependency, which is also why it is a struct and not options: where the values come from is your
-module's business.
+The emitted servers' configuration node: the flat fields are the default group's listener, and
+each group declared with `servo.Group("name")` needs an entry in `Groups` — missing one fails
+`New` with an error naming the group. servo never constructs one — you write an ordinary provider
+(`func NewHTTPConfig() (*servo.HTTPConfig, error)`) and it resolves like any other dependency,
+which is also why it is a struct and not options: where the values come from is your module's
+business.
 
 ## Stop budget
 

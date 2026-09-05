@@ -413,11 +413,27 @@ The request struct and its pattern:
 | `field Category … binds path "category", but the pattern "/order" has no {category} segment` | Tag without a segment reads empty forever |
 | `pattern segment {category} … has no path:"category" field` | Routing data the handler never sees |
 
+Groups, middleware and extractors:
+
+| Message | Cause |
+| --- | --- |
+| `group "grp" must match [A-Za-z0-9_-]+` | A directive's trailing token failing the group grammar |
+| `//servo:post takes a pattern and an optional group — unexpected …` | A fourth directive token |
+| `group "backoffice" is not declared by any injector` | A group token no spec's `servo.Group` declares — module-wide, so a typo cannot silently strand a route |
+| `T must have a method Middleware(next http.Handler) http.Handler` | A `servo.Use` type without the wrap method (or the wrong shape) |
+| `servo.Use[T] selects group "x", but this injector serves only: …` | A `Group` selector naming an unserved group |
+| `servo.Use[T]'s selector "POST /p" matches no served route` | A `Route` selector matching nothing |
+| `T must have a method Extract(r *http.Request) (T, error)` | A `servo.Extract` type without the extractor method (or the wrong shape) |
+| `two extractors produce *auth.User` | A produced type maps to exactly one extractor |
+| `*auth.User has both a provider (…) and an extractor (…) — … never both` | A type cannot be both constructed once and extracted per request |
+| `T is scoped, but servo.Use wraps a singleton server` / `servo.Extract needs a singleton` | Middleware and extractors are resolved once |
+| `http: group "telemetry" declared in the spec but missing from HTTPConfig.Groups` | Runtime (`New`) — group names are generate-time facts, port numbers are runtime values |
+
 The route set and the graph:
 
 | Message | Cause |
 | --- | --- |
-| `duplicate route POST /order — first declared at …` | Exact method+pattern collision, both positions named |
+| `duplicate route POST /order — first declared at …` | Exact group+method+pattern collision, both positions named; the same route on two different groups is two servers and is legal |
 | `route … cannot be registered on net/http.ServeMux: … conflicts with pattern …` | A wildcard overlap net/http itself refuses |
 | `no provider for *….servo.HTTPConfig` + `needed by HTTP server (servo.HTTP())` | `servo.HTTP()` declared, no config provider |
 | `no provider for *app.Missing` + `needed by handler app.Order (POST /order/…)` | An unresolvable handler dependency — with a hint about binding tags when the type looks like a forgotten request struct |

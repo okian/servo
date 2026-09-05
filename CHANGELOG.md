@@ -43,9 +43,23 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   ServeMux at generate time. This deliberately reverses the "servo ships no transport" stance in
   `docs/limitations.md` — with the distinction that the transport is *emitted* into your package
   behind an explicit marker; the runtime still contains no handler, router or middleware, and stays
-  stdlib-only. Additive: an app with no `servo.HTTP()` generates byte-identical output, and the
-  generated public method set keeps every signature (`Ready`'s report gains an `"http"` node —
-  content, not signature — only for apps that declare the server). Worked example with an
+  stdlib-only.
+
+  Routes split across **listener groups**, one emitted server and port per group: an optional
+  trailing directive token (`//servo:get /healthz telemetry`) names the group, `servo.Group("x")`
+  inside `servo.HTTP(...)` declares it per injector (so two binaries in one module serve different
+  subsets), `HTTPConfig.Groups` maps each name to its `servo.HTTPListener`, and a token no spec
+  declares fails generate. **Middleware** attaches in the spec — `servo.Use[T]` with optional
+  `servo.Group`/`servo.Route` selectors, `T` being a graph node with a
+  `Middleware(next http.Handler) http.Handler` method — wrapping in declaration order, outermost
+  first, server → group → route, with every selector validated at generate time. **Extractors**
+  (`servo.Extract[T]`, an `Extract(r *http.Request) (V, error)` method) turn handler parameters of
+  type `V` into per-request values that fail through the same status contract before the handler
+  runs; a type with both a provider and an extractor is a generate-time error.
+
+  Additive: an app with no `servo.HTTP()` generates byte-identical output, and the generated
+  public method set keeps every signature (`Ready`'s report gains one node per group — content,
+  not signature — only for apps that declare the server). Worked example with a three-listener
   end-to-end suite: `examples/http`; reference: [HTTP routes](docs/reference/http.md).
 
 - **Build flags, and one generated file per build configuration.** The seven commands that load

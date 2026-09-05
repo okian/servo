@@ -298,8 +298,8 @@ func Order(ctx context.Context, req *OrderReq, st *store.Store) (servo.Json[*Ord
 }
 ```
 
-The spec opts in with `servo.HTTP()`, and the listen address, optional TLS files and body limit
-come from a `*servo.HTTPConfig` provider you write yourself. Patterns are Go 1.22+
+The spec opts in with `servo.HTTP(...)`, and the listen addresses, optional TLS files and body
+limits come from a `*servo.HTTPConfig` provider you write yourself. Patterns are Go 1.22+
 `http.ServeMux` patterns, verbatim — conflicts are caught at generate time by registering them on
 a scratch mux, so `servo generate` fails with net/http's own message instead of your process
 panicking at boot. `path`/`query`/`header`/`form` tags bind scalars with generated `strconv`
@@ -308,6 +308,16 @@ A 2xx `servo.Status` returned in the error position picks the success code; 4xx 
 client, 5xx bodies carry canonical text only while the wrapped detail goes to the log. The
 directive prefix is reserved: a typo'd `//servo:` comment is a generate-time error, never a
 silently unserved route.
+
+Routes split across **listener groups** — one port each — with an optional trailing token
+(`//servo:get /healthz telemetry`), declared per injector so a worker binary and an API binary
+serve different subsets; a token no spec declares is a generate-time error. **Middleware** is an
+ordinary graph node with a `Middleware(next http.Handler) http.Handler` method, attached in the
+spec at server, group or route level (`servo.Use[*mw.Auth](servo.Group("internal"))`), wrapping in
+declaration order, outermost first. And an **extractor** (`servo.Extract[*mw.UserExtractor]()`,
+with an `Extract(r *http.Request) (*auth.User, error)` method) turns every handler parameter of
+its result type into a per-request value — a missing credential becomes a 401 through the same
+status contract before the handler ever runs.
 
 The runnable version is [`examples/http`](./examples/http); the full contract — signature rules,
 binding table, status semantics, lifecycle — is documented at

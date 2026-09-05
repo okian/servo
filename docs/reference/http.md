@@ -13,7 +13,12 @@ Two declarations opt in:
 ```go
 // in the spec file
 servo.Build(
-	servo.HTTP(),
+	servo.HTTP(
+		servo.Group("telemetry"),                    // extra listeners, one per group
+		servo.Use[*mw.RequestID](),                  // middleware: every group
+		servo.Use[*mw.Auth](servo.Group("telemetry")), // ... one group
+	),
+	servo.Extract[*mw.UserExtractor](),              // typed per-request handler params
 )
 ```
 
@@ -39,7 +44,7 @@ a real listener — is [`examples/http`](https://github.com/okian/servo/tree/mas
 ## The directive
 
 ```
-//servo:<method> <pattern>
+//servo:<method> <pattern> [group]
 ```
 
 - It must be (part of) the **doc comment of an exported, top-level function**. Not a method, not
@@ -50,18 +55,103 @@ a real listener — is [`examples/http`](https://github.com/okian/servo/tree/mas
   `METHOD ` when registering. The semantics are ServeMux's, verbatim: `{category}` matches one
   segment, `{rest...}` the remainder, `{$}` the exact path, and a trailing `/` matches the whole
   subtree.
+- The optional trailing token names the route's **group** (grammar `[A-Za-z0-9_-]+`); no token —
+  or the literal `default` — means the default group. See Groups below.
 - Several directives above one function register the same handler on several routes.
 - The whole `//servo:` comment prefix is **reserved**: anything under it that doesn't parse as a
   valid directive is a generate-time error. A typo'd method must never silently leave a route
   unserved.
 
 Routes are discovered module-wide, like providers. Which injector serves them is the spec's
-decision: only a `servo.Build(...)` containing `servo.HTTP()` gets the server, so a module with an
-HTTP injector and a worker injector emits it exactly once. At most one `servo.HTTP()` per spec.
+decision: only a `servo.Build(...)` containing `servo.HTTP(...)` gets servers, so a module with an
+HTTP injector and a worker injector emits them exactly once. At most one `servo.HTTP()` per spec.
 
 Pattern conflicts are caught at generate time by registering every route on a scratch ServeMux —
 the same code that would panic at startup — so `servo generate` fails with net/http's own message
-instead of your process failing to boot.
+instead of your process failing to boot. The check is per group: two groups are two servers, so
+the same method and pattern may exist on both.
+
+## Groups — one listener per port
+
+A group is a named listener: `//servo:get /healthz telemetry` puts the route on whatever
+`HTTPConfig.Groups["telemetry"]` describes, its own port, its own optional TLS. The default group
+(routes with no token) uses `HTTPConfig`'s flat fields. The shape this exists for:
+
+- default group on 9000 — the public API
+- `telemetry` on 9001 — health, metrics
+- `internal` on 9002 — back-to-back traffic
+
+Groups are **declared per injector** with `servo.Group("name")` inside `servo.HTTP(...)`:
+
+- An injector serves the default group plus every group it declares — and skips the rest, which
+  is how two binaries in one module serve different route subsets.
+- A group token that **no** spec in the module declares is a generate-time error at the
+  directive: a typo must not silently strand a route.
+- A declared group missing from `HTTPConfig.Groups` fails `New` with an error naming it — group
+  names are generate-time facts, port numbers are runtime values, so this is the one check that
+  waits for startup.
+
+Each group's server reports independently: `Ready` has one entry per group (`"http"`,
+`"http:telemetry"`), and `Shutdown` stops every group server before any node.
+
+## Middleware — `servo.Use`
+
+A middleware is an ordinary graph node — constructed with its own dependencies, Override-able in
+tests — with one structurally-required method:
+
+```go
+func (m *RequestID) Middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), key{}, newID()) // context change
+		w.Header().Set("X-Request-Id", ...)                   // pre/post work
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+```
+
+Attached inside `servo.HTTP(...)`, at three levels:
+
+| Attachment | Wraps |
+|---|---|
+| `servo.Use[*mw.Recover]()` | every group's whole handler stack |
+| `servo.Use[*mw.Auth](servo.Group("internal"))` | one group's mux (`"default"` selects the default group) |
+| `servo.Use[*mw.Audit](servo.Route("POST /order/{category}/"))` | one route |
+
+Rules, all checked at generate time: the method's exact shape; one `Use` selects groups **or**
+routes, never both; a `Group` selector must name a served group and a `Route` selector must match
+a served route exactly. **Wrap order is declaration order, outermost first**, stacked
+server → group → route — the first `Use` in the spec is the outermost wrapper, exactly like a
+hand-written `recover → limiter → tracer → mux` chain. Handlers and extractors run innermost, so
+they see every context value the middleware planted.
+
+## Extractors — `servo.Extract`
+
+An extractor turns a handler parameter into a **typed per-request value**. It is a graph node with
+a by-name method (the result type varies per extractor, so no single interface could match it —
+the same trade `ScopeKey` makes):
+
+```go
+func (e *UserExtractor) Extract(r *http.Request) (*auth.User, error) {
+	u, err := e.issuer.Verify(r.Header.Get("Authorization"))
+	if err != nil {
+		return nil, servo.Status.UNAUTHORIZED.Wrap(err) // 401 before the handler runs
+	}
+	return u, nil
+}
+```
+
+Declared top-level in `Build` as `servo.Extract[*mw.UserExtractor]()`. From then on, **every
+handler parameter of the method's result type** is extracted:
+
+```go
+//servo:get /order/{id}
+func GetOrder(ctx context.Context, req *GetReq, user *auth.User, repo *repo.Repository) (servo.Json[*Order], error)
+```
+
+`user` comes from the extractor, per request; `repo` still comes from the graph. An extraction
+error short-circuits through the exact status contract below — the handler never runs. Generate-time
+rules: the method's exact shape; one extractor per produced type; and a type that has **both** a
+provider and an extractor is an error ("constructed once or extracted per request, never both").
 
 ## The handler signature
 
@@ -74,11 +164,12 @@ func Name(ctx context.Context [, req *ReqT] [, deps...]) (servo.Json[T], error)
 - The **second parameter is the request struct** iff it is a pointer to a named struct that
   declares at least one `path`/`query`/`header`/`form`/`json` tag. The tags are what mark it;
   an untagged struct pointer in that position is an ordinary dependency.
-- Everything after `ctx` (and the request struct, when present) is a **dependency**, resolved from
-  the graph exactly as a constructor parameter would be — same precedence, same diagnostics, same
-  needed-by chains. Dependencies must be singletons: a scoped type is rejected with the
-  [widening](scopes.html) rule's reasoning, and the fix is the same — depend on the scope's
-  accessor interface and `Acquire(ctx)` per request.
+- Everything after `ctx` (and the request struct, when present) is either an **extracted
+  parameter** — its type matches a declared extractor's result, produced per request — or a
+  **dependency**, resolved from the graph exactly as a constructor parameter would be: same
+  precedence, same diagnostics, same needed-by chains. Dependencies must be singletons: a scoped
+  type is rejected with the [widening](scopes.html) rule's reasoning, and the fix is the same —
+  depend on the scope's accessor interface and `Acquire(ctx)` per request.
 - The result is exactly `(servo.Json[T], error)`. `Json` is an interface, so the error path is a
   plain `return nil, err`.
 
@@ -148,25 +239,28 @@ func NewHTTPConfig() (*servo.HTTPConfig, error) {
 | `CertFile`, `KeyFile` | both set → the server serves TLS |
 | `MaxBodyBytes` | request-body cap; `<= 0` means the generated 1 MiB default |
 | `ReadTimeout`, `WriteTimeout`, `IdleTimeout` | passed to `net/http.Server`; zero means none |
+| `Groups` | one `servo.HTTPListener` (the same knobs, per group) for each declared group, keyed by name |
 
 Declaring `servo.HTTP()` with no provider for `*servo.HTTPConfig` is a resolution diagnostic with
 the standard needed-by chain, rooted at the marker.
 
 ## Lifecycle
 
-The server is emitted machinery, not a graph node — the same standing scope registries have. It is
-constructed last (wiring only; the listener is not bound yet), and in `Run` it binds explicitly,
-flips the readiness flag, and serves until the context ends. `Ready` reports an `"http"` entry
-that is exactly "the listener is bound". In `Shutdown` the server stops **first**, before every
-singleton: it is the inbound edge, and draining it (`net/http.Server.Shutdown`, under
-`servo.DefaultStopBudget`) is what lets everything beneath it quiesce. `Health` says nothing about
-it — a bound socket is not a health claim.
+The servers are emitted machinery, not graph nodes — the same standing scope registries have. Each
+group's server is constructed at the end of `New` (wiring only; the listener is not bound yet —
+though a declared group missing its `Groups` entry fails right here, with rollback), and in `Run`
+every server binds explicitly, flips its readiness flag, and serves until the context ends.
+`Ready` reports one entry per group (`"http"`, `"http:telemetry"`) meaning exactly "that listener
+is bound". In `Shutdown` the servers stop **first**, before every singleton: they are the inbound
+edges, and draining them (`net/http.Server.Shutdown`, under `servo.DefaultStopBudget`) is what
+lets everything beneath quiesce. `Health` says nothing about them — a bound socket is not a health
+claim.
 
-## What v1 does not do
+## What this does not do
 
-- **No middleware seam.** There is no hook between the mux and your handler — no auth, logging or
-  tracing wrapper injection yet. A handler needing per-request policy enforces it itself.
 - **No content negotiation.** Responses are `application/json`; `Json[T]` is the only response
   shape.
-- **No route-level subsetting.** `servo.HTTP()` serves every directive in the module; two
-  injectors wanting different route sets is not yet expressible.
+- **No response-typed middleware.** `Middleware` wraps `http.Handler`s; nothing gives a wrapper
+  typed access to a handler's decoded request or encoded response.
+- **No opting out of the default group.** Every `servo.HTTP(...)` injector serves the default
+  group's routes; a groups-only binary is not yet expressible.

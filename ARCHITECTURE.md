@@ -137,23 +137,32 @@ exported handler, and *which* injector serves it is the spec's decision, made wi
 parse is a diagnostic, because a typo'd method silently dropping a route is the failure mode the
 reservation exists to prevent.
 
-Resolution treats the server's requirements as root-like entry points into the ordinary
-`resolveKey` recursion: `*servo.HTTPConfig` plus every handler dependency, each with a chain frame
-(`needed by handler app.Order (POST /order/…)`) so failures read exactly like a root's. The server
-itself is not a node — like a scope registry, it is emitted machinery — so the one HTTP-specific
-rule lives in the pass: a handler dependency must be a singleton, and a scoped one is rejected with
-the widening rule's reasoning, pointed at the accessor interface instead.
+Resolution treats the servers' requirements as root-like entry points into the ordinary
+`resolveKey` recursion: `*servo.HTTPConfig`, every middleware (`servo.Use[T]`, validated to carry
+`Middleware(next http.Handler) http.Handler`), every extractor (`servo.Extract[T]`, validated to
+carry `Extract(r *http.Request) (V, error)` — by name, like `ScopeKey`, because the result varies
+per type), and every handler dependency, each with a chain frame (`needed by handler app.Order
+(POST /order/…)`) so failures read exactly like a root's. Routes are filtered to the injector's
+served groups — the default plus each `servo.Group` declaration — with a module-wide check in the
+pipeline that every group token is declared *somewhere*, so a typo strands nothing silently. The
+servers themselves are not nodes — like scope registries, they are emitted machinery — so the
+HTTP-specific rules live in the pass: dependencies, middleware and extractors must be singletons
+(a scoped one is rejected with the widening rule's reasoning), a handler parameter type maps to
+exactly one extractor and never also to a provider, and every `Use` selector must name a served
+group or route.
 
-`internal/emit/http.go` follows `scope.go`'s discipline: every identifier allocated up front
-(server type, adapter per route, App field with its stop bookkeeping), every hard-coded local
-reserved against user package names, and the section spliced into the same file. What varies with
-types is generated — one adapter per route with exact `strconv` parsing per bound field, the
-handler call with `a.<dep>` arguments — and what doesn't is three small runtime types (`Json`,
-`HTTPStatus`/`Status`, `HTTPConfig`). The server is a pseudo-root: constructed last in `New`
-(wiring only; the listener binds in `Run`, which is what `Ready`'s `"http"` entry reports), joined
-into `Run`'s errgroup, and stopped **first** in `Shutdown` — it is the inbound edge, and draining
-it is what lets everything beneath it quiesce. A spec with no `servo.HTTP()` emits a byte-identical
-file, the same invariant scopes hold.
+`internal/emit/http.go` follows `scope.go`'s discipline: every identifier allocated up front (one
+server type per group, adapter per route, App fields with their stop bookkeeping), every
+hard-coded local reserved against user package names, and the section spliced into the same file.
+What varies with types is generated — one adapter per route with exact `strconv` parsing per bound
+field, per-request `Extract` calls, the handler call with `a.<dep>` arguments, middleware wraps
+applied in reverse declaration order so the first-declared is outermost (server → group → route) —
+and what doesn't is a handful of small runtime types (`Json`, `HTTPStatus`/`Status`, `HTTPConfig`,
+`HTTPListener`). Each group's server is a pseudo-root: constructed at the end of `New` (wiring
+only, except the named-group `HTTPConfig.Groups` lookup, the one runtime check — the listener
+binds in `Run`, which is what `Ready`'s per-group entries report), joined into `Run`'s errgroup,
+and stopped **first** in `Shutdown` — the inbound edges drain before anything beneath them. A spec
+with no `servo.HTTP()` emits a byte-identical file, the same invariant scopes hold.
 
 ## Canonical type identity
 

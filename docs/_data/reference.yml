@@ -68,12 +68,14 @@ sections:
     pages:
       - title: HTTP routes
         url: /reference/http.html
-        blurb: The //servo:<method> directive, typed request binding, and the status contract.
+        blurb: The //servo:<method> directive, listener groups, middleware, extractors, and the status contract.
         description: >-
           Reference for servo's HTTP directives: the //servo:<method> pattern
-          comment, the handler signature, path/query/header/form/JSON request
-          binding, the servo.Status contract, HTTPConfig, and the emitted
-          server's lifecycle.
+          comment, listener groups (one port per group), Use middleware at
+          server/group/route level, Extract parameter extractors, the handler
+          signature, path/query/header/form/JSON request binding, the
+          servo.Status contract, HTTPConfig, and the emitted servers'
+          lifecycle.
 
   - title: The generated application
     summary: The code servo writes, and what it does when it runs.
