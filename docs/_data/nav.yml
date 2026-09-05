@@ -70,59 +70,63 @@ sections:
         title: gRPC as the transport
         url: /tutorial/12-grpc-transport.html
         blurb: The same API again over gRPC, sharing a single port with REST.
+      - num: 13
+        title: The transport you don’t write
+        url: /tutorial/13-directive-transport.html
+        blurb: The same API as //servo: directives — routes as comments, server generated.
 
   - title: Wiring it together
     numeral: IV
     summary: Where servo itself enters the picture.
     chapters:
-      - num: 13
-        title: Wiring with servo
-        url: /tutorial/13-wiring-with-servo.html
-        blurb: Nine packages, nine constructors, and nothing connecting them — until now.
       - num: 14
+        title: Wiring with servo
+        url: /tutorial/14-wiring-with-servo.html
+        blurb: Nine packages, nine constructors, and nothing connecting them — until now.
+      - num: 15
         title: Scoped instances
-        url: /tutorial/14-scoped-instances.html
+        url: /tutorial/15-scoped-instances.html
         blurb: The one thing in the graph that isn't built once and held forever.
 
   - title: Running it for real
     numeral: V
     summary: What a service needs before anyone should depend on it.
     chapters:
-      - num: 15
-        title: Observability
-        url: /tutorial/15-observability.html
-        blurb: Turning a running black box into something you can actually watch.
       - num: 16
+        title: Observability
+        url: /tutorial/16-observability.html
+        blurb: Turning a running black box into something you can actually watch.
+      - num: 17
         title: Resilience
-        url: /tutorial/16-resilience.html
+        url: /tutorial/17-resilience.html
         blurb: Failure handling, fallbacks, and a circuit breaker that means it.
 
   - title: Shipping
     numeral: VI
     summary: From a laptop to a pipeline to a deployed container.
     chapters:
-      - num: 17
-        title: Testing strategy
-        url: /tutorial/17-testing-strategy.html
-        blurb: How the tests written along the way fit into four distinct levels.
       - num: 18
-        title: CI/CD
-        url: /tutorial/18-cicd.html
-        blurb: Turning every check you were running by hand into a pipeline.
+        title: Testing strategy
+        url: /tutorial/18-testing-strategy.html
+        blurb: How the tests written along the way fit into four distinct levels.
       - num: 19
+        title: CI/CD
+        url: /tutorial/19-cicd.html
+        blurb: Turning every check you were running by hand into a pipeline.
+      - num: 20
         title: Running and deployment
-        url: /tutorial/19-running-and-deployment.html
+        url: /tutorial/20-running-and-deployment.html
         blurb: Leaving `go run` behind for a real container and a real deployment.
 
   - title: Appendices
     numeral: VII
     summary: What to reach for when something breaks, or when a choice needs revisiting.
     chapters:
-      - num: 20
-        title: Troubleshooting
-        url: /tutorial/20-troubleshooting.html
-        blurb: Every diagnostic from every chapter, gathered and reorganized by symptom.
       - num: 21
+        title: Troubleshooting
+        url: /tutorial/21-troubleshooting.html
+        blurb: Every diagnostic from every chapter, gathered and reorganized by symptom.
+      - num: 22
         title: Alternatives and further reading
-        url: /tutorial/21-alternatives-and-further-reading.html
+        url: /tutorial/22-alternatives-and-further-reading.html
         blurb: The option each chapter didn't pick, and the case where it would win.

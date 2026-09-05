@@ -28,10 +28,10 @@ needs it. Keep this page open as a map for "where does this belong":
 servoorders/
   go.mod
   Makefile                 local dev commands (below)
-  cmd/orders/              spec.go + main.go — the injector                  chapter 13
+  cmd/orders/              spec.go + main.go — the injector                  chapter 14
   cmd/ordersgin/           the Gin injector                                  chapter 11
   cmd/ordersgrpc/          the gRPC injector                                 chapter 12
-  deploy/                  docker-compose.yml, Dockerfile                    chapter 19
+  deploy/                  docker-compose.yml, Dockerfile                    chapter 20
   internal/
     config/                typed configuration                               chapter 3
     domain/                core types, no dependency on anything else here   chapter 4
@@ -47,17 +47,17 @@ servoorders/
 
     service/               OrderService: the business logic                  chapter 8
     auth/                  JWT issuing and verification                      chapter 9
-    session/               per-user state, one instance per logged-in user   chapter 14
+    session/               per-user state, one instance per logged-in user   chapter 15
 
     transport/
       api/                 HTTP server, router, handlers                     chapter 10
       ginapi/              the same API in Gin                               chapter 11
       grpcapi/             gRPC and REST sharing one port                    chapter 12
       openapi/             API contract, embedded and served                 chapter 10
-      admin/               health/readiness/metrics, on their own port       chapter 15
+      admin/               health/readiness/metrics, on their own port       chapter 16
 
-    observability/         logging, metrics, tracing setup                   chapter 15
-    resilience/            circuit breaker, rate limiting                    chapter 16
+    observability/         logging, metrics, tracing setup                   chapter 16
+    resilience/            circuit breaker, rate limiting                    chapter 17
     mocks/                 generated mocks for tests                         chapter 8 onward
 ```
 
@@ -102,9 +102,9 @@ where what sits at the top level is a deliberate, small public API.
 
 | Tool | You'll use it for | Install |
 |---|---|---|
-| `servo` | Generating and checking the wiring (chapter 13) | `go install github.com/okian/servo/v3/cmd/servo@latest` |
+| `servo` | Generating and checking the wiring (chapter 14) | `go install github.com/okian/servo/v3/cmd/servo@latest` |
 | Docker + `docker compose` | Running Postgres, Redis, NATS locally | [docs.docker.com](https://docs.docker.com/get-docker/) |
-| `golangci-lint` | The CI lint step (chapter 18) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
+| `golangci-lint` | The CI lint step (chapter 19) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 
 You can actually skip installing `servo` globally — every command in this tutorial works equally
 well as `go run github.com/okian/servo/v3/cmd/servo <command>`, and that's what the Makefile below

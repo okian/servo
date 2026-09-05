@@ -6,18 +6,21 @@ middleware that runs on every request. By the end, `curl` will be able to log in
 and read it back — for real, against everything built in chapters 5 through 9.
 
 This chapter uses the standard library's `net/http`, which needs no dependency and is enough for
-everything here. If you would rather use a router, or need gRPC, the next two chapters implement
-the identical API without touching anything below the transport:
+everything here. If you would rather use a router, need gRPC, or want the edge generated
+instead of written, the next three chapters implement the identical API without touching
+anything below the transport:
 
 - [**Chapter 11: Gin as the transport**](11-gin-transport.md) — route groups and binding-tag
   validation instead of per-handler wrappers.
 - [**Chapter 12: gRPC as the transport**](12-grpc-transport.md) — and serving gRPC and REST from a
   single port.
+- [**Chapter 13: The transport you don’t write**](13-directive-transport.md) — the same routes as
+  `//servo:` directives, with the server, decoding and middleware chain generated.
 
-Both are optional: the service is complete with `net/http` alone, and
-[chapter 13](13-wiring-with-servo.md) follows on from this one whether you read them or not. The
-request shapes, the domain-error mapping and the middleware reasoning are the same in all three,
-and both chapters assume this one.
+All three are optional: the service is complete with `net/http` alone, and
+[chapter 14](14-wiring-with-servo.md) follows on from this one whether you read them or not. The
+request shapes, the domain-error mapping and the middleware reasoning are the same in all four,
+and every one of those chapters assumes this one.
 
 ## Define the request and response shapes first
 
@@ -193,7 +196,7 @@ func (w *statusWriter) WriteHeader(status int) {
 
 `statusWriter` exists because `http.ResponseWriter` doesn't expose what status code a handler
 already wrote — wrapping it is the standard way to capture that for logging. This logging is
-intentionally bare-bones; [chapter 15](15-observability.md) replaces it with something that
+intentionally bare-bones; [chapter 16](16-observability.md) replaces it with something that
 correlates each line to a trace, using the same wrapper.
 
 ## Write the handlers
@@ -391,7 +394,7 @@ type Server struct {
 // HTTPAddr and AdminAddr take no prefix: both are spelled that way in
 // every deployment already. AdminAddr belongs to this package because it
 // is the same concern — serving HTTP — even though main binds that
-// listener rather than the graph; see chapter 15.
+// listener rather than the graph; see chapter 16.
 type Config struct {
 	HTTPAddr  string `env:"HTTP_ADDR" envDefault:":8080"`
 	AdminAddr string `env:"ADMIN_ADDR" envDefault:":8081"`
@@ -427,7 +430,7 @@ func New(
 `"POST /auth/login"` — method and pattern in one string — is Go 1.22+'s stdlib
 `http.ServeMux`. It's enough for four routes with no path-parameter conflicts, so there's no
 third-party router to introduce or explain; see
-[chapter 21](21-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
+[chapter 22](22-alternatives-and-further-reading.md#http-routers) for when one earns its keep.
 
 ## Run and Stop — and a bug worth hitting on purpose
 
@@ -527,7 +530,7 @@ it.
 
 Nothing in `api/` imports servo, and nothing has to. The server is an ordinary constructor taking
 ordinary dependencies, so naming it as a root is the entire integration —
-`cmd/orders/spec.go`, covered properly in [chapter 13](13-wiring-with-servo.md):
+`cmd/orders/spec.go`, covered properly in [chapter 14](14-wiring-with-servo.md):
 
 ```go
 servo.Build(
@@ -618,7 +621,7 @@ func New(addr string, app Checker, metrics http.Handler) *http.Server {
 }
 ```
 
-The `metrics` handler is [chapter 15](15-observability.md)'s; it is on this listener for exactly
+The `metrics` handler is [chapter 16](16-observability.md)'s; it is on this listener for exactly
 the same reason the health routes are. Everything served here describes the service's internals —
 `/healthz` names every component in the graph along with its status — which is why the deployment
 binds this listener to the cluster network and never to the internet.
@@ -669,7 +672,7 @@ wired in `main` rather than by the graph, but the address belongs to the same co
 
 That separation is the point, and it is worth stating plainly: `/healthz` and `/readyz` enumerate
 every component in the graph by name along with its status, and `/metrics` ([chapter
-15](15-observability.md)) exposes request rates, latencies and error counts per route. Together
+15](16-observability.md)) exposes request rates, latencies and error counts per route. Together
 they describe the shape and health of the system precisely enough to be worth hiding, so the
 deployment binds this listener to the cluster network and no ingress rule points at it.
 
@@ -730,7 +733,7 @@ $ curl -s http://localhost:8081/healthz
 `/readyz` responds too, but with an empty node list (`{"clean":true,"nodes":null}`) — nothing in
 this graph implements `Readier` yet, so there's nothing distinct from `Health` for it to report.
 That's not a bug to fix; it's what "no component needs a separately-meaningful readiness signal"
-honestly looks like. [Chapter 13](13-wiring-with-servo.md) covers every capability this graph
+honestly looks like. [Chapter 14](14-wiring-with-servo.md) covers every capability this graph
 actually uses, side by side.
 
 ## Write it down: openapi/openapi.yaml
@@ -818,7 +821,7 @@ intentional for a tutorial spec, not oversights left unfixed.
 ### Serving it, and where
 
 A spec that lives only in the repository drifts from the service. `transport/openapi/openapi.go` embeds it
-and serves both the raw document and a browser UI, and all three transports mount the same handler:
+and serves both the raw document and a browser UI, and all three hand-written transports mount the same handler:
 
 ```go
 //go:embed openapi.yaml
@@ -881,5 +884,5 @@ air-gapped network should vendor the assets and serve them from `transport/opena
 
 ## Next
 
-[Chapter 13: Wiring with servo](13-wiring-with-servo.md) — putting every layer built so far into
+[Chapter 14: Wiring with servo](14-wiring-with-servo.md) — putting every layer built so far into
 one spec file and letting `servo generate` do the rest.

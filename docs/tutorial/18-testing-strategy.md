@@ -1,8 +1,8 @@
-# 17. Testing strategy
+# 18. Testing strategy
 
 Every chapter so far has written tests alongside the code they cover — a repository test in
 [chapter 5](05-repository-layer.md), a service test in [chapter 8](08-service-layer.md), a
-full-graph test in [chapter 13](13-wiring-with-servo.md). None of that was incidental: by now the
+full-graph test in [chapter 14](14-wiring-with-servo.md). None of that was incidental: by now the
 service has 64 test functions across 19 files, and they don't all test the same thing the same way
 on purpose. This chapter steps back from individual layers and looks at the whole shape — which
 kind of test catches which kind of bug, why there are four distinct styles instead of one, and how
@@ -44,7 +44,7 @@ The four tiers, concretely:
 
 Tiers 1 and 4 were both introduced already — chapter 8 for the mock-based pattern that tiers 1 and
 3 both build on, chapter 5 for the environment-variable-gated skip that all of tier 4 uses. Tier 3
-was chapter 13's `NewTestApp`. What's new here is tier 2, and the practice of running these
+was chapter 14's `NewTestApp`. What's new here is tier 2, and the practice of running these
 selectively rather than as one undifferentiated `go test ./...`.
 
 One tier-3 helper belongs to scopes specifically. `servotest.Linger(t, d)` shrinks every scope's
@@ -53,7 +53,7 @@ an eviction that would otherwise be thirty seconds away happens while the test i
 Without it, asserting that an instance is actually torn down means either sleeping for the real
 window or not asserting it at all. Generated code reads the override once per scope, inside `New`,
 so call it *before* constructing the app; and because the underlying setting is a package variable,
-a test using it must not run in parallel. [Chapter 14](14-scoped-instances.md) uses it for exactly
+a test using it must not run in parallel. [Chapter 15](15-scoped-instances.md) uses it for exactly
 this.
 
 ## Tier 2: proving the HTTP contract, not just the handlers
@@ -67,7 +67,7 @@ session happened to try.
 The difference from tier 1's `httptest.NewRecorder` tests matters: `handler.ServeHTTP(httptest.NewRecorder(), req)` calls a handler as a plain Go function — useful for testing one middleware in
 isolation (`resilience/ratelimit_test.go` does exactly this), but it never exercises routing,
 never binds a real port, and never proves the middleware chain in `api.New` is actually assembled
-in the order chapter 16 insists it must be. `httptest.NewServer` does all three: it starts a real
+in the order chapter 17 insists it must be. `httptest.NewServer` does all three: it starts a real
 listener, and every test in this file talks to it the same way a real client would.
 
 ```go
@@ -132,7 +132,7 @@ correctly. Two details worth noticing:
   bare struct literal skips `caarlos0/env`'s tag processing entirely — every field not set
   here is Go's zero value, not the configured default. A zero `RPS` clamps the limiter's
   burst to 1, which silently broke `TestCreateOrderSucceedsWithValidToken` the first time the rate
-  limiter was wired into `api.New` in chapter 16, well after this fixture was written. See
+  limiter was wired into `api.New` in chapter 17, well after this fixture was written. See
   Diagnostics below.
 - `orderCache.EXPECT().Get(...).AnyTimes()` and the two other `AnyTimes()` expectations are set up
   once, here, rather than repeated in every test function, because `OrderService` always tries the
@@ -237,7 +237,7 @@ ok  	example.com/servoorders/internal/transport/api	0.969s
 No request logs appear between the `--- PASS` lines, and that is deliberate: the fixture passes a
 `quietLogger()` — `slog.New(slog.DiscardHandler)` wrapped in an `observability.Logger` — into
 `api.New`. The middleware still runs, and still logs; it logs into a discard handler. Because the
-logger is injected rather than global ([chapter 15](15-observability.md)), silencing it in a test
+logger is injected rather than global ([chapter 16](16-observability.md)), silencing it in a test
 is a value you pass, not a package-level default you have to swap and restore.
 
 Now the whole suite, tier by tier. `make test` runs tiers 1 through 3 — nothing in them touches
@@ -277,7 +277,7 @@ Notice `postgres`, `redis`, and `natsbroker` all say `ok`, not `[no test files]`
 files, but every function in them checked its `TEST_*` environment variable, found it unset, and
 called `t.Skip`. A skipped test still reports `ok`; nothing here proves the repository layer
 actually talks to Postgres yet. That requires `make up` (bringing up the real
-`docker-compose.yml` stack from [chapter 19](19-running-and-deployment.md)) followed by:
+`docker-compose.yml` stack from [chapter 20](20-running-and-deployment.md)) followed by:
 
 ```
 $ make test-integration
@@ -330,7 +330,7 @@ every test that checked it, and only those.
   `t.Cleanup`) to actually simulate a missing variable.
 - **`postgres`/`redis`/`natsbroker` tests report `ok` in CI, but nobody's sure they're doing
   anything** — check that the job actually sets `TEST_POSTGRES_DSN`/`TEST_REDIS_ADDR`/
-  `TEST_NATS_URL` (see [chapter 18](18-cicd.md)). A missing `services:` block or a typo'd env var
+  `TEST_NATS_URL` (see [chapter 19](19-cicd.md)). A missing `services:` block or a typo'd env var
   name produces a suite that passes by skipping everything, silently.
 - **`gomock.NewController(t)` panics with "missing call"** — an `EXPECT()` was set up but the
   mocked method was never actually called before the test function returned and `ctrl.Finish()` ran
@@ -342,7 +342,7 @@ every test that checked it, and only those.
   `NewTestApp`'s generated graph, so unmet or unexpected mock calls panic instead of calling
   `t.Fatal` — and whether that panic crashes the process or gets silently absorbed into a `500`
   depends on whether it fired inside a request `recoverMiddleware` was already wrapping, or outside
-  one (typically during `t.Cleanup`'s `ctrl.Finish()`). See chapter 13's diagnostics for both cases
+  one (typically during `t.Cleanup`'s `ctrl.Finish()`). See chapter 14's diagnostics for both cases
   and how to read either one back to the specific mock that caused it.
 
 ## Do's and don'ts
@@ -363,7 +363,7 @@ every test that checked it, and only those.
   `t.Fatal` failures instead of panics.
 - **Don't** let `httptest.NewRecorder` tests and `httptest.NewServer` tests blur together. The
   former calls a handler as a function; the latter proves routing and middleware ordering over a
-  real socket. A middleware bug in how `api.New` assembles the chain (chapter 16's `r.Pattern`
+  real socket. A middleware bug in how `api.New` assembles the chain (chapter 17's `r.Pattern`
   bug, for instance) is only visible to the latter.
 - **Don't** assume `go test`'s caching will silently hide an integration test from a second run —
   and don't disable caching reflexively either (`-count=1` everywhere). It's slower for no benefit
@@ -395,6 +395,6 @@ every test that checked it, and only those.
 
 ## Next
 
-[Chapter 18: CI/CD](18-cicd.md) — turning `make test` and `make test-integration` into a GitHub
+[Chapter 19: CI/CD](19-cicd.md) — turning `make test` and `make test-integration` into a GitHub
 Actions workflow that runs both automatically, plus the build and `servo check` steps that don't
 have a `make` target yet.

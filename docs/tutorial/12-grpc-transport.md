@@ -7,7 +7,7 @@ if you already know gRPC.
 
 It assumes chapter 10: the DTOs, the domain-error mapping and the session scope are shared rather
 than repeated here. As in chapter 11, the spec-file change at the end belongs to
-[chapter 13](13-wiring-with-servo.md), so come back to it if you are reading in order. The working
+[chapter 14](14-wiring-with-servo.md), so come back to it if you are reading in order. The working
 code is
 [`examples/tutorial/grpcapi`](https://github.com/okian/servo/tree/master/examples/tutorial/grpcapi),
 wired by `cmd/ordersgrpc`.
@@ -144,8 +144,8 @@ name means adding an unauthenticated method is a deliberate edit here — the op
 
 The last two lines are the same two lines as the HTTP transports, for the same reason: the claims
 are what handlers read, and the session key is what servo's generated accessor reads
-([chapter 14](14-scoped-instances.md)). The scope has nothing to do with the transport, which is
-why `GetOrder` records a view identically in all three.
+([chapter 15](15-scoped-instances.md)). The scope has nothing to do with the transport, which is
+why `GetOrder` records a view identically in every transport.
 
 The error mapping changes vocabulary but not structure — `codes.NotFound` where HTTP said 404,
 `codes.PermissionDenied` where it said 403. That mapping lives in the transport in every case,
@@ -197,4 +197,6 @@ both protocols.
 - [Chapter 11: Gin as the transport](11-gin-transport.md) — the same API in Gin, if you want a
   router rather than a second protocol.
 - [Chapter 10: API layer](10-api-layer.md) — the `net/http` version, and the DTOs and
-  error mapping all three share.
+  error mapping all four share.
+- [Chapter 13: The transport you don’t write](13-directive-transport.md) — the same API as
+  `//servo:` directives, with the edge generated.

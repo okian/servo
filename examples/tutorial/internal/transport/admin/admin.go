@@ -9,9 +9,9 @@
 // so the deployment binds this listener to the cluster network and never
 // to the internet, and no ingress rule points at it.
 //
-// It is a package rather than a function in each main.go because all three
-// transport variants need exactly the same thing, and three copies of a
-// security boundary is three chances to get one wrong.
+// It is a package rather than a function in each main.go because every
+// transport variant needs exactly the same thing, and several copies of a
+// security boundary is several chances to get one wrong.
 package admin
 
 import (
@@ -24,8 +24,8 @@ import (
 
 // Checker is the part of a generated servo App this package needs: the two
 // aggregate report methods. Taking an interface rather than *App is what
-// lets one implementation serve three injectors, each with its own
-// generated App type.
+// lets one implementation serve every injector that mounts it, each with
+// its own generated App type.
 type Checker interface {
 	Health(context.Context) servo.Report
 	Ready(context.Context) servo.Report

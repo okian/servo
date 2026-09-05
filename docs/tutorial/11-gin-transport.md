@@ -11,9 +11,9 @@ chapter assumes chapter 10 — the DTOs and the domain-error mapping are shared 
 repeated here.
 
 This chapter and the next are the one pair you can skip. The service is complete without them and
-[chapter 13](13-wiring-with-servo.md) picks up from chapter 10 either way; read them when you want
+[chapter 14](14-wiring-with-servo.md) picks up from chapter 10 either way; read them when you want
 to see how little a transport swap actually disturbs. The spec file they each change by one line
-is the subject of chapter 13, so if that section reads ahead of you, come back to it after.
+is the subject of chapter 14, so if that section reads ahead of you, come back to it after.
 
 The working code is [`examples/tutorial/ginapi`](https://github.com/okian/servo/tree/master/examples/tutorial/ginapi),
 wired by `cmd/ordersgin`.
@@ -44,7 +44,7 @@ Four things in there are decisions, not boilerplate.
 
 **`gin.New()`, not `gin.Default()`.** `Default` installs Gin's own `Logger` and `Recovery`
 middleware, which write their own text format straight to stdout. This service emits structured
-JSON through the injected logger ([chapter 15](15-observability.md)), and a second format
+JSON through the injected logger ([chapter 16](16-observability.md)), and a second format
 interleaved with the first makes both harder to consume. `transport/ginapi/middleware.go` reimplements both
 against `*observability.Logger`.
 

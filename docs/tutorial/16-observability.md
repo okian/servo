@@ -1,7 +1,7 @@
-# 15. Observability
+# 16. Observability
 
 The service works end to end now — including the one per-user piece
-[chapter 14](14-scoped-instances.md) added — but from the outside, a running instance is a black
+[chapter 15](15-scoped-instances.md) added — but from the outside, a running instance is a black
 box: there's no way to tell whether it's healthy, slow, or actually doing what a request asked for
 without attaching a debugger. This chapter adds the three tools that answer those questions in
 production: structured logs for "what happened," metrics for "how much and how fast," and traces
@@ -349,7 +349,7 @@ func (t *Tracer) Middleware(next http.Handler) http.Handler {
 ## Wire both into api.Server
 
 `New` grows two more parameters — `sessions` and `log` are already there, from
-[chapter 14](14-scoped-instances.md) and [chapter 10](10-api-layer.md) — and the middleware
+[chapter 15](15-scoped-instances.md) and [chapter 10](10-api-layer.md) — and the middleware
 chain grows two more layers:
 
 ```go
@@ -481,5 +481,5 @@ UUID baked into a hundred different span names.
 
 ## Next
 
-[Chapter 16: Resilience](16-resilience.md) — a circuit breaker around the cache, and a rate
+[Chapter 17: Resilience](17-resilience.md) — a circuit breaker around the cache, and a rate
 limiter in front of the API.

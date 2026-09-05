@@ -98,15 +98,16 @@ you — nothing here is assembled by hand.
 | 10 | [API layer](10-api-layer.md) | Routing, DTOs, validation, error mapping |
 | 11 | [Gin as the transport](11-gin-transport.md) | The same API in Gin, and what the swap costs |
 | 12 | [gRPC as the transport](12-grpc-transport.md) | The same API over gRPC, on one port with REST |
-| 13 | [Wiring with servo](13-wiring-with-servo.md) | The spec file, capabilities, `servo generate` |
-| 14 | [Scoped instances](14-scoped-instances.md) | One session per user, instead of one per process |
-| 15 | [Observability](15-observability.md) | Structured logs, metrics, tracing, health checks |
-| 16 | [Resilience](16-resilience.md) | Circuit breaker, rate limiting, graceful shutdown |
-| 17 | [Testing strategy](17-testing-strategy.md) | Unit, integration, and API-level tests |
-| 18 | [CI/CD](18-cicd.md) | GitHub Actions: lint, test, build, `servo check` |
-| 19 | [Running and deployment](19-running-and-deployment.md) | Docker Compose, Dockerfile, env reference |
-| 20 | [Troubleshooting](20-troubleshooting.md) | Every diagnostic from every chapter, organized by symptom |
-| 21 | [Alternatives and further reading](21-alternatives-and-further-reading.md) | Other valid choices at every layer |
+| 13 | [The transport you don’t write](13-directive-transport.md) | The same API as //servo: directives, server generated |
+| 14 | [Wiring with servo](14-wiring-with-servo.md) | The spec file, capabilities, `servo generate` |
+| 15 | [Scoped instances](15-scoped-instances.md) | One session per user, instead of one per process |
+| 16 | [Observability](16-observability.md) | Structured logs, metrics, tracing, health checks |
+| 17 | [Resilience](17-resilience.md) | Circuit breaker, rate limiting, graceful shutdown |
+| 18 | [Testing strategy](18-testing-strategy.md) | Unit, integration, and API-level tests |
+| 19 | [CI/CD](19-cicd.md) | GitHub Actions: lint, test, build, `servo check` |
+| 20 | [Running and deployment](20-running-and-deployment.md) | Docker Compose, Dockerfile, env reference |
+| 21 | [Troubleshooting](21-troubleshooting.md) | Every diagnostic from every chapter, organized by symptom |
+| 22 | [Alternatives and further reading](22-alternatives-and-further-reading.md) | Other valid choices at every layer |
 
 Read them in order the first time through — each one assumes the code from the previous chapters
 already exists. After that, they stand alone well enough to use as reference.

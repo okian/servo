@@ -173,7 +173,7 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   `docs/reference/transport-grpc.md` are now `docs/tutorial/11-gin-transport.md` and
   `docs/tutorial/12-grpc-transport.md`, sitting directly after the API layer they re-implement.
   Chapters 11 through 19 shift to 13 through 21; the tutorial is 21 chapters. Both new chapters
-  are optional — chapter 13 follows on from chapter 10 whether or not you read them. The old
+  are optional — chapter 14 follows on from chapter 10 whether or not you read them. The old
   `/reference/transport-gin.html` and `/reference/transport-grpc.html` URLs redirect to them,
   so an existing link still lands on the page it meant.
 
@@ -201,10 +201,10 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   `recoverMiddleware(loggingMiddleware(mux))` passed one argument to a two-argument function and
   could not compile; its `api/middleware.go` block imported `log/slog`, which nothing in it used,
   instead of the `observability` package it names. Chapters 15 and 16 reprinted `api.New` without
-  `sessions` (added in chapter 14) or `log`, and chapter 16's router dropped the `GET /me/recent`
-  route chapter 14 has the reader build. Chapter 16's constructor now matches `api/server.go`
+  `sessions` (added in chapter 15) or `log`, and chapter 17's router dropped the `GET /me/recent`
+  route chapter 15 has the reader build. Chapter 17's constructor now matches `api/server.go`
   parameter for parameter and route for route.
-- **Tutorial figures that no longer matched the module.** Chapter 17 claimed 43 tests across 14
+- **Tutorial figures that no longer matched the module.** Chapter 18 claimed 43 tests across 14
   files while its own diagram summed to 52 across 15; the real count is 64 across 19 files that
   declare tests, retiered as 33/9, 17/3, 3/3 and 11/4. Chapter 1's endpoint table was missing
   `GET /me/recent` and the two contract routes. Chapter 2's Makefile lacked the `run-gin` and
@@ -218,8 +218,8 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
 - **Gin and gRPC as transport choices in `examples/tutorial`.** The same service layer now sits
   behind three transports, each its own injector: `api`/`cmd/orders` (`net/http`),
   `ginapi`/`cmd/ordersgin` (Gin), and `grpcapi`/`cmd/ordersgrpc`, which serves gRPC and REST on a
-  single port. New chapter 19 covers what differs between them and what deliberately does not; the
-  old chapter 19 is now 20.
+  single port. New chapter 20 covers what differs between them and what deliberately does not; the
+  old chapter 20 is now 20.
 - `examples/tutorial` gains packages `admin` (health, readiness and metrics on their own listener,
   never the public one, asserted by a test in every variant) and `openapi` (the contract, embedded
   and served with a Swagger UI).
