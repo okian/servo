@@ -1,20 +1,18 @@
 package servo
 
-// Json is the response wrapper a //servo: handler returns:
+// Json is the response wrapper a JSON //servo: handler returns:
 //
 //	func Order(ctx context.Context, req *OrderReq) (servo.Json[*OrderResp], error)
 //
-// It is an interface rather than a struct so the error path can return a
-// plain nil, and it is sealed (the unexported method below) so servo.JSON
-// stays the only way to construct one — the generated adapter can then
-// treat every non-nil value uniformly.
+// It is one member of the sealed Response family (see response.go): the
+// typed form keeps the response schema visible in the signature, while a
+// handler choosing its encoding at runtime declares servo.Response instead.
+// Being an interface is what lets the error path return a plain nil.
 type Json[T any] interface {
-	// Value returns the payload the generated adapter encodes as the
-	// response body. Exported because the adapter lives in the user's own
-	// package, not in servo.
+	Response
+	// Value returns the payload, mostly for tests — encoding happens
+	// through WriteResponse.
 	Value() T
-
-	sealedJSON()
 }
 
 // JSON wraps a handler's payload for encoding as application/json. The
@@ -26,5 +24,4 @@ func JSON[T any](v T) Json[T] {
 
 type jsonValue[T any] struct{ v T }
 
-func (j jsonValue[T]) Value() T    { return j.v }
-func (j jsonValue[T]) sealedJSON() {}
+func (j jsonValue[T]) Value() T { return j.v }
