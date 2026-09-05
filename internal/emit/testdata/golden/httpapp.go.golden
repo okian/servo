@@ -465,6 +465,19 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	return servo.Report{Nodes: nodes}
 }
 
+// HTTPHandler returns the named group's routed, middleware-wrapped handler
+// — for httptest, which needs no bound listener. "" and "default" name the
+// default group; unknown names return nil.
+func (a *App) HTTPHandler(group string) http.Handler {
+	switch group {
+	case "", "default":
+		return a.httpServer.srv.Handler
+	case "telemetry":
+		return a.httpTelemetryServer.srv.Handler
+	}
+	return nil
+}
+
 func (a *App) Health(ctx context.Context) servo.Report {
 	var nodes []servo.NodeResult
 	return servo.Report{Nodes: nodes}

@@ -231,6 +231,13 @@ func TestEmitHTTPServer(t *testing.T) {
 		`servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)`,
 		`Name: "http:telemetry"`,
 		"ServeTLS(ln,",
+		// The test seam: each group's wrapped handler, reachable without
+		// binding a listener.
+		"func (a *App) HTTPHandler(group string) http.Handler",
+		`case "", "default":`,
+		"return a.httpServer.srv.Handler",
+		`case "telemetry":`,
+		"return a.httpTelemetryServer.srv.Handler",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(src, want) {
@@ -331,6 +338,7 @@ func TestEmitHTTPTestMode(t *testing.T) {
 		"type testHttpServer struct",
 		"func newTestHttpServer(a *TestApp) (*testHttpServer, error)",
 		"type testHttpTelemetryServer struct",
+		"func (a *TestApp) HTTPHandler(group string) http.Handler",
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("test-mode output missing %q\n---\n%s", want, src)

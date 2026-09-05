@@ -439,6 +439,32 @@ func (e *emitter) writeHTTPRun(b *strings.Builder, g *httpGroupEmit) {
 	b.WriteString("\tselect {\n\tcase <-ctx.Done():\n\t\treturn nil\n\tcase err := <-serveErr:\n\t\treturn err\n\t}\n}\n\n")
 }
 
+// httpHandlerFunc emits the test seam: each group's fully wrapped handler,
+// reachable without binding a listener, so httptest drives the emitted
+// routing, middleware and adapters directly. Emitted only when the spec
+// declares servo.HTTP(), which keeps no-HTTP output byte-identical.
+func (e *emitter) httpHandlerFunc() string {
+	if e.http == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "// HTTPHandler returns the named group's routed, middleware-wrapped handler\n")
+	fmt.Fprintf(&b, "// — for httptest, which needs no bound listener. \"\" and \"default\" name the\n")
+	fmt.Fprintf(&b, "// default group; unknown names return nil.\n")
+	fmt.Fprintf(&b, "func (a *%s) HTTPHandler(group string) http.Handler {\n", e.appType())
+	b.WriteString("\tswitch group {\n")
+	for _, g := range e.http.Groups {
+		if g.Name == "" {
+			b.WriteString("\tcase \"\", \"default\":\n")
+		} else {
+			fmt.Fprintf(&b, "\tcase %q:\n", g.Name)
+		}
+		fmt.Fprintf(&b, "\t\treturn a.%s.srv.Handler\n", g.Field)
+	}
+	b.WriteString("\t}\n\treturn nil\n}\n\n")
+	return b.String()
+}
+
 // httpStopMethods are the App-level stops, sequenced first in Shutdown:
 // the servers are the inbound edges, so they drain before anything they
 // depend on. The nil guard covers construction-failure rollback, which
