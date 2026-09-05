@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build/constraint"
+	"go/constant"
 	"go/token"
 	"go/types"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -28,10 +30,15 @@ type Spec struct {
 	Scopes      []ScopeDecl
 
 	// HTTP is non-nil when the Build call declares servo.HTTP(): this
-	// injector serves the module's //servo: route directives. Only the
-	// declaration and its position live here — the routes themselves come
-	// from a separate module-wide scan.
+	// injector serves the module's //servo: route directives on the
+	// default group plus every group declared inside it. The routes
+	// themselves come from a separate module-wide scan.
 	HTTP *HTTPDecl
+
+	// Extracts are the servo.Extract[T]() declarations: types whose
+	// Extract method turns handler parameters of its result type into
+	// per-request values.
+	Extracts []ExtractDecl
 
 	// Variant is the canonical tag set the load ran under, copied from
 	// Loaded.Tags. Empty for a plain `servo generate`, which is what
@@ -51,11 +58,43 @@ type RootDecl struct {
 	Pos  token.Position
 }
 
-// HTTPDecl records a servo.HTTP() marker. It carries no configuration —
-// the server reads *servo.HTTPConfig from the graph — so the position is
-// the whole declaration, kept for diagnostics that need a "declared here".
+// HTTPDecl records a servo.HTTP(...) marker: the groups this injector
+// serves beyond the implicit default, and the middleware attachments, in
+// declaration order. Listener values still come from *servo.HTTPConfig at
+// run time — only names and wiring live here.
 type HTTPDecl struct {
-	Pos token.Position
+	Pos    token.Position
+	Groups []GroupDecl
+	Uses   []UseDecl
+}
+
+// GroupDecl is one servo.Group("name") declaration inside servo.HTTP(...).
+type GroupDecl struct {
+	Name string
+	Pos  token.Position
+}
+
+// UseDecl is one servo.Use[T](selectors...) attachment. Groups and Routes
+// are mutually exclusive; both empty means server-level (every group).
+type UseDecl struct {
+	Type   graph.Key
+	TypeT  types.Type
+	Groups []string
+	Routes []RouteSel
+	Pos    token.Position
+}
+
+// RouteSel is one servo.Route("METHOD /pattern") selector inside a Use.
+type RouteSel struct {
+	Pattern string
+	Pos     token.Position
+}
+
+// ExtractDecl is one servo.Extract[T]() declaration.
+type ExtractDecl struct {
+	Type  graph.Key
+	TypeT types.Type
+	Pos   token.Position
 }
 
 type BindDecl struct {
@@ -238,7 +277,26 @@ func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (
 			if spec.HTTP != nil {
 				return nil, fmt.Errorf("%s: servo.HTTP() declared twice — first at %s", pos, spec.HTTP.Pos)
 			}
-			spec.HTTP = &HTTPDecl{Pos: pos}
+			decl, err := parseHTTPCall(pkg, argCall, pos)
+			if err != nil {
+				return nil, err
+			}
+			spec.HTTP = decl
+		case "Extract":
+			if len(typeArgs) != 1 {
+				return nil, fmt.Errorf("%s: servo.Extract expects exactly one type argument", pos)
+			}
+			decl := ExtractDecl{Type: graph.NewKey(typeArgs[0], ""), TypeT: typeArgs[0], Pos: pos}
+			for _, prior := range spec.Extracts {
+				if prior.Type == decl.Type {
+					return nil, fmt.Errorf("%s: servo.Extract[%s] declared twice — first at %s", pos, decl.Type, prior.Pos)
+				}
+			}
+			spec.Extracts = append(spec.Extracts, decl)
+		case "Group", "Use":
+			return nil, fmt.Errorf("%s: servo.%s belongs inside servo.HTTP(...)", pos, name)
+		case "Route":
+			return nil, fmt.Errorf("%s: servo.Route belongs inside servo.Use(...)", pos)
 		case "Linger", "Max":
 			return nil, fmt.Errorf("%s: servo.%s is a scope option, not a Build marker — it belongs inside a servo.Scoped[T, I](...) argument list", pos, name)
 		default:
@@ -249,6 +307,116 @@ func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (
 		return nil, err
 	}
 	return spec, nil
+}
+
+// groupNameRE is the grammar a group name must satisfy in both places it
+// can appear: a servo.Group argument and a directive's trailing token.
+var groupNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// parseHTTPCall parses servo.HTTP's option list: Group declarations and Use
+// attachments, in declaration order. Everything here is read as syntax —
+// which is why the string arguments must be constants.
+func parseHTTPCall(pkg *packages.Package, call *ast.CallExpr, pos token.Position) (*HTTPDecl, error) {
+	decl := &HTTPDecl{Pos: pos}
+	for _, arg := range call.Args {
+		optCall, ok := arg.(*ast.CallExpr)
+		if !ok {
+			return nil, fmt.Errorf("%s: servo.HTTP option is not a marker call", pkg.Fset.Position(arg.Pos()))
+		}
+		name, typeArgs, optPos, err := markerCall(pkg, optCall)
+		if err != nil {
+			return nil, err
+		}
+		switch name {
+		case "Group":
+			gname, err := constStringArg(pkg, optCall, "servo.Group")
+			if err != nil {
+				return nil, err
+			}
+			if gname == "default" {
+				return nil, fmt.Errorf(`%s: servo.Group("default") — "default" is the implicit group every servo.HTTP() injector serves; it needs no declaration`, optPos)
+			}
+			if !groupNameRE.MatchString(gname) {
+				return nil, fmt.Errorf("%s: group name %q must match [A-Za-z0-9_-]+", optPos, gname)
+			}
+			for _, prior := range decl.Groups {
+				if prior.Name == gname {
+					return nil, fmt.Errorf("%s: servo.Group(%q) declared twice — first at %s", optPos, gname, prior.Pos)
+				}
+			}
+			decl.Groups = append(decl.Groups, GroupDecl{Name: gname, Pos: optPos})
+		case "Use":
+			use, err := parseUseCall(pkg, optCall, typeArgs, optPos)
+			if err != nil {
+				return nil, err
+			}
+			decl.Uses = append(decl.Uses, use)
+		case "Route":
+			return nil, fmt.Errorf("%s: servo.Route belongs inside servo.Use(...)", optPos)
+		default:
+			return nil, fmt.Errorf("%s: servo.%s is not a servo.HTTP option — options are servo.Group and servo.Use", optPos, name)
+		}
+	}
+	return decl, nil
+}
+
+// parseUseCall parses one servo.Use[T](selectors...) attachment. A Use
+// selects groups or routes, never both: "wrap this group's mux" and "wrap
+// this one route" compose differently, and a call meaning both reads as
+// neither.
+func parseUseCall(pkg *packages.Package, call *ast.CallExpr, typeArgs []types.Type, pos token.Position) (UseDecl, error) {
+	if len(typeArgs) != 1 {
+		return UseDecl{}, fmt.Errorf("%s: servo.Use expects exactly one type argument", pos)
+	}
+	use := UseDecl{Type: graph.NewKey(typeArgs[0], ""), TypeT: typeArgs[0], Pos: pos}
+	for _, arg := range call.Args {
+		selCall, ok := arg.(*ast.CallExpr)
+		if !ok {
+			return UseDecl{}, fmt.Errorf("%s: servo.Use selector is not a marker call", pkg.Fset.Position(arg.Pos()))
+		}
+		name, _, selPos, err := markerCall(pkg, selCall)
+		if err != nil {
+			return UseDecl{}, err
+		}
+		switch name {
+		case "Group":
+			gname, err := constStringArg(pkg, selCall, "servo.Group")
+			if err != nil {
+				return UseDecl{}, err
+			}
+			if !groupNameRE.MatchString(gname) {
+				return UseDecl{}, fmt.Errorf("%s: group name %q must match [A-Za-z0-9_-]+", selPos, gname)
+			}
+			use.Groups = append(use.Groups, gname)
+		case "Route":
+			pattern, err := constStringArg(pkg, selCall, "servo.Route")
+			if err != nil {
+				return UseDecl{}, err
+			}
+			use.Routes = append(use.Routes, RouteSel{Pattern: pattern, Pos: selPos})
+		default:
+			return UseDecl{}, fmt.Errorf(`%s: servo.%s is not a servo.Use selector — use servo.Group("name") or servo.Route("METHOD /pattern")`, selPos, name)
+		}
+	}
+	if len(use.Groups) > 0 && len(use.Routes) > 0 {
+		return UseDecl{}, fmt.Errorf("%s: servo.Use[%s] selects groups or routes, not both — split it into two Use calls", pos, use.Type)
+	}
+	return use, nil
+}
+
+// constStringArg folds a marker's single string argument to its constant
+// value — the spec is read as syntax, so a variable or call here has no
+// value to read.
+func constStringArg(pkg *packages.Package, call *ast.CallExpr, what string) (string, error) {
+	pos := pkg.Fset.Position(call.Pos())
+	if len(call.Args) != 1 {
+		return "", fmt.Errorf("%s: %s expects exactly one argument", pos, what)
+	}
+	tv, ok := pkg.TypesInfo.Types[call.Args[0]]
+	if !ok || tv.Value == nil || tv.Value.Kind() != constant.String {
+		return "", fmt.Errorf("%s: %s's argument must be a constant string", pos, what)
+	}
+	return constant.StringVal(tv.Value), nil
 }
 
 // findByIface returns the first declaration in decls bound to iface, so a

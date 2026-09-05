@@ -498,3 +498,182 @@ func Wire() {
 		t.Fatalf("got err=%v, want a 'servo.HTTP() declared twice' error", err)
 	}
 }
+
+// httpOptsModule materializes a module with a mw package (middleware and an
+// extractor for the markers to name) and the given spec body, for the
+// HTTP-options parse tests.
+func httpOptsModule(t *testing.T, specBody string) *Loaded {
+	t.Helper()
+	dir := t.TempDir()
+	root := repoRoot(t)
+	mustWriteFile(t, dir, "go.mod", "module example.com/httpopts\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
+	mustWriteFile(t, dir, "mw/mw.go", `package mw
+
+import "net/http"
+
+type User struct{ Name string }
+
+type Recover struct{}
+
+func NewRecover() *Recover { return &Recover{} }
+
+func (m *Recover) Middleware(next http.Handler) http.Handler { return next }
+
+type Auth struct{}
+
+func NewAuth() *Auth { return &Auth{} }
+
+func (m *Auth) Middleware(next http.Handler) http.Handler { return next }
+
+type Audit struct{}
+
+func NewAudit() *Audit { return &Audit{} }
+
+func (m *Audit) Middleware(next http.Handler) http.Handler { return next }
+
+type UserExtractor struct{}
+
+func NewUserExtractor() *UserExtractor { return &UserExtractor{} }
+
+func (e *UserExtractor) Extract(r *http.Request) (*User, error) { return &User{}, nil }
+`)
+	mustWriteFile(t, dir, "spec/spec.go", `//go:build servoinject
+
+package spec
+
+import (
+	"example.com/httpopts/mw"
+	"github.com/okian/servo/v3/servo"
+)
+
+var _ = mw.NewRecover
+
+func Wire() {
+`+specBody+`
+}
+`)
+	runGoModTidy(t, dir)
+	loaded, err := Load(Config{Dir: dir})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	return loaded
+}
+
+func TestFindSpecParsesHTTPOptionsAndExtract(t *testing.T) {
+	loaded := httpOptsModule(t, `	servo.Build(
+		servo.HTTP(
+			servo.Group("telemetry"),
+			servo.Group("internal"),
+			servo.Use[*mw.Recover](),
+			servo.Use[*mw.Auth](servo.Group("internal")),
+			servo.Use[*mw.Audit](servo.Route("POST /order/{category}/")),
+		),
+		servo.Extract[*mw.UserExtractor](),
+	)`)
+	spec, err := FindSpec(loaded)
+	if err != nil {
+		t.Fatalf("FindSpec: %v", err)
+	}
+	if spec.HTTP == nil {
+		t.Fatalf("Spec.HTTP is nil")
+	}
+	if len(spec.HTTP.Groups) != 2 || spec.HTTP.Groups[0].Name != "telemetry" || spec.HTTP.Groups[1].Name != "internal" {
+		t.Fatalf("Groups = %+v", spec.HTTP.Groups)
+	}
+	uses := spec.HTTP.Uses
+	if len(uses) != 3 {
+		t.Fatalf("Uses = %+v", uses)
+	}
+	if uses[0].Type.String() != "*example.com/httpopts/mw.Recover" || len(uses[0].Groups) != 0 || len(uses[0].Routes) != 0 {
+		t.Errorf("Uses[0] = %+v", uses[0])
+	}
+	if uses[1].Type.String() != "*example.com/httpopts/mw.Auth" || len(uses[1].Groups) != 1 || uses[1].Groups[0] != "internal" {
+		t.Errorf("Uses[1] = %+v", uses[1])
+	}
+	if uses[2].Type.String() != "*example.com/httpopts/mw.Audit" || len(uses[2].Routes) != 1 || uses[2].Routes[0].Pattern != "POST /order/{category}/" {
+		t.Errorf("Uses[2] = %+v", uses[2])
+	}
+	if len(spec.Extracts) != 1 || spec.Extracts[0].Type.String() != "*example.com/httpopts/mw.UserExtractor" {
+		t.Fatalf("Extracts = %+v", spec.Extracts)
+	}
+	if spec.Extracts[0].Pos.Line == 0 {
+		t.Fatalf("Extract position missing")
+	}
+}
+
+// Every malformed option is a parse-time error with a position — the same
+// contract every other marker already has.
+func TestFindSpecRejectsBadHTTPOptions(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "Group at Build top level",
+			body: `	servo.Build(servo.HTTP(), servo.Group("x"))`,
+			want: "servo.Group belongs inside servo.HTTP(...)",
+		},
+		{
+			name: "Use at Build top level",
+			body: `	servo.Build(servo.HTTP(), servo.Use[*mw.Recover]())`,
+			want: "servo.Use belongs inside servo.HTTP(...)",
+		},
+		{
+			name: "Route at Build top level",
+			body: `	servo.Build(servo.HTTP(), servo.Route("GET /x"))`,
+			want: "servo.Route belongs inside servo.Use(...)",
+		},
+		{
+			name: "Route directly inside HTTP",
+			body: `	servo.Build(servo.HTTP(servo.Route("GET /x")))`,
+			want: "servo.Route belongs inside servo.Use(...)",
+		},
+		{
+			name: "declaring the default group",
+			body: `	servo.Build(servo.HTTP(servo.Group("default")))`,
+			want: `"default" is the implicit group`,
+		},
+		{
+			name: "bad group name",
+			body: `	servo.Build(servo.HTTP(servo.Group("bad name")))`,
+			want: "must match [A-Za-z0-9_-]+",
+		},
+		{
+			name: "duplicate group",
+			body: `	servo.Build(servo.HTTP(servo.Group("x"), servo.Group("x")))`,
+			want: `servo.Group("x") declared twice`,
+		},
+		{
+			name: "Use mixing selector kinds",
+			body: `	servo.Build(servo.HTTP(servo.Use[*mw.Auth](servo.Group("x"), servo.Route("GET /x"))))`,
+			want: "selects groups or routes, not both",
+		},
+		{
+			name: "non-constant group name",
+			body: `	name := "x"
+	servo.Build(servo.HTTP(servo.Group(name)))`,
+			want: "must be a constant string",
+		},
+		{
+			name: "duplicate Extract",
+			body: `	servo.Build(servo.HTTP(), servo.Extract[*mw.UserExtractor](), servo.Extract[*mw.UserExtractor]())`,
+			want: "servo.Extract[*example.com/httpopts/mw.UserExtractor] declared twice",
+		},
+		{
+			name: "non-option inside HTTP",
+			body: `	servo.Build(servo.HTTP(servo.Root[*mw.Recover]()))`,
+			want: "servo.Root is not a servo.HTTP option",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			loaded := httpOptsModule(t, c.body)
+			_, err := FindSpec(loaded)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("got err=%v, want a %q error", err, c.want)
+			}
+		})
+	}
+}
