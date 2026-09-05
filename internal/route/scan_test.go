@@ -620,15 +620,15 @@ func Order() (servo.Json[*Resp], error) { return nil, nil }
 //servo:post /order
 func Order(ctx context.Context) error { return nil }
 `,
-			want: "must return exactly (servo.Json[T], error)",
+			want: "must return (R, error) where R is a servo response type",
 		},
 		{
-			name: "first result not servo.Json",
+			name: "first result not a servo response type",
 			src: header + `
 //servo:post /order
 func Order(ctx context.Context) (*Resp, error) { return nil, nil }
 `,
-			want: "must return exactly (servo.Json[T], error)",
+			want: "must return (R, error) where R is a servo response type",
 		},
 		{
 			name: "second result a concrete error type",
@@ -1018,5 +1018,43 @@ func Y(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
 	joined := diags[0].Message + "\n" + diags[1].Message
 	if !strings.Contains(joined, `unexpected "group"`) || !strings.Contains(joined, "must match [A-Za-z0-9_-]+") {
 		t.Fatalf("messages = %s", joined)
+	}
+}
+
+// The result may be any member of the sealed response family: the typed
+// forms keep the schema in the signature, bare servo.Response defers the
+// choice to runtime.
+func TestScanAcceptsResponseFamily(t *testing.T) {
+	src := `package app
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type Resp struct{ Name string }
+
+//servo:get /xml
+func AsXML(ctx context.Context) (servo.Xml[*Resp], error) { return servo.XML(&Resp{}), nil }
+
+//servo:get /any
+func AsAny(ctx context.Context) (servo.Response, error) { return servo.Text("hi"), nil }
+`
+	routes, diags := scanOn(t, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	byName := map[string]string{}
+	for _, rt := range routes {
+		resp := "<nil>"
+		if rt.RespType != nil {
+			resp = graph.TypeString(rt.RespType)
+		}
+		byName[rt.Func.Name()] = resp
+	}
+	// The typed form records its payload type; the dynamic form has none.
+	if byName["AsXML"] != "*example.com/app.Resp" || byName["AsAny"] != "<nil>" {
+		t.Fatalf("resp types = %v", byName)
 	}
 }

@@ -37,8 +37,30 @@ var bodylessMethods = map[string]bool{"GET": true, "HEAD": true, "DELETE": true,
 // and validates each against its handler, returning the sorted route list
 // and every failure as a positioned diagnostic. servoPkg is the loaded
 // runtime package, needed to recognize servo.Json by identity.
+// servoHTTPTypes bundles the runtime identities the scanner validates
+// against: the typed response wrappers (whose type argument is the payload
+// schema) and the sealed base interface every response kind implements.
+type servoHTTPTypes struct {
+	json     *types.TypeName
+	xml      *types.TypeName
+	response *types.Interface
+}
+
+func loadServoHTTPTypes(servoPkg *types.Package) *servoHTTPTypes {
+	st := &servoHTTPTypes{}
+	st.json, _ = servoPkg.Scope().Lookup("Json").(*types.TypeName)
+	st.xml, _ = servoPkg.Scope().Lookup("Xml").(*types.TypeName)
+	if tn, ok := servoPkg.Scope().Lookup("Response").(*types.TypeName); ok {
+		st.response, _ = tn.Type().Underlying().(*types.Interface)
+	}
+	if st.json == nil || st.xml == nil || st.response == nil {
+		return nil
+	}
+	return st
+}
+
 func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagnostic) {
-	jsonType, _ := servoPkg.Scope().Lookup("Json").(*types.TypeName)
+	st := loadServoHTTPTypes(servoPkg)
 
 	var routes []*Route
 	var diags []Diagnostic
@@ -54,13 +76,13 @@ func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagno
 			// version that predates the HTTP feature, and the CLI can be
 			// newer than the module's library. That mismatch must name its
 			// fix rather than drop routes or chase a missing type.
-			if jsonType == nil {
+			if st == nil {
 				if pos, found := firstDirective(pkg, file); found {
-					return nil, []Diagnostic{{Pos: pos, Message: "servo: //servo: directives need a servo version that exports servo.Json — update github.com/okian/servo/v3 in this module"}}
+					return nil, []Diagnostic{{Pos: pos, Message: "servo: //servo: directives need a servo version that exports the servo.Response family — update github.com/okian/servo/v3 in this module"}}
 				}
 				continue
 			}
-			scanFile(pkg, file, jsonType, &routes, &diags)
+			scanFile(pkg, file, st, &routes, &diags)
 		}
 	}
 
@@ -113,7 +135,7 @@ type directive struct {
 // spec-marker half lives in internal/load and must stay identical.
 var groupTokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
-func scanFile(pkg *packages.Package, file *ast.File, jsonType *types.TypeName, routes *[]*Route, diags *[]Diagnostic) {
+func scanFile(pkg *packages.Package, file *ast.File, st *servoHTTPTypes, routes *[]*Route, diags *[]Diagnostic) {
 	// Doc comment groups are shared pointers between file.Comments and
 	// decl.Doc, so a group can be matched back to the function it
 	// documents by identity.
@@ -163,7 +185,7 @@ func scanFile(pkg *packages.Package, file *ast.File, jsonType *types.TypeName, r
 		}
 		handled[fd] = true
 
-		h, diag := validateHandler(pkg, fd, jsonType, claimed[0].pos)
+		h, diag := validateHandler(pkg, fd, st, claimed[0].pos)
 		if diag != nil {
 			*diags = append(*diags, *diag)
 			continue
@@ -262,7 +284,7 @@ type handlerInfo struct {
 // Param 2 is the request struct iff it is a pointer to a named struct that
 // declares at least one binding tag; everything else after ctx is a
 // dependency.
-func validateHandler(pkg *packages.Package, fd *ast.FuncDecl, jsonType *types.TypeName, pos token.Position) (*handlerInfo, *Diagnostic) {
+func validateHandler(pkg *packages.Package, fd *ast.FuncDecl, st *servoHTTPTypes, pos token.Position) (*handlerInfo, *Diagnostic) {
 	if fd.Recv != nil {
 		return nil, &Diagnostic{Pos: pos, Message: "servo: //servo: handlers must be top-level functions, not methods"}
 	}
@@ -288,7 +310,7 @@ func validateHandler(pkg *packages.Package, fd *ast.FuncDecl, jsonType *types.Ty
 		return nil, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo: handler %s's first parameter must be context.Context", name)}
 	}
 
-	respType, diag := checkResults(sig, jsonType, name, pos)
+	respType, diag := checkResults(sig, st, name, pos)
 	if diag != nil {
 		return nil, diag
 	}
@@ -310,9 +332,14 @@ func validateHandler(pkg *packages.Package, fd *ast.FuncDecl, jsonType *types.Ty
 	return h, nil
 }
 
-func checkResults(sig *types.Signature, jsonType *types.TypeName, name string, pos token.Position) (types.Type, *Diagnostic) {
+// checkResults validates the result tuple and, for the typed wrappers,
+// extracts the payload type — the response schema the signature carries.
+// Any member of the sealed family passes: the check is "implements
+// servo.Response", so a new response kind in the runtime needs no scanner
+// change.
+func checkResults(sig *types.Signature, st *servoHTTPTypes, name string, pos token.Position) (types.Type, *Diagnostic) {
 	shape := func(detail string) *Diagnostic {
-		msg := fmt.Sprintf("servo: //servo: handler %s must return exactly (servo.Json[T], error)", name)
+		msg := fmt.Sprintf("servo: //servo: handler %s must return (R, error) where R is a servo response type (servo.Json[T], servo.Xml[T] or servo.Response)", name)
 		if detail != "" {
 			msg += " — " + detail
 		}
@@ -330,15 +357,18 @@ func checkResults(sig *types.Signature, jsonType *types.TypeName, name string, p
 		}
 		return nil, shape("")
 	}
-	named, ok := types.Unalias(res.At(0).Type()).(*types.Named)
-	if !ok || named.Obj() != jsonType {
+	first := types.Unalias(res.At(0).Type())
+	if !types.Implements(first, st.response) {
 		return nil, shape("")
 	}
-	targs := named.TypeArgs()
-	if targs == nil || targs.Len() != 1 {
-		return nil, shape("")
+	// The typed wrappers carry the payload type; bare Response (or any
+	// interface embedding it) carries none.
+	if named, ok := first.(*types.Named); ok && (named.Obj() == st.json || named.Obj() == st.xml) {
+		if targs := named.TypeArgs(); targs != nil && targs.Len() == 1 {
+			return targs.At(0), nil
+		}
 	}
-	return targs.At(0), nil
+	return nil, nil
 }
 
 func isContextType(t types.Type) bool {
