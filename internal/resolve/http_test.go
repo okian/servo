@@ -24,6 +24,7 @@ package httpapp
 
 import (
 	"context"
+	"net/http"
 
 	"github.com/okian/servo/v3/servo"
 )
@@ -62,18 +63,48 @@ func Me(ctx context.Context, s *Session) (servo.Json[*OrderResp], error) { retur
 
 //servo:get /me/ok
 func MeOK(ctx context.Context, s Sessions) (servo.Json[*OrderResp], error) { return nil, nil }
+
+type User struct{ Name string }
+
+func NewUser() *User { return &User{} }
+
+type UserExtractor struct{}
+func NewUserExtractor() *UserExtractor { return &UserExtractor{} }
+func (e *UserExtractor) Extract(r *http.Request) (*User, error) { return &User{}, nil }
+
+// BadExtractor's method has the wrong parameter list.
+type BadExtractor struct{}
+func NewBadExtractor() *BadExtractor { return &BadExtractor{} }
+func (e *BadExtractor) Extract(name string) (*User, error) { return nil, nil }
+
+type Recover struct{}
+func NewRecover() *Recover { return &Recover{} }
+func (m *Recover) Middleware(next http.Handler) http.Handler { return next }
+
+type NotMiddleware struct{}
+func NewNotMiddleware() *NotMiddleware { return &NotMiddleware{} }
+
+//servo:get /ping
+func Ping(ctx context.Context) (servo.Json[*OrderResp], error) { return nil, nil }
+
+//servo:get /me2
+func Me2(ctx context.Context, u *User) (servo.Json[*OrderResp], error) { return nil, nil }
+
+//servo:get /healthz telemetry
+func Healthz(ctx context.Context) (servo.Json[*OrderResp], error) { return nil, nil }
 `
 
 func checkHTTPFixture(t *testing.T) (*types.Package, *token.FileSet, []*packages.Package, []*graph.Provider, []*route.Route, *types.Package) {
 	t.Helper()
 	ctxPkg := loadPkg(t, "context")
+	httpPkg := loadPkg(t, "net/http")
 	servoPkg := loadPkg(t, graph.ServoPackagePath)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "httpapp.go", httpAppSrc, parser.ParseComments)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	conf := types.Config{Importer: importerFor(ctxPkg, servoPkg)}
+	conf := types.Config{Importer: importerFor(ctxPkg, httpPkg, servoPkg)}
 	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
 	pkg, err := conf.Check("example.com/httpapp", fset, []*ast.File{f}, info)
 	if err != nil {
@@ -153,8 +184,8 @@ func TestResolveHTTPHappyPath(t *testing.T) {
 	if hr.Route.Name != "httpapp.Order" {
 		t.Fatalf("plan route = %s", hr.Route.Name)
 	}
-	if len(hr.Deps) != 1 || hr.Deps[0].Key != ptrKey(pkg, "Repo") {
-		t.Fatalf("plan deps = %+v", hr.Deps)
+	if len(hr.Args) != 1 || hr.Args[0].Node == nil || hr.Args[0].Node.Key != ptrKey(pkg, "Repo") {
+		t.Fatalf("plan args = %+v", hr.Args)
 	}
 	// The config and every handler dep are constructed like any other
 	// singleton: they must be in Order, but never in Roots — Roots keeps
@@ -163,7 +194,7 @@ func TestResolveHTTPHappyPath(t *testing.T) {
 	for _, n := range resolved.Order {
 		inOrder[n.Key] = true
 	}
-	if !inOrder[hr.Deps[0].Key] || !inOrder[resolved.HTTP.Config.Key] {
+	if !inOrder[hr.Args[0].Node.Key] || !inOrder[resolved.HTTP.Config.Key] {
 		t.Fatalf("HTTP nodes missing from Order: %v", resolved.Order)
 	}
 	if len(resolved.Roots) != 0 {
@@ -285,8 +316,8 @@ func TestResolveHTTPAccessorDepAllowed(t *testing.T) {
 		t.Fatalf("unexpected diagnostics:\n%s", diagText(diags))
 	}
 	hr := resolved.HTTP.Routes[0]
-	if len(hr.Deps) != 1 || hr.Deps[0].Kind != NodeScopeAccessor {
-		t.Fatalf("deps = %+v, want the Sessions accessor node", hr.Deps)
+	if len(hr.Args) != 1 || hr.Args[0].Node == nil || hr.Args[0].Node.Kind != NodeScopeAccessor {
+		t.Fatalf("args = %+v, want the Sessions accessor node", hr.Args)
 	}
 }
 
@@ -316,4 +347,230 @@ func findHTTPProvider(t *testing.T, providers []*graph.Provider, name string) *g
 	}
 	t.Fatalf("no provider named httpapp.%s among %d providers", name, len(providers))
 	return nil
+}
+
+// With no Groups declared, a telemetry-tagged route is simply not this
+// injector's to serve; declaring the group brings it in.
+func TestResolveHTTPFiltersUndeclaredGroups(t *testing.T) {
+	_, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	candidates := []*graph.Provider{findHTTPProvider(t, all, "NewHTTPConfig")}
+	build := func(groups []load.GroupDecl) *Resolved {
+		in := Input{
+			Spec:       &load.Spec{},
+			Candidates: candidates,
+			Caps:       graph.EmptyCapabilities(),
+			Scope:      map[string]bool{"example.com/httpapp": true},
+			Fset:       fset,
+			Pkgs:       pkgs,
+			HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.Healthz")),
+		}
+		in.HTTP.Groups = groups
+		resolved, diags := Resolve(in)
+		if len(diags) > 0 {
+			t.Fatalf("unexpected diagnostics:\n%s", diagText(diags))
+		}
+		return resolved
+	}
+
+	without := build(nil)
+	if len(without.HTTP.Routes) != 0 || len(without.HTTP.Groups) != 0 {
+		t.Fatalf("undeclared group still served: %+v", without.HTTP)
+	}
+	with := build([]load.GroupDecl{{Name: "telemetry", Pos: token.Position{Filename: "spec.go", Line: 13}}})
+	if len(with.HTTP.Routes) != 1 || with.HTTP.Routes[0].Route.Group != "telemetry" {
+		t.Fatalf("declared group not served: %+v", with.HTTP.Routes)
+	}
+	if len(with.HTTP.Groups) != 1 || with.HTTP.Groups[0] != "telemetry" {
+		t.Fatalf("plan groups = %v", with.HTTP.Groups)
+	}
+}
+
+func TestResolveHTTPExtractor(t *testing.T) {
+	pkg, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	candidates := []*graph.Provider{
+		findHTTPProvider(t, all, "NewHTTPConfig"),
+		findHTTPProvider(t, all, "NewUserExtractor"),
+	}
+	in := Input{
+		Spec:       &load.Spec{},
+		Candidates: candidates,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.Me2")),
+	}
+	in.HTTP.Extracts = []load.ExtractDecl{{
+		Type: ptrKey(pkg, "UserExtractor"), TypeT: ptrType(pkg, "UserExtractor"),
+		Pos: token.Position{Filename: "spec.go", Line: 20},
+	}}
+
+	resolved, diags := Resolve(in)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics:\n%s", diagText(diags))
+	}
+	if len(resolved.HTTP.Extractors) != 1 || resolved.HTTP.Extractors[0].Produces != ptrKey(pkg, "User") {
+		t.Fatalf("extractors = %+v", resolved.HTTP.Extractors)
+	}
+	hr := resolved.HTTP.Routes[0]
+	if len(hr.Args) != 1 || hr.Args[0].Extractor == nil || hr.Args[0].Node != nil {
+		t.Fatalf("args = %+v, want one extracted arg", hr.Args)
+	}
+	// The extractor node itself is an ordinary singleton in Order.
+	found := false
+	for _, n := range resolved.Order {
+		if n.Key == ptrKey(pkg, "UserExtractor") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("extractor node missing from Order")
+	}
+}
+
+func TestResolveHTTPRejectsBadExtractor(t *testing.T) {
+	pkg, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	candidates := []*graph.Provider{
+		findHTTPProvider(t, all, "NewHTTPConfig"),
+		findHTTPProvider(t, all, "NewBadExtractor"),
+	}
+	in := Input{
+		Spec:       &load.Spec{},
+		Candidates: candidates,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.Ping")),
+	}
+	in.HTTP.Extracts = []load.ExtractDecl{{
+		Type: ptrKey(pkg, "BadExtractor"), TypeT: ptrType(pkg, "BadExtractor"),
+		Pos: token.Position{Filename: "spec.go", Line: 20},
+	}}
+
+	_, diags := Resolve(in)
+	text := diagText(diags)
+	if !strings.Contains(text, "must have a method Extract(r *http.Request) (T, error)") {
+		t.Fatalf("diagnostics:\n%s", text)
+	}
+}
+
+func TestResolveHTTPRejectsExtractedAndProvided(t *testing.T) {
+	pkg, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	candidates := []*graph.Provider{
+		findHTTPProvider(t, all, "NewHTTPConfig"),
+		findHTTPProvider(t, all, "NewUserExtractor"),
+		findHTTPProvider(t, all, "NewUser"), // the conflict
+	}
+	in := Input{
+		Spec:       &load.Spec{},
+		Candidates: candidates,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.Me2")),
+	}
+	in.HTTP.Extracts = []load.ExtractDecl{{
+		Type: ptrKey(pkg, "UserExtractor"), TypeT: ptrType(pkg, "UserExtractor"),
+		Pos: token.Position{Filename: "spec.go", Line: 20},
+	}}
+
+	_, diags := Resolve(in)
+	text := diagText(diags)
+	if !strings.Contains(text, "never both") || !strings.Contains(text, "httpapp.NewUser") {
+		t.Fatalf("diagnostics:\n%s", text)
+	}
+}
+
+func TestResolveHTTPMiddleware(t *testing.T) {
+	pkg, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	candidates := []*graph.Provider{
+		findHTTPProvider(t, all, "NewHTTPConfig"),
+		findHTTPProvider(t, all, "NewRecover"),
+	}
+	in := Input{
+		Spec:       &load.Spec{},
+		Candidates: candidates,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.Ping")),
+	}
+	in.HTTP.Uses = []load.UseDecl{{
+		Type: ptrKey(pkg, "Recover"), TypeT: ptrType(pkg, "Recover"),
+		Routes: []load.RouteSel{{Pattern: "GET /ping", Pos: token.Position{Filename: "spec.go", Line: 14}}},
+		Pos:    token.Position{Filename: "spec.go", Line: 14},
+	}}
+
+	resolved, diags := Resolve(in)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics:\n%s", diagText(diags))
+	}
+	if len(resolved.HTTP.Uses) != 1 || resolved.HTTP.Uses[0].Node.Key != ptrKey(pkg, "Recover") {
+		t.Fatalf("uses = %+v", resolved.HTTP.Uses)
+	}
+}
+
+func TestResolveHTTPRejectsNonMiddleware(t *testing.T) {
+	pkg, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	candidates := []*graph.Provider{
+		findHTTPProvider(t, all, "NewHTTPConfig"),
+		findHTTPProvider(t, all, "NewNotMiddleware"),
+	}
+	in := Input{
+		Spec:       &load.Spec{},
+		Candidates: candidates,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.Ping")),
+	}
+	in.HTTP.Uses = []load.UseDecl{{
+		Type: ptrKey(pkg, "NotMiddleware"), TypeT: ptrType(pkg, "NotMiddleware"),
+		Pos: token.Position{Filename: "spec.go", Line: 14},
+	}}
+
+	_, diags := Resolve(in)
+	text := diagText(diags)
+	if !strings.Contains(text, "must have a method Middleware(next http.Handler) http.Handler") {
+		t.Fatalf("diagnostics:\n%s", text)
+	}
+}
+
+func TestResolveHTTPRejectsUnknownUseSelectors(t *testing.T) {
+	pkg, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	candidates := []*graph.Provider{
+		findHTTPProvider(t, all, "NewHTTPConfig"),
+		findHTTPProvider(t, all, "NewRecover"),
+	}
+	in := Input{
+		Spec:       &load.Spec{},
+		Candidates: candidates,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.Ping")),
+	}
+	in.HTTP.Uses = []load.UseDecl{
+		{
+			Type: ptrKey(pkg, "Recover"), TypeT: ptrType(pkg, "Recover"),
+			Groups: []string{"nope"},
+			Pos:    token.Position{Filename: "spec.go", Line: 14},
+		},
+		{
+			Type: ptrKey(pkg, "Recover"), TypeT: ptrType(pkg, "Recover"),
+			Routes: []load.RouteSel{{Pattern: "POST /missing", Pos: token.Position{Filename: "spec.go", Line: 15}}},
+			Pos:    token.Position{Filename: "spec.go", Line: 15},
+		},
+	}
+
+	_, diags := Resolve(in)
+	text := diagText(diags)
+	if !strings.Contains(text, `selects group "nope"`) || !strings.Contains(text, "matches no served route") {
+		t.Fatalf("diagnostics:\n%s", text)
+	}
 }

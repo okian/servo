@@ -303,8 +303,11 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, re *httpRouteEmit) {
 		}
 		args = append(args, "req")
 	}
-	for _, dep := range re.R.Deps {
-		args = append(args, "s.app."+e.httpDepField(dep))
+	for _, arg := range re.R.Args {
+		if arg.Node == nil {
+			continue // extracted parameters are emitted with Task 6's extractor support
+		}
+		args = append(args, "s.app."+e.httpDepField(arg.Node))
 	}
 
 	fmt.Fprintf(b, "\tres, err := %s(%s)\n", e.httpFuncRef(rt.Func), strings.Join(args, ", "))
