@@ -15,18 +15,27 @@ import (
 	"time"
 )
 
-// startApp builds the generated App on a free port and runs it until the
-// test ends, failing fast if the listener never becomes ready.
-func startApp(t *testing.T) string {
+// startApp builds the generated App on three free ports — one per group —
+// and runs it until the test ends, failing fast if any listener never
+// becomes ready. It returns the default, telemetry and internal base URLs.
+func startApp(t *testing.T) (string, string, string) {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("pick port: %v", err)
+	freePort := func() int {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("pick port: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+		return port
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
-	_ = ln.Close()
+	port := freePort()
+	telPort := freePort()
+	intPort := freePort()
 	t.Setenv("HTTP_PORT", strconv.Itoa(port))
+	t.Setenv("HTTP_TELEMETRY_PORT", strconv.Itoa(telPort))
+	t.Setenv("HTTP_INTERNAL_PORT", strconv.Itoa(intPort))
 	t.Setenv("HTTP_MAX_BODY", "1024")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -54,11 +63,12 @@ func startApp(t *testing.T) string {
 	deadline := time.Now().Add(5 * time.Second)
 	for !app.Ready(ctx).Clean() {
 		if time.Now().After(deadline) {
-			t.Fatalf("server never became ready: %v", app.Ready(ctx))
+			t.Fatalf("servers never became ready: %v", app.Ready(ctx))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d", port)
+	base := func(p int) string { return fmt.Sprintf("http://127.0.0.1:%d", p) }
+	return base(port), base(telPort), base(intPort)
 }
 
 // call issues one request and returns the status code, the decoded JSON
@@ -105,7 +115,7 @@ func get(t *testing.T, url string) *http.Request {
 }
 
 func TestHTTPEndToEnd(t *testing.T) {
-	base := startApp(t)
+	base, telemetry, internal := startApp(t)
 
 	t.Run("created with echoed body", func(t *testing.T) {
 		code, body, _ := call(t, post(t, base+"/order/espresso/?priority=2", "application/json", `{"item":"latte","quantity":3}`))
@@ -196,7 +206,7 @@ func TestHTTPEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("header binding", func(t *testing.T) {
+	t.Run("extracted parameter reaches the handler", func(t *testing.T) {
 		req := get(t, base+"/whoami")
 		req.Header.Set("X-User", "kian")
 		code, body, _ := call(t, req)
@@ -205,10 +215,75 @@ func TestHTTPEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("missing header is the handler's 401", func(t *testing.T) {
+	t.Run("failed extraction is a 401 before the handler", func(t *testing.T) {
 		code, body, _ := call(t, get(t, base+"/whoami"))
 		if code != http.StatusUnauthorized || body["error"] != "missing X-User header" {
 			t.Fatalf("status=%d body=%v", code, body)
+		}
+	})
+
+	t.Run("middleware sets the response header and the context value", func(t *testing.T) {
+		req := get(t, base+"/whoami")
+		req.Header.Set("X-User", "kian")
+		req.Header.Set("X-Request-Id", "req-42")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		if got := resp.Header.Get("X-Request-Id"); got != "req-42" {
+			t.Fatalf("X-Request-Id header = %q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		// The context value the middleware planted made it into the
+		// handler's ctx — that is the "context change" half of the story.
+		if body["request_id"] != "req-42" {
+			t.Fatalf("request_id = %v", body["request_id"])
+		}
+	})
+
+	t.Run("telemetry group serves on its own port only", func(t *testing.T) {
+		code, body, _ := call(t, get(t, telemetry+"/healthz"))
+		if code != http.StatusOK || body["ok"] != true {
+			t.Fatalf("status=%d body=%v", code, body)
+		}
+		// The server-level middleware wraps this group too.
+		if body["request_id"] != "generated-1" {
+			t.Fatalf("request_id = %v", body["request_id"])
+		}
+		code, _, _ = call(t, get(t, base+"/healthz"))
+		if code != http.StatusNotFound {
+			t.Fatalf("healthz leaked onto the default port: %d", code)
+		}
+		code, _, _ = call(t, get(t, telemetry+"/whoami"))
+		if code != http.StatusNotFound {
+			t.Fatalf("default route leaked onto the telemetry port: %d", code)
+		}
+	})
+
+	t.Run("internal group sits behind its auth middleware", func(t *testing.T) {
+		req := post(t, internal+"/replicate/shard-7", "application/json", "")
+		code, _, _ := call(t, req)
+		if code != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated internal call = %d, want 401", code)
+		}
+
+		req = post(t, internal+"/replicate/shard-7", "application/json", "")
+		req.Header.Set("X-Token", "letmein")
+		req.Header.Set("X-User", "replicator")
+		code, body, _ := call(t, req)
+		if code != http.StatusOK || body["shard"] != "shard-7" || body["by"] != "replicator" {
+			t.Fatalf("status=%d body=%v", code, body)
+		}
+
+		// The group middleware guards only its group.
+		pub := get(t, base+"/search")
+		code, _, _ = call(t, pub)
+		if code != http.StatusOK {
+			t.Fatalf("default group must not require the internal token: %d", code)
 		}
 	})
 

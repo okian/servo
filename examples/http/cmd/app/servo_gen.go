@@ -6,22 +6,39 @@
 //
 //	[L1] *github.com/okian/servo/v3/servo.HTTPConfig
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | api/api.go:23:6
+//	      capabilities: none | binding: sole candidate | api/api.go:26:6
+//	[L1] *example.com/servohttp/mw.UserExtractor
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | mw/mw.go:64:6
+//	[L1] *example.com/servohttp/mw.RequestID
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | mw/mw.go:21:6
+//	[L1] *example.com/servohttp/mw.Auth
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | mw/mw.go:46:6
 //	[L1] *example.com/servohttp/store.Store
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | store/store.go:22:6
 //
-// http (servo.HTTP() at cmd/app/spec.go:15:3):
+// http (servo.HTTP() at cmd/app/spec.go:19:3):
 //
 //	config: *github.com/okian/servo/v3/servo.HTTPConfig
-//	POST /feedback -> api.Feedback (api/api.go:135:1)
-//	      deps: none
-//	POST /order/{category}/ -> api.Order (api/api.go:62:1)
-//	      deps: *example.com/servohttp/store.Store
-//	GET /search -> api.Search (api/api.go:99:1)
-//	      deps: none
-//	GET /whoami -> api.Whoami (api/api.go:114:1)
-//	      deps: none
+//	groups: internal, telemetry
+//	use: *example.com/servohttp/mw.RequestID -> every group
+//	use: *example.com/servohttp/mw.Auth -> group internal
+//	extract: *example.com/servohttp/mw.UserExtractor -> *example.com/servohttp/mw.User
+//	POST /feedback -> api.Feedback (api/api.go:181:1)
+//	      args: none
+//	POST /order/{category}/ -> api.Order (api/api.go:82:1)
+//	      args: *example.com/servohttp/store.Store
+//	GET /search -> api.Search (api/api.go:119:1)
+//	      args: none
+//	GET /whoami -> api.Whoami (api/api.go:133:1)
+//	      args: *example.com/servohttp/mw.User (extracted)
+//	POST /replicate/{shard} [internal] -> api.Replicate (api/api.go:163:1)
+//	      args: *example.com/servohttp/mw.User (extracted)
+//	GET /healthz [telemetry] -> api.Healthz (api/api.go:146:1)
+//	      args: none
 package main
 
 import (
@@ -40,25 +57,38 @@ import (
 	"syscall"
 
 	"example.com/servohttp/api"
+	"example.com/servohttp/mw"
 	"example.com/servohttp/store"
 	"github.com/okian/servo/v3/servo"
+	"golang.org/x/sync/errgroup"
 )
 
 type App struct {
-	hTTPConfig           *servo.HTTPConfig
-	store                *store.Store
-	httpServer           *httpServer
-	httpServerStopOnce   sync.Once
-	httpServerStopResult servo.NodeResult
-	startupReport        servo.StartupReport
+	hTTPConfig                    *servo.HTTPConfig
+	userExtractor                 *mw.UserExtractor
+	requestID                     *mw.RequestID
+	auth                          *mw.Auth
+	store                         *store.Store
+	httpServer                    *httpServer
+	httpServerStopOnce            sync.Once
+	httpServerStopResult          servo.NodeResult
+	httpInternalServer            *httpInternalServer
+	httpInternalServerStopOnce    sync.Once
+	httpInternalServerStopResult  servo.NodeResult
+	httpTelemetryServer           *httpTelemetryServer
+	httpTelemetryServerStopOnce   sync.Once
+	httpTelemetryServerStopResult servo.NodeResult
+	startupReport                 servo.StartupReport
 }
 
-// httpServer serves the //servo: routes declared across this module. It is
-// generated machinery, not a graph node: its dependencies are ordinary
-// singletons on the App, resolved once at construction.
+const defaultMaxBodyBytes = 1 << 20
+
+// httpServer serves the default group's //servo: routes. It is generated
+// machinery, not a graph node: its dependencies are ordinary singletons
+// on the App, resolved once at construction.
 type httpServer struct {
 	app     *App
-	cfg     *servo.HTTPConfig
+	lc      servo.HTTPListener
 	srv     *http.Server
 	maxBody int64
 	// ready flips once the listener is bound, which is the precise moment
@@ -66,12 +96,20 @@ type httpServer struct {
 	ready atomic.Bool
 }
 
-const defaultMaxBodyBytes = 1 << 20
-
-func newHttpServer(a *App) *httpServer {
+func newHttpServer(a *App) (*httpServer, error) {
 	cfg := a.hTTPConfig
-	s := &httpServer{app: a, cfg: cfg}
-	s.maxBody = cfg.MaxBodyBytes
+	lc := servo.HTTPListener{
+		IP:           cfg.IP,
+		Port:         cfg.Port,
+		CertFile:     cfg.CertFile,
+		KeyFile:      cfg.KeyFile,
+		MaxBodyBytes: cfg.MaxBodyBytes,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
+	}
+	s := &httpServer{app: a, lc: lc}
+	s.maxBody = lc.MaxBodyBytes
 	if s.maxBody <= 0 {
 		s.maxBody = defaultMaxBodyBytes
 	}
@@ -80,14 +118,16 @@ func newHttpServer(a *App) *httpServer {
 	mux.HandleFunc("POST /order/{category}/", s.handleOrder)
 	mux.HandleFunc("GET /search", s.handleSearch)
 	mux.HandleFunc("GET /whoami", s.handleWhoami)
+	var handler http.Handler = mux
+	handler = a.requestID.Middleware(handler)
 	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(cfg.IP, strconv.FormatUint(uint64(cfg.Port), 10)),
-		Handler:      mux,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:      handler,
+		ReadTimeout:  lc.ReadTimeout,
+		WriteTimeout: lc.WriteTimeout,
+		IdleTimeout:  lc.IdleTimeout,
 	}
-	return s
+	return s, nil
 }
 
 func (s *httpServer) handleFeedback(w http.ResponseWriter, r *http.Request) {
@@ -96,14 +136,14 @@ func (s *httpServer) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	// ParseMultipartForm falls through to ParseForm on urlencoded
 	// bodies, reporting ErrNotMultipart after already parsing them.
 	if err := r.ParseMultipartForm(s.maxBody); err != nil && !errors.Is(err, http.ErrNotMultipart) {
-		s.writeError(w, http.StatusBadRequest, "malformed form body")
+		httpWriteError(w, http.StatusBadRequest, "malformed form body")
 		return
 	}
 	req.Subject = r.PostForm.Get("subject")
 	if raw := r.PostForm.Get("stars"); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 0)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "form value \"stars\" is not a valid int")
+			httpWriteError(w, http.StatusBadRequest, "form value \"stars\" is not a valid int")
 			return
 		}
 		req.Stars = int(v)
@@ -111,28 +151,16 @@ func (s *httpServer) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Feedback(r.Context(), req)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if !errors.As(err, &hs) {
-			slog.Error("servo: handler api.Feedback failed", "route", "POST /feedback", "error", err)
-			s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		code := hs.Code()
-		switch {
-		case code < 300:
+		if errors.As(err, &hs) && hs.Code() < 300 {
 			// A 2xx status in the error position is the contract's way of
 			// picking a success code other than 200.
-			httpRespond(s, w, code, res)
-		case code < 500:
-			s.writeError(w, code, err.Error())
-		default:
-			// 5xx bodies carry only the canonical text; the wrapped detail
-			// is for the log, not the client.
-			slog.Error("servo: handler api.Feedback failed", "route", "POST /feedback", "error", err)
-			s.writeError(w, code, hs.Error())
+			httpRespond(w, hs.Code(), res)
+			return
 		}
+		httpWriteFailure(w, "api.Feedback", "POST /feedback", err)
 		return
 	}
-	httpRespond(s, w, http.StatusOK, res)
+	httpRespond(w, http.StatusOK, res)
 }
 
 func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +169,7 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		s.writeError(w, http.StatusBadRequest, "malformed request body")
+		httpWriteError(w, http.StatusBadRequest, "malformed request body")
 		return
 	}
 	q := r.URL.Query()
@@ -149,7 +177,7 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("priority"); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 0)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "query parameter \"priority\" is not a valid int")
+			httpWriteError(w, http.StatusBadRequest, "query parameter \"priority\" is not a valid int")
 			return
 		}
 		req.Priority = int(v)
@@ -157,28 +185,16 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Order(r.Context(), req, s.app.store)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if !errors.As(err, &hs) {
-			slog.Error("servo: handler api.Order failed", "route", "POST /order/{category}/", "error", err)
-			s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		code := hs.Code()
-		switch {
-		case code < 300:
+		if errors.As(err, &hs) && hs.Code() < 300 {
 			// A 2xx status in the error position is the contract's way of
 			// picking a success code other than 200.
-			httpRespond(s, w, code, res)
-		case code < 500:
-			s.writeError(w, code, err.Error())
-		default:
-			// 5xx bodies carry only the canonical text; the wrapped detail
-			// is for the log, not the client.
-			slog.Error("servo: handler api.Order failed", "route", "POST /order/{category}/", "error", err)
-			s.writeError(w, code, hs.Error())
+			httpRespond(w, hs.Code(), res)
+			return
 		}
+		httpWriteFailure(w, "api.Order", "POST /order/{category}/", err)
 		return
 	}
-	httpRespond(s, w, http.StatusOK, res)
+	httpRespond(w, http.StatusOK, res)
 }
 
 func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +204,7 @@ func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("limit"); raw != "" {
 		v, err := strconv.ParseUint(raw, 10, 16)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "query parameter \"limit\" is not a valid uint16")
+			httpWriteError(w, http.StatusBadRequest, "query parameter \"limit\" is not a valid uint16")
 			return
 		}
 		req.Limit = uint16(v)
@@ -196,7 +212,7 @@ func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("ratio"); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "query parameter \"ratio\" is not a valid float64")
+			httpWriteError(w, http.StatusBadRequest, "query parameter \"ratio\" is not a valid float64")
 			return
 		}
 		req.Ratio = v
@@ -204,7 +220,7 @@ func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("exact"); raw != "" {
 		v, err := strconv.ParseBool(raw)
 		if err != nil {
-			s.writeError(w, http.StatusBadRequest, "query parameter \"exact\" is not a valid bool")
+			httpWriteError(w, http.StatusBadRequest, "query parameter \"exact\" is not a valid bool")
 			return
 		}
 		req.Exact = v
@@ -212,83 +228,37 @@ func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Search(r.Context(), req)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if !errors.As(err, &hs) {
-			slog.Error("servo: handler api.Search failed", "route", "GET /search", "error", err)
-			s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		code := hs.Code()
-		switch {
-		case code < 300:
+		if errors.As(err, &hs) && hs.Code() < 300 {
 			// A 2xx status in the error position is the contract's way of
 			// picking a success code other than 200.
-			httpRespond(s, w, code, res)
-		case code < 500:
-			s.writeError(w, code, err.Error())
-		default:
-			// 5xx bodies carry only the canonical text; the wrapped detail
-			// is for the log, not the client.
-			slog.Error("servo: handler api.Search failed", "route", "GET /search", "error", err)
-			s.writeError(w, code, hs.Error())
+			httpRespond(w, hs.Code(), res)
+			return
 		}
+		httpWriteFailure(w, "api.Search", "GET /search", err)
 		return
 	}
-	httpRespond(s, w, http.StatusOK, res)
+	httpRespond(w, http.StatusOK, res)
 }
 
 func (s *httpServer) handleWhoami(w http.ResponseWriter, r *http.Request) {
-	req := &api.WhoamiReq{}
-	req.User = r.Header.Get("X-User")
-	res, err := api.Whoami(r.Context(), req)
+	user, err := s.app.userExtractor.Extract(r)
+	if err != nil {
+		httpWriteFailure(w, "api.Whoami", "GET /whoami", err)
+		return
+	}
+	res, err := api.Whoami(r.Context(), user)
 	if err != nil {
 		var hs servo.HTTPStatus
-		if !errors.As(err, &hs) {
-			slog.Error("servo: handler api.Whoami failed", "route", "GET /whoami", "error", err)
-			s.writeError(w, http.StatusInternalServerError, "Internal Server Error")
-			return
-		}
-		code := hs.Code()
-		switch {
-		case code < 300:
+		if errors.As(err, &hs) && hs.Code() < 300 {
 			// A 2xx status in the error position is the contract's way of
 			// picking a success code other than 200.
-			httpRespond(s, w, code, res)
-		case code < 500:
-			s.writeError(w, code, err.Error())
-		default:
-			// 5xx bodies carry only the canonical text; the wrapped detail
-			// is for the log, not the client.
-			slog.Error("servo: handler api.Whoami failed", "route", "GET /whoami", "error", err)
-			s.writeError(w, code, hs.Error())
+			httpRespond(w, hs.Code(), res)
+			return
 		}
+		httpWriteFailure(w, "api.Whoami", "GET /whoami", err)
 		return
 	}
-	httpRespond(s, w, http.StatusOK, res)
-}
-
-// httpRespond writes one success response; a nil Json means status only, no body.
-func httpRespond[T any](s *httpServer, w http.ResponseWriter, code int, res servo.Json[T]) {
-	if res == nil {
-		w.WriteHeader(code)
-		return
-	}
-	s.writeJSON(w, code, res.Value())
-}
-
-func (s *httpServer) writeJSON(w http.ResponseWriter, code int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		slog.Error("servo: encoding response failed", "error", err)
-	}
-}
-
-func (s *httpServer) writeError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(struct {
-		Error string `json:"error"`
-	}{Error: msg})
+	httpRespond(w, http.StatusOK, res)
 }
 
 func (s *httpServer) run(ctx context.Context) error {
@@ -300,8 +270,8 @@ func (s *httpServer) run(ctx context.Context) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		var err error
-		if s.cfg.CertFile != "" && s.cfg.KeyFile != "" {
-			err = s.srv.ServeTLS(ln, s.cfg.CertFile, s.cfg.KeyFile)
+		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
+			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
 		} else {
 			err = s.srv.Serve(ln)
 		}
@@ -319,6 +289,212 @@ func (s *httpServer) run(ctx context.Context) error {
 	}
 }
 
+// httpInternalServer serves group "internal"'s //servo: routes. It is generated
+// machinery, not a graph node: its dependencies are ordinary singletons
+// on the App, resolved once at construction.
+type httpInternalServer struct {
+	app *App
+	lc  servo.HTTPListener
+	srv *http.Server
+	// ready flips once the listener is bound, which is the precise moment
+	// Ready starts reporting ok for the "http:internal" node.
+	ready atomic.Bool
+}
+
+func newHttpInternalServer(a *App) (*httpInternalServer, error) {
+	cfg := a.hTTPConfig
+	lc, ok := cfg.Groups["internal"]
+	if !ok {
+		return nil, fmt.Errorf("http: group %q declared in the spec but missing from HTTPConfig.Groups", "internal")
+	}
+	s := &httpInternalServer{app: a, lc: lc}
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /replicate/{shard}", s.handleReplicate)
+	var handler http.Handler = mux
+	handler = a.auth.Middleware(handler)
+	handler = a.requestID.Middleware(handler)
+	s.srv = &http.Server{
+		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:      handler,
+		ReadTimeout:  lc.ReadTimeout,
+		WriteTimeout: lc.WriteTimeout,
+		IdleTimeout:  lc.IdleTimeout,
+	}
+	return s, nil
+}
+
+func (s *httpInternalServer) handleReplicate(w http.ResponseWriter, r *http.Request) {
+	req := &api.ReplicateReq{}
+	req.Shard = r.PathValue("shard")
+	user, err := s.app.userExtractor.Extract(r)
+	if err != nil {
+		httpWriteFailure(w, "api.Replicate", "POST /replicate/{shard}", err)
+		return
+	}
+	res, err := api.Replicate(r.Context(), req, user)
+	if err != nil {
+		var hs servo.HTTPStatus
+		if errors.As(err, &hs) && hs.Code() < 300 {
+			// A 2xx status in the error position is the contract's way of
+			// picking a success code other than 200.
+			httpRespond(w, hs.Code(), res)
+			return
+		}
+		httpWriteFailure(w, "api.Replicate", "POST /replicate/{shard}", err)
+		return
+	}
+	httpRespond(w, http.StatusOK, res)
+}
+
+func (s *httpInternalServer) run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.srv.Addr)
+	if err != nil {
+		return fmt.Errorf("http:internal: listen %s: %w", s.srv.Addr, err)
+	}
+	s.ready.Store(true)
+	serveErr := make(chan error, 1)
+	go func() {
+		var err error
+		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
+			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
+		} else {
+			err = s.srv.Serve(ln)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serveErr:
+		return err
+	}
+}
+
+// httpTelemetryServer serves group "telemetry"'s //servo: routes. It is generated
+// machinery, not a graph node: its dependencies are ordinary singletons
+// on the App, resolved once at construction.
+type httpTelemetryServer struct {
+	app *App
+	lc  servo.HTTPListener
+	srv *http.Server
+	// ready flips once the listener is bound, which is the precise moment
+	// Ready starts reporting ok for the "http:telemetry" node.
+	ready atomic.Bool
+}
+
+func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error) {
+	cfg := a.hTTPConfig
+	lc, ok := cfg.Groups["telemetry"]
+	if !ok {
+		return nil, fmt.Errorf("http: group %q declared in the spec but missing from HTTPConfig.Groups", "telemetry")
+	}
+	s := &httpTelemetryServer{app: a, lc: lc}
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", s.handleHealthz)
+	var handler http.Handler = mux
+	handler = a.requestID.Middleware(handler)
+	s.srv = &http.Server{
+		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:      handler,
+		ReadTimeout:  lc.ReadTimeout,
+		WriteTimeout: lc.WriteTimeout,
+		IdleTimeout:  lc.IdleTimeout,
+	}
+	return s, nil
+}
+
+func (s *httpTelemetryServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	res, err := api.Healthz(r.Context())
+	if err != nil {
+		var hs servo.HTTPStatus
+		if errors.As(err, &hs) && hs.Code() < 300 {
+			// A 2xx status in the error position is the contract's way of
+			// picking a success code other than 200.
+			httpRespond(w, hs.Code(), res)
+			return
+		}
+		httpWriteFailure(w, "api.Healthz", "GET /healthz", err)
+		return
+	}
+	httpRespond(w, http.StatusOK, res)
+}
+
+func (s *httpTelemetryServer) run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.srv.Addr)
+	if err != nil {
+		return fmt.Errorf("http:telemetry: listen %s: %w", s.srv.Addr, err)
+	}
+	s.ready.Store(true)
+	serveErr := make(chan error, 1)
+	go func() {
+		var err error
+		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
+			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
+		} else {
+			err = s.srv.Serve(ln)
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-serveErr:
+		return err
+	}
+}
+
+// httpRespond writes one success response; a nil Json means status only, no body.
+func httpRespond[T any](w http.ResponseWriter, code int, res servo.Json[T]) {
+	if res == nil {
+		w.WriteHeader(code)
+		return
+	}
+	httpWriteJSON(w, code, res.Value())
+}
+
+// httpWriteFailure maps a handler or extractor error onto the response: a status in
+// the chain picks the code, 4xx bodies carry the message, 5xx bodies only
+// the canonical text — the wrapped detail is for the log, not the client.
+func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
+	var hs servo.HTTPStatus
+	if !errors.As(err, &hs) {
+		slog.Error("servo: handler "+handler+" failed", "route", route, "error", err)
+		httpWriteError(w, http.StatusInternalServerError, "Internal Server Error")
+		return
+	}
+	code := hs.Code()
+	if code >= 500 {
+		slog.Error("servo: handler "+handler+" failed", "route", route, "status", code, "error", err)
+		httpWriteError(w, code, hs.Error())
+		return
+	}
+	httpWriteError(w, code, err.Error())
+}
+
+func httpWriteJSON(w http.ResponseWriter, code int, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		slog.Error("servo: encoding response failed", "error", err)
+	}
+}
+
+func httpWriteError(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	_ = json.NewEncoder(w).Encode(struct {
+		Error string `json:"error"`
+	}{Error: msg})
+}
+
 func New(ctx context.Context) (*App, error) {
 	a := &App{}
 
@@ -328,10 +504,38 @@ func New(ctx context.Context) (*App, error) {
 	}
 	a.hTTPConfig = hTTPConfig
 
+	userExtractor := mw.NewUserExtractor()
+	a.userExtractor = userExtractor
+
+	requestID := mw.NewRequestID()
+	a.requestID = requestID
+
+	auth := mw.NewAuth()
+	a.auth = auth
+
 	store := store.New()
 	a.store = store
 
-	a.httpServer = newHttpServer(a)
+	httpServer, err := newHttpServer(a)
+	if err != nil {
+		report := a.Shutdown(ctx)
+		return nil, errors.Join(err, report)
+	}
+	a.httpServer = httpServer
+
+	httpInternalServer, err := newHttpInternalServer(a)
+	if err != nil {
+		report := a.Shutdown(ctx)
+		return nil, errors.Join(err, report)
+	}
+	a.httpInternalServer = httpInternalServer
+
+	httpTelemetryServer, err := newHttpTelemetryServer(a)
+	if err != nil {
+		report := a.Shutdown(ctx)
+		return nil, errors.Join(err, report)
+	}
+	a.httpTelemetryServer = httpTelemetryServer
 
 	return a, nil
 }
@@ -347,8 +551,34 @@ func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {
 	return a.httpServerStopResult
 }
 
+func (a *App) stopHttpInternalServer(ctx context.Context) servo.NodeResult {
+	a.httpInternalServerStopOnce.Do(func() {
+		if a.httpInternalServer == nil {
+			a.httpInternalServerStopResult = servo.NodeResult{Name: "http:internal", Status: servo.StatusOK}
+			return
+		}
+		a.httpInternalServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:internal", a.httpInternalServer.srv.Shutdown)
+	})
+	return a.httpInternalServerStopResult
+}
+
+func (a *App) stopHttpTelemetryServer(ctx context.Context) servo.NodeResult {
+	a.httpTelemetryServerStopOnce.Do(func() {
+		if a.httpTelemetryServer == nil {
+			a.httpTelemetryServerStopResult = servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK}
+			return
+		}
+		a.httpTelemetryServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)
+	})
+	return a.httpTelemetryServerStopResult
+}
+
 func (a *App) Run(ctx context.Context) error {
-	return a.httpServer.run(ctx)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return a.httpServer.run(gctx) })
+	g.Go(func() error { return a.httpInternalServer.run(gctx) })
+	g.Go(func() error { return a.httpTelemetryServer.run(gctx) })
+	return g.Wait()
 }
 
 func (a *App) Shutdown(ctx context.Context) servo.Report {
@@ -367,6 +597,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 
 	var nodes []servo.NodeResult
 	nodes = append(nodes, a.stopHttpServer(ctx))
+	nodes = append(nodes, a.stopHttpInternalServer(ctx))
+	nodes = append(nodes, a.stopHttpTelemetryServer(ctx))
 	return servo.Report{Nodes: nodes}
 }
 
@@ -382,12 +614,25 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 	} else {
 		nodes = append(nodes, servo.NodeResult{Name: "http", Status: servo.StatusFailed, Err: errors.New("http: not accepting connections yet")})
 	}
+	if a.httpInternalServer != nil && a.httpInternalServer.ready.Load() {
+		nodes = append(nodes, servo.NodeResult{Name: "http:internal", Status: servo.StatusOK})
+	} else {
+		nodes = append(nodes, servo.NodeResult{Name: "http:internal", Status: servo.StatusFailed, Err: errors.New("http:internal: not accepting connections yet")})
+	}
+	if a.httpTelemetryServer != nil && a.httpTelemetryServer.ready.Load() {
+		nodes = append(nodes, servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK})
+	} else {
+		nodes = append(nodes, servo.NodeResult{Name: "http:telemetry", Status: servo.StatusFailed, Err: errors.New("http:telemetry: not accepting connections yet")})
+	}
 	return servo.Report{Nodes: nodes}
 }
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:23:6"},
+		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:26:6"},
+		{Type: "*example.com/servohttp/mw.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:64:6"},
+		{Type: "*example.com/servohttp/mw.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:21:6"},
+		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:46:6"},
 		{Type: "*example.com/servohttp/store.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "store/store.go:22:6"},
 	}}
 }
