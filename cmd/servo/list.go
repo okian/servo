@@ -56,6 +56,21 @@ func runList(cfg load.Config, rejected, showAll, jsonOut bool) error {
 	for _, c := range filtered {
 		fmt.Printf("%-30s %s\n", c.Name, c.Pos.String())
 	}
+
+	// Routes are the other thing servo sees, and "why doesn't servo serve
+	// my endpoint" is the same question as "why isn't my constructor
+	// indexed". Module-wide like the scan itself; the JSON schema stays the
+	// bare candidate array it has always been (documented in cli.md).
+	if len(p.routes) > 0 {
+		fmt.Println("\nroutes:")
+		for _, rt := range p.routes {
+			spec := rt.Method + " " + rt.Pattern
+			if rt.Group != "" {
+				spec += " [" + rt.Group + "]"
+			}
+			fmt.Printf("  %-40s %-25s %s\n", spec, rt.Name, rt.Pos.String())
+		}
+	}
 	return nil
 }
 

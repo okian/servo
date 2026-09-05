@@ -344,3 +344,25 @@ func NewUser() *User { return &User{} }
 		t.Fatalf("got err=%v, want the extracted-and-provided diagnostic", err)
 	}
 }
+
+// servo list answers "what does servo see" — with directives in the module,
+// that must include the routes, not only the constructors.
+func TestListShowsRoutes(t *testing.T) {
+	dir := writeHTTPModule(t)
+	out := captureStdout(t, func() {
+		if err := runList(cfg(dir), false, false, false); err != nil {
+			t.Errorf("runList: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"routes:",
+		"POST /order/{category}/",
+		"api.Order",
+		"GET /healthz [telemetry]",
+		"api.Healthz",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("list output missing %q:\n%s", want, out)
+		}
+	}
+}

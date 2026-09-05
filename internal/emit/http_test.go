@@ -234,6 +234,11 @@ func TestEmitHTTPServer(t *testing.T) {
 		// The test seam: each group's wrapped handler, reachable without
 		// binding a listener.
 		"func (a *App) HTTPHandler(group string) http.Handler",
+		// Graph() carries the HTTP plan as data, mirroring `servo graph`.
+		"HTTP: &servo.GraphHTTP{",
+		`{Method: "POST", Pattern: "/order/{category}/", Handler: "httpapp.Order", Args: []string{"*example.com/httpapp.Repo"}`,
+		`{Type: "*example.com/httpapp.Guard", Scope: "server"}`,
+		`{Type: "*example.com/httpapp.UserExtractor", Produces: "*example.com/httpapp.User"}`,
 		`case "", "default":`,
 		"return a.httpServer.srv.Handler",
 		`case "telemetry":`,

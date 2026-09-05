@@ -27,7 +27,33 @@ func ToGraph(resolved *resolve.Resolved) servo.Graph {
 		}
 		scopes = append(scopes, graphScope(s))
 	}
-	return servo.Graph{Nodes: nodes, Scopes: scopes}
+	return servo.Graph{Nodes: nodes, Scopes: scopes, HTTP: graphHTTP(resolved.HTTP)}
+}
+
+// graphHTTP mirrors HTTPUseScope/httpRouteArgs in internal/emit — the
+// emitted Graph() method and this converter must render the same data.
+func graphHTTP(plan *resolve.HTTPPlan) *servo.GraphHTTP {
+	if plan == nil {
+		return nil
+	}
+	out := &servo.GraphHTTP{Groups: append([]string(nil), plan.Groups...)}
+	for _, hr := range plan.Routes {
+		out.Routes = append(out.Routes, servo.GraphRoute{
+			Method:  hr.Route.Method,
+			Pattern: hr.Route.Pattern,
+			Group:   hr.Route.Group,
+			Handler: hr.Route.Name,
+			Args:    resolve.HTTPRouteArgs(hr),
+			Pos:     hr.Route.Pos.String(),
+		})
+	}
+	for _, u := range plan.Uses {
+		out.Uses = append(out.Uses, servo.GraphUse{Type: u.Node.Key.String(), Scope: resolve.HTTPUseScope(u)})
+	}
+	for _, ex := range plan.Extractors {
+		out.Extractors = append(out.Extractors, servo.GraphExtractor{Type: ex.Node.Key.String(), Produces: ex.Produces.String()})
+	}
+	return out
 }
 
 func graphNode(n *resolve.Node, level int, scope string) servo.GraphNode {

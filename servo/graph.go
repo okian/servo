@@ -43,12 +43,50 @@ type GraphScope struct {
 	Borrows []string `json:"borrows"`
 }
 
+// GraphRoute is one //servo: route: where it listens, what handles it, and
+// what the handler receives (graph keys; extracted parameters marked).
+type GraphRoute struct {
+	Method  string `json:"method"`
+	Pattern string `json:"pattern"`
+	// Group is "" for the default group.
+	Group   string   `json:"group,omitempty"`
+	Handler string   `json:"handler"`
+	Args    []string `json:"args,omitempty"`
+	Pos     string   `json:"pos,omitempty"`
+}
+
+// GraphUse is one servo.Use attachment and what it wraps: "server",
+// "group <name>", or "route <METHOD /pattern>".
+type GraphUse struct {
+	Type  string `json:"type"`
+	Scope string `json:"scope"`
+}
+
+// GraphExtractor is one servo.Extract declaration: the extractor node and
+// the handler-parameter type it produces per request.
+type GraphExtractor struct {
+	Type     string `json:"type"`
+	Produces string `json:"produces"`
+}
+
+// GraphHTTP is the emitted HTTP plan as data: served groups (the default
+// group is implicit), every route, the middleware attachments, and the
+// extractors.
+type GraphHTTP struct {
+	Groups     []string         `json:"groups,omitempty"`
+	Routes     []GraphRoute     `json:"routes"`
+	Uses       []GraphUse       `json:"uses,omitempty"`
+	Extractors []GraphExtractor `json:"extractors,omitempty"`
+}
+
 // Graph is the full resolved object graph, serializable to the same JSON
 // schema `servo graph --format=json` produces at build time.
 type Graph struct {
 	Nodes []GraphNode `json:"nodes"`
 	// Scopes is omitted entirely when nothing is scoped.
 	Scopes []GraphScope `json:"scopes,omitempty"`
+	// HTTP is omitted entirely when the spec declares no servo.HTTP().
+	HTTP *GraphHTTP `json:"http,omitempty"`
 }
 
 // StartupNode is one node's construction/Init timing.

@@ -506,6 +506,23 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*example.com/httpapp.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:57:6"},
 		{Type: "*example.com/httpapp.Audit", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:61:6"},
 		{Type: "*example.com/httpapp.Repo", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:12:6"},
+	}, HTTP: &servo.GraphHTTP{
+		Groups: []string{"telemetry"},
+		Routes: []servo.GraphRoute{
+			{Method: "GET", Pattern: "/health", Handler: "httpapp.Health", Pos: "example.com/httpapp/fixture.go:37:1"},
+			{Method: "GET", Pattern: "/me", Handler: "httpapp.Me", Args: []string{"*example.com/httpapp.User (extracted)"}, Pos: "example.com/httpapp/fixture.go:49:1"},
+			{Method: "POST", Pattern: "/notes", Handler: "httpapp.CreateNote", Pos: "example.com/httpapp/fixture.go:32:1"},
+			{Method: "POST", Pattern: "/order/{category}/", Handler: "httpapp.Order", Args: []string{"*example.com/httpapp.Repo"}, Pos: "example.com/httpapp/fixture.go:23:1"},
+			{Method: "GET", Pattern: "/healthz", Group: "telemetry", Handler: "httpapp.Healthz", Pos: "example.com/httpapp/fixture.go:40:1"},
+		},
+		Uses: []servo.GraphUse{
+			{Type: "*example.com/httpapp.Guard", Scope: "server"},
+			{Type: "*example.com/httpapp.Auth", Scope: "group telemetry"},
+			{Type: "*example.com/httpapp.Audit", Scope: "route POST /order/{category}/"},
+		},
+		Extractors: []servo.GraphExtractor{
+			{Type: "*example.com/httpapp.UserExtractor", Produces: "*example.com/httpapp.User"},
+		},
 	}}
 }
 

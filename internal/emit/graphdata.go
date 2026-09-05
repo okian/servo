@@ -24,7 +24,56 @@ func (e *emitter) graphFunc() string {
 	}
 	b.WriteString("\t}")
 	b.WriteString(e.graphScopes())
+	b.WriteString(e.graphHTTP())
 	b.WriteString("}\n}\n\n")
+	return b.String()
+}
+
+// graphHTTP emits the HTTP field only when the spec declares servo.HTTP(),
+// so a plan-less app produces the same literal it always did. The rendering
+// mirrors internal/render's converter — `servo graph` at build time and
+// App.Graph() at run time must agree.
+func (e *emitter) graphHTTP() string {
+	if e.http == nil {
+		return ""
+	}
+	plan := e.http.Plan
+	var b strings.Builder
+	fmt.Fprintf(&b, ", HTTP: &%s.GraphHTTP{\n", e.servoAlias)
+	if len(plan.Groups) > 0 {
+		fmt.Fprintf(&b, "\t\tGroups: %s,\n", stringSliceLiteral(plan.Groups))
+	}
+	fmt.Fprintf(&b, "\t\tRoutes: []%s.GraphRoute{\n", e.servoAlias)
+	for _, g := range e.http.Groups {
+		for _, re := range g.Routes {
+			rt := re.R.Route
+			fmt.Fprintf(&b, "\t\t\t{Method: %q, Pattern: %q", rt.Method, rt.Pattern)
+			if rt.Group != "" {
+				fmt.Fprintf(&b, ", Group: %q", rt.Group)
+			}
+			fmt.Fprintf(&b, ", Handler: %q", rt.Name)
+			if args := resolve.HTTPRouteArgs(re.R); len(args) > 0 {
+				fmt.Fprintf(&b, ", Args: %s", stringSliceLiteral(args))
+			}
+			fmt.Fprintf(&b, ", Pos: %q},\n", e.posString(rt.Pos))
+		}
+	}
+	b.WriteString("\t\t},\n")
+	if len(plan.Uses) > 0 {
+		fmt.Fprintf(&b, "\t\tUses: []%s.GraphUse{\n", e.servoAlias)
+		for _, u := range plan.Uses {
+			fmt.Fprintf(&b, "\t\t\t{Type: %q, Scope: %q},\n", u.Node.Key.String(), resolve.HTTPUseScope(u))
+		}
+		b.WriteString("\t\t},\n")
+	}
+	if len(plan.Extractors) > 0 {
+		fmt.Fprintf(&b, "\t\tExtractors: []%s.GraphExtractor{\n", e.servoAlias)
+		for _, ex := range plan.Extractors {
+			fmt.Fprintf(&b, "\t\t\t{Type: %q, Produces: %q},\n", ex.Node.Key.String(), ex.Produces.String())
+		}
+		b.WriteString("\t\t},\n")
+	}
+	b.WriteString("\t}")
 	return b.String()
 }
 

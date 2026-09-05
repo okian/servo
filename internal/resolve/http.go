@@ -74,6 +74,39 @@ type HTTPExtractor struct {
 	ProducesType types.Type
 }
 
+// HTTPRouteArgs renders one route's handler arguments for display: the
+// graph key for dependencies, the produced type marked "(extracted)" for
+// extractor parameters. Shared by `servo graph`'s converter and the emitted
+// Graph() method so both surfaces agree.
+func HTTPRouteArgs(hr *HTTPRoute) []string {
+	var out []string
+	for _, arg := range hr.Args {
+		if arg.Extractor != nil {
+			out = append(out, arg.Extractor.Produces.String()+" (extracted)")
+			continue
+		}
+		out = append(out, arg.Node.Key.String())
+	}
+	return out
+}
+
+// HTTPUseScope renders what one servo.Use attachment wraps: "server",
+// "group <name>", or "route <METHOD /pattern>" lists.
+func HTTPUseScope(u *HTTPUse) string {
+	switch {
+	case len(u.Decl.Routes) > 0:
+		var pats []string
+		for _, sel := range u.Decl.Routes {
+			pats = append(pats, sel.Pattern)
+		}
+		return "route " + strings.Join(pats, ", ")
+	case len(u.Decl.Groups) > 0:
+		return "group " + strings.Join(u.Decl.Groups, ", ")
+	default:
+		return "server"
+	}
+}
+
 // resolveHTTP resolves the config key, the extractors, the middleware and
 // every served handler dependency through the ordinary resolveKey
 // recursion, so unresolved keys render with the same needed-by chains as
