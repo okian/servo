@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -91,13 +92,26 @@ const httpMainSrc = `
 package main
 `
 
+var (
+	stdPkgMu    sync.Mutex
+	stdPkgCache = map[string]*packages.Package{}
+)
+
+// loadStdPkg memoizes by path: net/http is the heaviest thing these tests
+// load, and loading it once instead of per-test keeps the package fast.
 func loadStdPkg(t *testing.T, path string) *packages.Package {
 	t.Helper()
+	stdPkgMu.Lock()
+	defer stdPkgMu.Unlock()
+	if p, ok := stdPkgCache[path]; ok {
+		return p
+	}
 	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedDeps | packages.NeedImports}
 	pkgs, err := packages.Load(cfg, path)
 	if err != nil || len(pkgs) != 1 {
 		t.Fatalf("load %s: %v", path, err)
 	}
+	stdPkgCache[path] = pkgs[0]
 	return pkgs[0]
 }
 

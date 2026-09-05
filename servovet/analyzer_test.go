@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/tools/go/analysis"
@@ -55,17 +56,33 @@ type importNotFoundError struct{ path string }
 
 func (e *importNotFoundError) Error() string { return "pkgImporter: package not found: " + e.path }
 
+// The servo package now imports net/http; loading it type-checks that whole
+// tree, and every runOn call did it, so load it once for the binary. The
+// result is read-only.
+var (
+	servoPkgOnce sync.Once
+	servoPkgVal  *packages.Package
+	servoPkgErr  string
+)
+
 func loadServoPackage(t *testing.T) *packages.Package {
 	t.Helper()
-	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports}
-	pkgs, err := packages.Load(cfg, graph.ServoPackagePath)
-	if err != nil {
-		t.Fatalf("load servo package: %v", err)
+	servoPkgOnce.Do(func() {
+		cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedImports}
+		pkgs, err := packages.Load(cfg, graph.ServoPackagePath)
+		switch {
+		case err != nil:
+			servoPkgErr = err.Error()
+		case len(pkgs) != 1 || pkgs[0].Types == nil:
+			servoPkgErr = "expected exactly one loaded servo package"
+		default:
+			servoPkgVal = pkgs[0]
+		}
+	})
+	if servoPkgErr != "" {
+		t.Fatalf("load servo package: %s", servoPkgErr)
 	}
-	if len(pkgs) != 1 || pkgs[0].Types == nil {
-		t.Fatalf("expected exactly one loaded servo package, got %d", len(pkgs))
-	}
-	return pkgs[0]
+	return servoPkgVal
 }
 
 // runOn type-checks src as one file and runs the analyzer directly against

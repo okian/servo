@@ -6,6 +6,7 @@ import (
 	"go/token"
 	"go/types"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -351,13 +352,32 @@ func checkScopeFixture(t *testing.T) (*types.Package, *token.FileSet, []*package
 	return pkg, fset, pkgs, accepted
 }
 
+// loadPkgCache memoizes packages.Load by import path across the whole test
+// binary. The scope, http and config fixtures each call loadPkg dozens of
+// times for the same few paths, and since servo now imports net/http, one
+// load type-checks that entire tree — repeated ~70×, it pushed the package
+// past the default 600s test timeout under -race. A loaded *packages.Package
+// is read-only after loading, so sharing one across tests (which only ever
+// read its type info) is safe and gives every test the same object identity
+// it needed anyway.
+var (
+	loadPkgMu    sync.Mutex
+	loadPkgCache = map[string]*packages.Package{}
+)
+
 func loadPkg(t *testing.T, path string) *packages.Package {
 	t.Helper()
+	loadPkgMu.Lock()
+	defer loadPkgMu.Unlock()
+	if p, ok := loadPkgCache[path]; ok {
+		return p
+	}
 	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedDeps | packages.NeedImports}
 	pkgs, err := packages.Load(cfg, path)
 	if err != nil || len(pkgs) != 1 {
 		t.Fatalf("load %s: %v", path, err)
 	}
+	loadPkgCache[path] = pkgs[0]
 	return pkgs[0]
 }
 
