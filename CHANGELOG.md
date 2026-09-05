@@ -71,11 +71,24 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   needing only the Use line, the configurable ones reading a `*XxxConfig` node the user's own
   provider supplies.
 
+  The feature is visible everywhere the graph is: apps declaring `servo.HTTP()` gain a generated
+  **`HTTPHandler(group string) http.Handler`** — each group's routed, middleware-wrapped handler,
+  so `httptest` drives the emitted stack without binding a listener (the one addition to the
+  generated public method set, and only for HTTP apps); `servo list` ends with the module's
+  routing table; `servo graph --format=json` and the generated `Graph()` carry an `http` object
+  (groups, routes with args, `Use` attachments, extractors — a schema **addition** consumers of
+  the JSON should note); and `servo-vet` flags malformed `//servo:` comments in the editor with
+  the same grammar `generate` enforces.
+
   Additive: an app with no `servo.HTTP()` generates byte-identical output, and the generated
   public method set keeps every signature (`Ready`'s report gains one node per group — content,
-  not signature — only for apps that declare the server). Worked example with a three-listener
-  end-to-end suite: `examples/http`; reference: [HTTP routes](docs/reference/http.md) and
-  [middleware package](docs/reference/middleware.md).
+  not signature — only for apps that declare the server). Worked examples: `examples/http` (three
+  listeners, end to end) and the tutorial's fourth injector `cmd/ordersservo` with
+  [chapter 13, "The transport you don't write"](docs/tutorial/13-directive-transport.md) — the
+  hand-written API rebuilt as directives, its middleware chain attached via `servo.Use` (the
+  existing Tracer/Metrics/RateLimiter types unchanged), auth split into a middleware and a claims
+  extractor, tested through `HTTPHandler` with mocked infrastructure. Reference:
+  [HTTP routes](docs/reference/http.md) and [middleware package](docs/reference/middleware.md).
 
 - **Build flags, and one generated file per build configuration.** The seven commands that load
   packages (`generate`, `check`, `graph`, `explain`, `why`, `list`, `doctor`) now accept `--tags`,
