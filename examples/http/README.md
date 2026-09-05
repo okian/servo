@@ -20,14 +20,19 @@ func Order(ctx context.Context, req *OrderReq, st *store.Store) (servo.Json[*Ord
 
 The spec ([`cmd/app/spec.go`](cmd/app/spec.go)) opts in with
 `servo.HTTP(...)`, declares the two extra groups, and attaches middleware —
-`RequestID` around every group, `Auth` around the internal one only:
+shipped and hand-written alike: `Recover` and `RequestID` from servo's
+[`middleware`](../../docs/reference/middleware.md) package wrap every group,
+the shipped `CORS` (configured by `api.NewCORSConfig`) wraps only the public
+default group, and the module's own `mw.Auth` guards the internal one:
 
 ```go
 servo.Build(
 	servo.HTTP(
 		servo.Group("telemetry"),
 		servo.Group("internal"),
-		servo.Use[*mw.RequestID](),
+		servo.Use[*middleware.Recover](),
+		servo.Use[*middleware.RequestID](),
+		servo.Use[*middleware.CORS](servo.Group("default")),
 		servo.Use[*mw.Auth](servo.Group("internal")),
 	),
 	servo.Extract[*mw.UserExtractor](),
@@ -48,6 +53,8 @@ What the routes demonstrate:
 | `GET /healthz` (`telemetry`) | a route on its own listener — absent from the public port — still wrapped by the server-level middleware |
 | `POST /replicate/{shard}` (`internal`) | a group behind its own auth middleware, combining a path binding with an extracted parameter |
 | `POST /feedback` | `form:"..."` binding, urlencoded and multipart |
+| `GET /version` | a `servo.Text` response — the family is not only JSON |
+| `GET /old-orders` | `servo.Redirect` paired with `servo.Status.FOUND` in the error position |
 
 [`mw/mw.go`](mw/mw.go) holds the middleware (context mutation, pre/post
 behavior, group guarding) and the extractor.

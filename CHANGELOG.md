@@ -57,10 +57,25 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   type `V` into per-request values that fail through the same status contract before the handler
   runs; a type with both a provider and an extractor is a generate-time error.
 
+  Responses are a sealed family, not only JSON: `servo.Response` is the base every kind implements
+  (encoding lives in the runtime's `servo.WriteResponse`, so new kinds never touch the generator),
+  with typed `servo.Json[T]`/`servo.Xml[T]` wrappers keeping the schema in the signature and
+  `servo.Text`, `servo.HTML`, `servo.Blob`, `servo.Stream` and `servo.Redirect` constructing the
+  rest — a redirect pairs with a 3xx status in the error position, which now flows through the
+  success path (`< 400`). A `nil` error is always a 200; a `nil` response is always the code
+  alone, making `return nil, servo.Status.NO_CONTENT` the 204 idiom.
+
+  The commodity middleware ships in `github.com/okian/servo/v3/middleware` (stdlib-only): Recover,
+  CORS, RateLimit (per-key token bucket with `Retry-After`), BodyLimit, AccessLog, Timeout,
+  RequestID and Gzip — ordinary graph nodes for the existing `servo.Use`, the zero-config ones
+  needing only the Use line, the configurable ones reading a `*XxxConfig` node the user's own
+  provider supplies.
+
   Additive: an app with no `servo.HTTP()` generates byte-identical output, and the generated
   public method set keeps every signature (`Ready`'s report gains one node per group — content,
   not signature — only for apps that declare the server). Worked example with a three-listener
-  end-to-end suite: `examples/http`; reference: [HTTP routes](docs/reference/http.md).
+  end-to-end suite: `examples/http`; reference: [HTTP routes](docs/reference/http.md) and
+  [middleware package](docs/reference/middleware.md).
 
 - **Build flags, and one generated file per build configuration.** The seven commands that load
   packages (`generate`, `check`, `graph`, `explain`, `why`, `list`, `doctor`) now accept `--tags`,

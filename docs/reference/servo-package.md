@@ -47,8 +47,11 @@ having the method.
 | [`DefaultStopBudget`](#defaultstopbudget) | var | The budget every stop call gets |
 | [`Graph`](#graph-and-graphnode), [`GraphNode`](#graph-and-graphnode), [`GraphScope`](#graphscope) | types | The resolved graph as data |
 | [`StartupReport`](#startupreport-and-startupnode), [`StartupNode`](#startupreport-and-startupnode) | types | Per-node `Init` timings |
-| [`Json`](#json-and-json) | type | A `//servo:` handler's response wrapper |
-| [`JSON`](#json-and-json) | func | Constructs a `Json` |
+| [`Response`](#the-response-family) | type | The sealed base every response kind implements |
+| [`Json`](#the-response-family), [`Xml`](#the-response-family) | types | Typed response wrappers — the signature carries the schema |
+| [`JSON`](#the-response-family), [`XML`](#the-response-family) | funcs | Construct the typed wrappers |
+| [`Text`](#the-response-family), [`HTML`](#the-response-family), [`Blob`](#the-response-family), [`Redirect`](#the-response-family), [`Stream`](#the-response-family) | funcs | The untyped response kinds |
+| [`WriteResponse`](#the-response-family) | func | Writes any Response; called by generated adapters |
 | [`HTTPStatus`](#httpstatus-and-status) | type | One HTTP status, usable as an error |
 | [`Status`](#httpstatus-and-status) | var | The table of statuses (`Status.NOT_FOUND`, …) |
 | [`HTTPConfig`](#httpconfig) | type | The emitted servers' listen/TLS/limit config |
@@ -373,21 +376,34 @@ The types a `//servo:` handler and its emitted server exchange. Full semantics �
 grammar, binding rules, and the status contract — live on [HTTP routes](http.md); this is the API
 surface only.
 
-### `Json` and `JSON`
+### The Response family
 
 ```go
-type Json[T any] interface {
-	Value() T
-	// sealed: only servo.JSON constructs one
-}
+type Response interface{ /* sealed */ }
 
-func JSON[T any](v T) Json[T]
+type Json[T any] interface { Response; Value() T }
+type Xml[T any]  interface { Response; Value() T }
+
+func JSON[T any](v T) Json[T]                          // application/json
+func XML[T any](v T) Xml[T]                            // application/xml
+func Text(s string) Response                           // text/plain
+func HTML(s string) Response                           // text/html
+func Blob(contentType string, data []byte) Response    // caller-set type
+func Redirect(url string) Response                     // Location header; pair with a 3xx Status
+func Stream(contentType string, r io.Reader) Response  // io.Copy body
+
+func WriteResponse(w http.ResponseWriter, code int, res Response) error
 ```
 
-`Json[T]` is the response wrapper in a handler's signature; `JSON` wraps the payload the emitted
-adapter encodes as `application/json`. It is an interface so the error path can `return nil, err`,
-and sealed so a non-nil value always came from `JSON`. The constructor is spelled `JSON` because Go
-permits one identifier per name per package, and the type owns `Json`.
+`Response` is what a handler's first result must satisfy. Its method is unexported, so every value
+came from one of these constructors — which is why the family can grow without the generator
+changing. The typed wrappers keep the payload schema in the signature; the untyped kinds declare
+plain `servo.Response`. All are interfaces, so the error path is `return nil, err`, and a nil
+response written through `WriteResponse` produces the status code alone (the 204 idiom:
+`return nil, servo.Status.NO_CONTENT`). `WriteResponse` exists because generated adapters live in
+the user's package, where the sealed method is unreachable. The typed constructors are spelled
+`JSON`/`XML` because Go permits one identifier per name per package, and the types own
+`Json`/`Xml`.
 
 ### `HTTPStatus` and `Status`
 

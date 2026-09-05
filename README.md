@@ -314,10 +314,16 @@ Routes split across **listener groups** — one port each — with an optional t
 serve different subsets; a token no spec declares is a generate-time error. **Middleware** is an
 ordinary graph node with a `Middleware(next http.Handler) http.Handler` method, attached in the
 spec at server, group or route level (`servo.Use[*mw.Auth](servo.Group("internal"))`), wrapping in
-declaration order, outermost first. And an **extractor** (`servo.Extract[*mw.UserExtractor]()`,
-with an `Extract(r *http.Request) (*auth.User, error)` method) turns every handler parameter of
-its result type into a per-request value — a missing credential becomes a 401 through the same
-status contract before the handler ever runs.
+declaration order, outermost first — and the commodity kinds ship in
+[`middleware`](https://okian.github.io/servo/reference/middleware.html): Recover, CORS, RateLimit,
+BodyLimit, AccessLog, Timeout, RequestID, Gzip, the zero-config ones needing only the `Use` line.
+An **extractor** (`servo.Extract[*mw.UserExtractor]()`, with an
+`Extract(r *http.Request) (*auth.User, error)` method) turns every handler parameter of its result
+type into a per-request value — a missing credential becomes a 401 through the same status
+contract before the handler ever runs. Responses aren't only JSON: the sealed family also covers
+`servo.XML`, `servo.Text`, `servo.HTML`, `servo.Blob`, `servo.Stream` and
+`servo.Redirect(url)` + `servo.Status.FOUND`, with `nil, nil` an empty 200 and
+`nil, servo.Status.NO_CONTENT` a 204.
 
 The runnable version is [`examples/http`](./examples/http); the full contract — signature rules,
 binding table, status semantics, lifecycle — is documented at
@@ -645,7 +651,8 @@ internal/route/    //servo: HTTP directive scan and validation
 internal/resolve/  roots → closure → order, levels, diagnostics
 internal/emit/     source emission, import manager, name allocator
 internal/render/   text, JSON, DOT, Mermaid graph renderers
-servo/             markers + small runtime (reports, stop budget, HTTP types)
+servo/             markers + small runtime (reports, stop budget, HTTP types, responses)
+middleware/        shipped HTTP middleware: Recover, CORS, RateLimit, BodyLimit, …
 servotest/         NoLeaks, Recorder, AssertStopOrder, Timeout, Linger, PanicReporter
 examples/basic/    a complete, runnable example (separate module)
 examples/scoped/   keyed, refcounted instances + the race suite (separate module)

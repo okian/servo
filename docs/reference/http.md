@@ -124,6 +124,11 @@ server → group → route — the first `Use` in the spec is the outermost wrap
 hand-written `recover → limiter → tracer → mux` chain. Handlers and extractors run innermost, so
 they see every context value the middleware planted.
 
+The commodity middleware ships in
+[`github.com/okian/servo/v3/middleware`](middleware.md) — Recover, CORS, RateLimit, BodyLimit,
+AccessLog, Timeout, RequestID, Gzip — as ordinary graph nodes: the zero-config ones need only the
+`Use` line, the configurable ones read a `*XxxConfig` node your own provider supplies.
+
 ## Extractors — `servo.Extract`
 
 An extractor turns a handler parameter into a **typed per-request value**. It is a graph node with
@@ -170,8 +175,27 @@ func Name(ctx context.Context [, req *ReqT] [, deps...]) (servo.Json[T], error)
   precedence, same diagnostics, same needed-by chains. Dependencies must be singletons: a scoped
   type is rejected with the [widening](scopes.html) rule's reasoning, and the fix is the same —
   depend on the scope's accessor interface and `Acquire(ctx)` per request.
-- The result is exactly `(servo.Json[T], error)`. `Json` is an interface, so the error path is a
-  plain `return nil, err`.
+- The result is `(R, error)` where `R` is a member of the sealed response family: the typed
+  wrappers `servo.Json[T]` / `servo.Xml[T]` (the signature carries the schema), or plain
+  `servo.Response` when the handler picks its encoding at runtime. All are interfaces, so the
+  error path is a plain `return nil, err`.
+
+## Responses
+
+Every kind is constructed in the handler and encoded by the runtime, so the emitted adapter is the
+same for all of them:
+
+| Return | Wire |
+|---|---|
+| `servo.JSON(v)` | `application/json` |
+| `servo.XML(v)` | `application/xml; charset=utf-8` |
+| `servo.Text(s)` | `text/plain; charset=utf-8` |
+| `servo.HTML(s)` | `text/html; charset=utf-8` |
+| `servo.Blob(ct, data)` | caller's content type (`application/octet-stream` when empty) |
+| `servo.Stream(ct, r)` | `io.Copy` of the reader — files, pipes |
+| `servo.Redirect(url), servo.Status.FOUND` | `Location` header; the 3xx status flows through the success path |
+| `nil, servo.Status.NO_CONTENT` | status only, no body — a nil response always means "code alone" |
+| `nil, nil` | an empty 200 — a nil error always means 200 |
 
 ## Request binding
 
