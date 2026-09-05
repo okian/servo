@@ -284,3 +284,31 @@ func wire() {
 		t.Fatalf("got %d diagnostics, want 6: %v", len(got), got)
 	}
 }
+
+// A malformed //servo: directive gets an in-editor squiggle, mirroring the
+// generate-time rejection — the reserved prefix must never silently no-op,
+// and the editor is where the typo is cheapest to fix.
+func TestFlagsMalformedDirectives(t *testing.T) {
+	const src = `package fixture
+
+import "context"
+
+type Resp struct{}
+
+//servo:pots /broken
+func Broken(ctx context.Context) (*Resp, error) { return nil, nil }
+
+//servo:get /fine telemetry
+func Fine(ctx context.Context) (*Resp, error) { return nil, nil }
+
+// an ordinary comment mentioning //servo: mid-line is not a directive
+func Unrelated() {}
+`
+	got := runOn(t, src)
+	if len(got) != 1 {
+		t.Fatalf("got %d diagnostics, want 1: %v", len(got), got)
+	}
+	if !strings.Contains(got[0], `unknown //servo: directive "pots"`) {
+		t.Fatalf("diagnostic = %q", got[0])
+	}
+}

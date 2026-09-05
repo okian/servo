@@ -110,6 +110,21 @@ func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagno
 	return routes, diags
 }
 
+// CheckDirectiveComment validates one comment line against the //servo:
+// grammar (method, pattern, optional group, ServeMux pattern syntax).
+// Non-directive lines pass. servo-vet uses this for in-editor feedback;
+// the authoritative check — including handler validation and cross-route
+// conflicts — runs in Scan.
+func CheckDirectiveComment(text string) (problem string, ok bool) {
+	if !strings.HasPrefix(text, directivePrefix) {
+		return "", true
+	}
+	if _, diag := parseDirective(text, token.Position{}); diag != nil {
+		return diag.Message, false
+	}
+	return "", true
+}
+
 // firstDirective finds the first //servo: line in file, for the
 // version-mismatch diagnostic above.
 func firstDirective(pkg *packages.Package, file *ast.File) (token.Position, bool) {

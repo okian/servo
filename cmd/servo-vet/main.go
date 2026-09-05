@@ -25,6 +25,7 @@ import (
 
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
+	"github.com/okian/servo/v3/internal/route"
 )
 
 var Analyzer = &analysis.Analyzer{
@@ -81,6 +82,7 @@ var markerNames = map[string]bool{
 
 func run(pass *analysis.Pass) (any, error) {
 	checkScopeKeyReceivers(pass)
+	checkDirectiveComments(pass)
 
 	for _, file := range pass.Files {
 		if load.FileRequiresBuildTag(file, load.BuildTag) {
@@ -102,6 +104,22 @@ func run(pass *analysis.Pass) (any, error) {
 		})
 	}
 	return nil, nil
+}
+
+// checkDirectiveComments mirrors `servo generate`'s reserved-prefix rule in
+// the editor: any //servo: comment that fails the directive grammar gets a
+// diagnostic where the typo is cheapest to fix. Handler-shape and
+// cross-route checks stay with generate, which has the resolved module.
+func checkDirectiveComments(pass *analysis.Pass) {
+	for _, file := range pass.Files {
+		for _, group := range file.Comments {
+			for _, c := range group.List {
+				if problem, ok := route.CheckDirectiveComment(c.Text); !ok {
+					pass.Reportf(c.Pos(), "%s", problem)
+				}
+			}
+		}
+	}
 }
 
 // markerFuncCalled reports the servo marker function call.Fun resolves to,
