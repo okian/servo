@@ -10,9 +10,12 @@ import (
 	"fmt"
 	"go/parser"
 	"go/token"
+	"go/types"
+	"os"
 	"sort"
 	"strings"
 
+	"golang.org/x/tools/go/gcexportdata"
 	"golang.org/x/tools/go/packages"
 
 	"github.com/okian/servo/v3/internal/graph"
@@ -60,22 +63,64 @@ func Load(cfg Config) (*Loaded, error) {
 	if pattern == "" {
 		pattern = "./..."
 	}
-	pcfg := &packages.Config{
-		Dir: cfg.Dir,
-		Mode: packages.NeedName | packages.NeedFiles | packages.NeedImports | packages.NeedDeps |
-			packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedModule,
-		BuildFlags: cfg.Build.Args(),
-	}
+	var overlay map[string][]byte
 	if cfg.Build.Overlay != "" {
-		overlay, err := readOverlay(cfg.Build.Overlay)
+		o, err := readOverlay(cfg.Build.Overlay)
 		if err != nil {
 			return nil, err
 		}
-		pcfg.Overlay = overlay
+		overlay = o
 	}
-	roots, err := packages.Load(pcfg, pattern)
+
+	// Two go/packages calls. The first is the import graph alone, no
+	// type-checking, and exists to name the packages the second must
+	// type-check from source: the main module and every other module in its
+	// dependency tree. Those are the packages that can carry servo markers,
+	// Include'd marker sets and //servo: directives, all of which live in
+	// syntax. The standard library can carry none of them, and it is most
+	// of any closure — the runtime package alone pulls in net/http's
+	// ~180-package tree. Reading it from export data instead of
+	// type-checking it from source is the difference between a load that
+	// takes a quarter of a second and one that takes two, and under -race,
+	// between a test suite that finishes and one that times out.
+	//
+	// Everything still shares one type-checking session: go/packages reads
+	// export data into the same universe the source packages are checked
+	// against, so identity-based checks like types.Implements stay valid
+	// across the boundary.
+	graphCfg := &packages.Config{
+		Dir:        cfg.Dir,
+		Mode:       packages.NeedName | packages.NeedImports | packages.NeedDeps | packages.NeedModule,
+		BuildFlags: cfg.Build.Args(),
+		Overlay:    overlay,
+	}
+	graphRoots, err := packages.Load(graphCfg, pattern)
 	if err != nil {
 		return nil, fmt.Errorf("load: %w", err)
+	}
+	rootIDs, fromSource := sourcePatterns(graphRoots)
+
+	// Without NeedDeps, go/packages type-checks from source only the
+	// packages the patterns name and reads their dependencies from export
+	// data — so every package that needs syntax is passed as a pattern.
+	pcfg := &packages.Config{
+		Dir: cfg.Dir,
+		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles | packages.NeedImports |
+			packages.NeedTypes | packages.NeedSyntax | packages.NeedTypesInfo | packages.NeedModule | packages.NeedExportFile,
+		BuildFlags: cfg.Build.Args(),
+		Overlay:    overlay,
+	}
+	pkgs, err := packages.Load(pcfg, append([]string{pattern}, fromSource...)...)
+	if err != nil {
+		return nil, fmt.Errorf("load: %w", err)
+	}
+	// Roots are the packages the caller's pattern matched — not the
+	// dependency packages the second call was also asked for.
+	var roots []*packages.Package
+	for _, p := range pkgs {
+		if rootIDs[p.ID] {
+			roots = append(roots, p)
+		}
 	}
 	// Package errors are not fatal here: on a fresh checkout, before the
 	// first `servo generate` has ever run, the injector's own package
@@ -107,6 +152,9 @@ func Load(cfg Config) (*Loaded, error) {
 	for _, r := range roots {
 		walk(r)
 	}
+	if err := completeExportData(all, fset); err != nil {
+		return nil, err
+	}
 
 	servoPkg := byPath[graph.ServoPackagePath]
 	if servoPkg == nil {
@@ -120,6 +168,90 @@ func Load(cfg Config) (*Loaded, error) {
 	}
 
 	return &Loaded{Tags: cfg.Build.TagList(), Fset: fset, All: all, ByPath: byPath, Roots: roots, ServoPkg: servoPkg}, nil
+}
+
+// sourcePatterns walks the import graph under roots and returns the root
+// IDs plus the import paths of every package in a module — the main module
+// and its dependencies alike, the standard library excluded — that the
+// roots do not already cover. Those are the packages Load type-checks from
+// source, because they are the ones that can carry servo markers: export
+// data holds types, not syntax. Sorted, so the go command sees the same
+// argument list for the same module every time.
+func sourcePatterns(roots []*packages.Package) (rootIDs map[string]bool, extra []string) {
+	rootIDs = make(map[string]bool, len(roots))
+	for _, r := range roots {
+		rootIDs[r.ID] = true
+	}
+	seen := make(map[string]bool)
+	var walk func(p *packages.Package)
+	walk = func(p *packages.Package) {
+		if seen[p.ID] {
+			return
+		}
+		seen[p.ID] = true
+		if p.Module != nil && !rootIDs[p.ID] {
+			extra = append(extra, p.PkgPath)
+		}
+		for _, dep := range p.Imports {
+			walk(dep)
+		}
+	}
+	for _, r := range roots {
+		walk(r)
+	}
+	sort.Strings(extra)
+	return rootIDs, extra
+}
+
+// completeExportData finishes the packages go/packages left partial. It
+// reads a dependency's own export data only when a source package imports
+// it directly; everything deeper exists in the session only as the
+// declarations some direct import happened to reference. The candidate
+// scan covers every loaded package — the standard library included, as
+// the resolution reference promises — so each package the load left
+// incomplete is read from its own export file here, into the same
+// universe, which keeps every type object's identity. Packages checked
+// from source are complete already and are never re-read.
+func completeExportData(all []*packages.Package, fset *token.FileSet) error {
+	universe := make(map[string]*types.Package, len(all))
+	for _, p := range all {
+		if p.Types != nil {
+			universe[p.PkgPath] = p.Types
+		}
+	}
+	for _, p := range all {
+		if p.Types == nil || p.Types.Complete() || p.TypesInfo != nil || p.ExportFile == "" {
+			continue
+		}
+		if err := readExportData(p, fset, universe); err != nil {
+			return fmt.Errorf("load: export data for %s: %w", p.PkgPath, err)
+		}
+	}
+	return nil
+}
+
+func readExportData(p *packages.Package, fset *token.FileSet, universe map[string]*types.Package) error {
+	f, err := os.Open(p.ExportFile)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = f.Close() }()
+	// `go list -export` still hands back an archive, which only NewReader
+	// knows how to open, and go/packages reads these same files the same
+	// way. The deprecation is a Go 1.29 notice: once go list writes bare
+	// export files, this becomes Read(f, ...) and the directive goes.
+	r, err := gcexportdata.NewReader(f) //nolint:staticcheck // archive export files, see above
+	if err != nil {
+		return err
+	}
+	// Read completes the existing, partial *types.Package rather than
+	// creating a second one, which is the whole point.
+	tpkg, err := gcexportdata.Read(r, fset, universe, p.PkgPath)
+	if err != nil {
+		return err
+	}
+	p.Types = tpkg
+	return nil
 }
 
 // isInjectorInAnotherConfiguration reports whether a package that is not an

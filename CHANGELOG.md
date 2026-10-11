@@ -185,6 +185,19 @@ companion files; nothing it changes is breaking under the rules above. A graph d
   prints route positions through it too, where it used to print them absolute.
   Regenerate to pick up the new form — `examples/http` and the tutorial's `ordersservo`
   injector are regenerated here.
+- **The loader reads the standard library from export data.** `Load` used to type-check
+  every package in the import closure from source, standard library included — and since
+  the runtime package imports `net/http`, that closure is ~180 stdlib packages for every
+  module. It now type-checks the main module and every other module in the dependency
+  tree from source (the packages that can carry markers, `Include`d sets and
+  directives) and reads the standard library from the compiler's export data, completing
+  each package the first pass left partial so the candidate scan still covers every
+  loaded package. One type-checking session, the same identities, the same bindings; a
+  load that took two seconds takes a quarter of one, and the test suite that timed out
+  under `-race` in CI finishes in a few minutes. The cost is the coupling every
+  go/packages-based tool has: `golang.org/x/tools` must understand the running
+  toolchain's export format, so it is bumped to v0.52.0 (Go 1.27.2 moved the format to
+  version 5, which v0.49.0 could not read).
 
 ## [3.3.0] - 2026-08-30
 
