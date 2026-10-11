@@ -35,7 +35,7 @@ jobs:
       # version is pinned rather than floating on the action's default.
       - uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13
+          version: v2.14
           working-directory: examples/tutorial
 
   build-and-unit-test:

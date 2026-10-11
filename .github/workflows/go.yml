@@ -169,7 +169,7 @@ jobs:
       # The `$` below anchors on end-of-line, which is the whole fix.
       - name: Install golangci-lint
         env:
-          GOLANGCI_VERSION: 2.13.2
+          GOLANGCI_VERSION: 2.14.0
         run: |
           set -euo pipefail
           tarball="golangci-lint-${GOLANGCI_VERSION}-linux-amd64.tar.gz"
