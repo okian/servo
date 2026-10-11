@@ -173,6 +173,18 @@ companion files; nothing it changes is breaking under the rules above. A graph d
   singleton is built by New, where the loaded value is in scope) — only a scoped
   member taking the config type directly is refused. The check moved from
   traversal time to `checkConfigs`, where membership is settled.
+- **Positions outside the module are written by import path.** A provider that lives
+  in another module — `middleware.NewRecover` for every graph that uses the shipped
+  middleware — used to land in `servo_gen.go` as the absolute path of the module cache or
+  replace directory it was read from, so `servo check` on any machine but the one that
+  ran `servo generate` reported the file stale. The generated file, `App.Graph()` and
+  `servo graph` now write such a position as the declaring package's import path plus
+  the file name (`github.com/okian/servo/v3/middleware/recover.go:17:6`), and a
+  standard-library one as `$GOROOT/src/…`; positions inside the module stay relative to
+  its root. One renderer (`load.Positions`) serves all three producers, and `servo graph`
+  prints route positions through it too, where it used to print them absolute.
+  Regenerate to pick up the new form — `examples/http` and the tutorial's `ordersservo`
+  injector are regenerated here.
 
 ## [3.3.0] - 2026-08-30
 

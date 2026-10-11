@@ -10,7 +10,6 @@ import (
 	"github.com/okian/servo/v3/internal/emit"
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
-	"github.com/okian/servo/v3/internal/render"
 	"github.com/okian/servo/v3/internal/resolve"
 )
 
@@ -102,7 +101,6 @@ func runConfig(cfg load.Config, jsonOut bool) error {
 	}
 
 	withFile := p.spec.ConfigFile != nil
-	modRoot := moduleRoot(p.spec)
 	var rows []configSettingJSON
 	for _, n := range resolved.Configs {
 		for _, f := range n.Config.Fields {
@@ -112,7 +110,7 @@ func runConfig(cfg load.Config, jsonOut bool) error {
 				Required: f.Required,
 				Secret:   f.Secret,
 				Field:    n.Config.TypeName + "." + f.FieldName,
-				Pos:      render.RelTo(modRoot, f.Pos.String()),
+				Pos:      p.spec.Positions.String(f.Pos),
 			}
 			if withFile {
 				row.FileKey = n.Config.Section + "." + f.FileKey

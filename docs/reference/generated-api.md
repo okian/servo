@@ -64,8 +64,11 @@ Every generated file documents the graph it was generated from:
 
 `[Ln]` is the [level](resolution.md#construction-order-and-levels), `binding` is why that provider
 was chosen, and the position is **relative to the module root** so the file is byte-identical across
-checkouts. This block is the reason a reviewer can see the effect of a signature change in the diff:
-a new dependency shows up here, not just in a call site.
+checkouts. A provider from another module is named by its package's import path instead
+(`github.com/okian/servo/v3/middleware/recover.go:17:6`), and one from the standard library by
+`$GOROOT/src/…`, so where a machine keeps its dependencies never reaches the file either. This block
+is the reason a reviewer can see the effect of a signature change in the diff: a new dependency
+shows up here, not just in a call site.
 
 A [supplied value](spec.md#value) is listed first, at `[L0]`, with the `servo.Value[…]()` call site
 in place of a provider:

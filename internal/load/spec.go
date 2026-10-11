@@ -24,13 +24,17 @@ import (
 // read as syntax — nothing here executes them.
 type Spec struct {
 	InjectorPkg *packages.Package
-	File        *ast.File
-	Pos         token.Position
-	Roots       []RootDecl
-	Binds       []BindDecl
-	Overrides   []BindDecl
-	Scopes      []ScopeDecl
-	Values      []ValueDecl
+	// Positions renders positions the way the generated file commits them
+	// — see Positions. Set by FindSpecs; nil on a Spec built by hand, which
+	// leaves positions as they are.
+	Positions *Positions
+	File      *ast.File
+	Pos       token.Position
+	Roots     []RootDecl
+	Binds     []BindDecl
+	Overrides []BindDecl
+	Scopes    []ScopeDecl
+	Values    []ValueDecl
 	// ConfigFile is the one servo.ConfigFile("...") declaration, or nil for
 	// an env-only injector.
 	ConfigFile *ConfigFileDecl
@@ -180,6 +184,7 @@ func FindSpecs(l *Loaded) ([]*Spec, error) {
 			return nil, err
 		}
 		s.Variant = l.Tags
+		s.Positions = l.Positions(s.InjectorPkg)
 		constraint, err := GeneratedConstraint(s.File, l.Tags)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", s.Pos, err)

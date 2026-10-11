@@ -292,9 +292,13 @@ CI gate:
   order can't perturb it.
 - Ambiguity candidate lists are sorted the same way.
 - Positions embedded in the generated file are rewritten relative to the module root, so two
-  checkouts at different absolute paths produce identical files. `servo graph` applies the same
-  rewriting, because its output has to match the generated `App.Graph()` exactly; `explain`, `why`
-  and `list` print absolute paths, which are for you and your editor rather than for a diff.
+  checkouts at different absolute paths produce identical files. A provider outside the module — in
+  a dependency, or in the standard library — is written as its package's import path plus the file
+  name (`github.com/okian/servo/v3/middleware/recover.go:17:6`, `$GOROOT/src/net/http/server.go:…`),
+  never as the module cache or replace directory it was read from, so `servo check` on another
+  machine agrees too. `servo graph` applies the same rewriting, because its output has to match the
+  generated `App.Graph()` exactly; `explain`, `why` and `list` print absolute paths, which are for
+  you and your editor rather than for a diff.
 
 One caveat: two different servo versions may legitimately produce two different, both correct,
 files. Pin one for the whole project with `go get -tool github.com/okian/servo/v3/cmd/servo`, which

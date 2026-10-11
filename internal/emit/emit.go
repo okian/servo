@@ -8,7 +8,6 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -45,6 +44,7 @@ type emitter struct {
 
 	imports    *ImportManager
 	names      *NameAllocator
+	positions  *load.Positions // lazily taken from spec, see posString
 	varName    map[graph.Key]string
 	servoAlias string
 
@@ -292,17 +292,24 @@ func (e *emitter) scopeHeader() string {
 	return b.String()
 }
 
-// posString renders pos relative to the injector's module root when
-// possible, so the generated file is byte-identical across checkouts at
-// different absolute paths rather than embedding one machine's filesystem
-// layout in a file meant to be committed to VCS.
+// posString renders pos the way the committed file must carry it — see
+// load.Positions: relative to the module root inside the module, by import
+// path outside it, never as one machine's filesystem layout. A Spec built
+// by hand (every emit test's) has no Positions, so one is made from its
+// module alone; positions inside the module still come out relative, and
+// nothing else is rewritten.
 func (e *emitter) posString(pos token.Position) string {
-	if mod := e.spec.InjectorPkg.Module; mod != nil && mod.Dir != "" {
-		if rel, err := filepath.Rel(mod.Dir, pos.Filename); err == nil && !strings.HasPrefix(rel, "..") {
-			pos.Filename = filepath.ToSlash(rel)
+	if e.positions == nil {
+		e.positions = e.spec.Positions
+		if e.positions == nil {
+			modRoot := ""
+			if mod := e.spec.InjectorPkg.Module; mod != nil {
+				modRoot = mod.Dir
+			}
+			e.positions = load.NewPositions(modRoot, nil)
 		}
 	}
-	return pos.String()
+	return e.positions.String(pos)
 }
 
 func (e *emitter) constructorName() string {

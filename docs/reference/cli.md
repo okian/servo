@@ -433,9 +433,10 @@ field by field in [servo package](servo-package.md#graph-and-graphnode):
 Two details there are load-bearing, and both exist so a consumer written against one producer works
 against the other. An empty `deps` is `null`, not `[]` — the generated `App.Graph()` emits a Go
 literal, where the empty slice is `nil`, and a CLI that wrote `[]` beside `null` for an equally
-empty `capabilities` was not even self-consistent. And `pos` is relative to the module root, the
-same rewriting emission does, rather than the absolute path `explain` and `list` print: an absolute
-path would embed the machine's filesystem layout in output the generated file has to match.
+empty `capabilities` was not even self-consistent. And `pos` is relative to the module root (or,
+for a provider outside it, its package's import path plus the file name), the same rewriting
+emission does, rather than the absolute path `explain` and `list` print: an absolute path would
+embed the machine's filesystem layout in output the generated file has to match.
 
 **`dot`** — Graphviz, `rankdir=BT`, nodes filled by level and labelled with their capabilities:
 

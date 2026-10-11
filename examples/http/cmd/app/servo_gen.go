@@ -12,16 +12,16 @@
 //	      capabilities: none | binding: sole candidate | mw/mw.go:35:6
 //	[L1] *github.com/okian/servo/v3/middleware.Recover
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/recover.go:17:6
+//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/recover.go:17:6
 //	[L1] *github.com/okian/servo/v3/middleware.RequestID
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/requestid.go:17:6
+//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/requestid.go:17:6
 //	[L1] *github.com/okian/servo/v3/middleware.CORSConfig
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | api/api.go:25:6
 //	[L2] *github.com/okian/servo/v3/middleware.CORS
 //	      deps: *github.com/okian/servo/v3/middleware.CORSConfig
-//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/cors.go:44:6
+//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/cors.go:44:6
 //	[L1] *example.com/servohttp/mw.Auth
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | mw/mw.go:17:6
@@ -711,10 +711,10 @@ func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
 		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:38:6"},
 		{Type: "*example.com/servohttp/mw.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:35:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/recover.go:17:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/requestid.go:17:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/recover.go:17:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/requestid.go:17:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.CORSConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:25:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.CORS", Level: 2, Deps: []string{"*github.com/okian/servo/v3/middleware.CORSConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/cors.go:44:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.CORS", Level: 2, Deps: []string{"*github.com/okian/servo/v3/middleware.CORSConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/cors.go:44:6"},
 		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:17:6"},
 		{Type: "*example.com/servohttp/store.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "store/store.go:22:6"},
 	}, HTTP: &servo.GraphHTTP{

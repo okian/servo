@@ -617,7 +617,7 @@ the form of every position, so the build-time and run-time views can't drift.
 | `Deps` | Direct dependencies, as type strings. `nil`, not `[]`, when there are none — the generated `App.Graph()` emits a Go literal, and `servo graph --format=json` matches it |
 | `Capabilities` | Detected capability names, in a fixed order: `Initializer`, `Runner`, `Drainer`, `Flusher`, `Finalizer`, `Healther`, `Readier` |
 | `Binding` | `explicit bind`, `sole candidate`, `sole implementation`, or `supplied` for a `servo.Value` |
-| `Pos` | The provider's declaration site — or, for a supplied value, the `servo.Value[…]()` call site. Relative to the module root in both producers, so two checkouts at different absolute paths agree |
+| `Pos` | The provider's declaration site — or, for a supplied value, the `servo.Value[…]()` call site. Relative to the module root in both producers, so two checkouts at different absolute paths agree; a provider in another module is named by its package's import path plus the file name, and one in the standard library as `$GOROOT/src/…` |
 | `Scope` | The key type of the scope this node belongs to, or empty for a singleton |
 
 Display-only: type strings are labels, never lookup keys, and there is no path from a `GraphNode`

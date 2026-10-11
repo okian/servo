@@ -3,10 +3,9 @@
 package render
 
 import (
-	"path/filepath"
 	"sort"
-	"strings"
 
+	"github.com/okian/servo/v3/internal/load"
 	"github.com/okian/servo/v3/internal/resolve"
 	"github.com/okian/servo/v3/servo"
 )
@@ -15,38 +14,38 @@ import (
 // generated App.Graph() method returns, so build-time and runtime views
 // share one schema — not by special-casing JSON, but because both paths
 // populate the identical struct.
-// modRoot is the directory positions are reported relative to, so `servo
-// graph --format=json` prints the same strings the generated App.Graph()
-// carries. Empty leaves them absolute, which is what a Resolved built by
-// hand in a test gets.
-func ToGraph(resolved *resolve.Resolved, modRoot string) servo.Graph {
+// positions renders every position the way the generated file commits
+// it (see load.Positions), so `servo graph --format=json` prints the same
+// strings the generated App.Graph() carries. nil leaves them absolute,
+// which is what a Resolved built by hand in a test gets.
+func ToGraph(resolved *resolve.Resolved, positions *load.Positions) servo.Graph {
 	nodes := make([]servo.GraphNode, 0, len(resolved.Order)+len(resolved.Supplied)+len(resolved.Configs))
 	// Supplied values and configs first, at level 0: the app depends on
 	// them before it builds anything.
 	for _, n := range resolved.Supplied {
-		nodes = append(nodes, graphNode(n, 0, "", modRoot))
+		nodes = append(nodes, graphNode(n, 0, "", positions))
 	}
 	for _, n := range resolved.Configs {
-		nodes = append(nodes, graphNode(n, 0, "", modRoot))
+		nodes = append(nodes, graphNode(n, 0, "", positions))
 	}
 	for _, n := range resolved.Order {
-		nodes = append(nodes, graphNode(n, n.Level, "", modRoot))
+		nodes = append(nodes, graphNode(n, n.Level, "", positions))
 	}
 	// Scoped members come after the singletons, each carrying its scope's
 	// key and its level within that scope rather than within the app.
 	var scopes []servo.GraphScope
 	for _, s := range resolved.Scopes {
 		for _, n := range s.Order {
-			nodes = append(nodes, graphNode(n, n.ScopeLevel, s.KeyKey.String(), modRoot))
+			nodes = append(nodes, graphNode(n, n.ScopeLevel, s.KeyKey.String(), positions))
 		}
 		scopes = append(scopes, graphScope(s))
 	}
-	return servo.Graph{Nodes: nodes, Scopes: scopes, HTTP: graphHTTP(resolved.HTTP)}
+	return servo.Graph{Nodes: nodes, Scopes: scopes, HTTP: graphHTTP(resolved.HTTP, positions)}
 }
 
 // graphHTTP mirrors HTTPUseScope/httpRouteArgs in internal/emit — the
 // emitted Graph() method and this converter must render the same data.
-func graphHTTP(plan *resolve.HTTPPlan) *servo.GraphHTTP {
+func graphHTTP(plan *resolve.HTTPPlan, positions *load.Positions) *servo.GraphHTTP {
 	if plan == nil {
 		return nil
 	}
@@ -58,7 +57,7 @@ func graphHTTP(plan *resolve.HTTPPlan) *servo.GraphHTTP {
 			Group:   hr.Route.Group,
 			Handler: hr.Route.Name,
 			Args:    resolve.HTTPRouteArgs(hr),
-			Pos:     hr.Route.Pos.String(),
+			Pos:     positions.String(hr.Route.Pos),
 		})
 	}
 	for _, u := range plan.Uses {
@@ -70,7 +69,7 @@ func graphHTTP(plan *resolve.HTTPPlan) *servo.GraphHTTP {
 	return out
 }
 
-func graphNode(n *resolve.Node, level int, scope, modRoot string) servo.GraphNode {
+func graphNode(n *resolve.Node, level int, scope string, positions *load.Positions) servo.GraphNode {
 	// nil rather than an empty slice, because the generated App.Graph()
 	// writes nil for both — and the doc promises one schema, which a
 	// consumer iterating node.deps finds out about the hard way when `[]`
@@ -84,11 +83,11 @@ func graphNode(n *resolve.Node, level int, scope, modRoot string) servo.GraphNod
 	switch n.Kind {
 	case resolve.NodeSupplied:
 		binding = "supplied"
-		pos = RelTo(modRoot, n.SuppliedPos.String())
+		pos = positions.String(n.SuppliedPos)
 	case resolve.NodeConfig:
-		pos = RelTo(modRoot, n.Config.Pos.String())
+		pos = positions.String(n.Config.Pos)
 	default:
-		pos = RelTo(modRoot, n.Provider.Pos.String())
+		pos = positions.String(n.Provider.Pos)
 	}
 	return servo.GraphNode{
 		Type:         n.Key.String(),
@@ -99,22 +98,6 @@ func graphNode(n *resolve.Node, level int, scope, modRoot string) servo.GraphNod
 		Pos:          pos,
 		Scope:        scope,
 	}
-}
-
-// RelTo trims modRoot off an absolute position, matching what emit's own
-// posString writes into the generated file. Without it the two views of
-// one graph disagree on every position, and one of them embeds the
-// machine's filesystem layout. Exported so every command that prints a
-// position relativizes it with the same rule rather than a private copy.
-func RelTo(modRoot, pos string) string {
-	if modRoot == "" {
-		return pos
-	}
-	rel, err := filepath.Rel(modRoot, pos)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return pos
-	}
-	return filepath.ToSlash(rel)
 }
 
 func graphScope(s *resolve.Scope) servo.GraphScope {

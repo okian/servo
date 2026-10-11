@@ -18,7 +18,7 @@ func runGraph(cfg load.Config, format string) error {
 	if err != nil {
 		return err
 	}
-	g := render.ToGraph(resolved, moduleRoot(p.spec))
+	g := render.ToGraph(resolved, p.spec.Positions)
 
 	switch format {
 	case "", "text":

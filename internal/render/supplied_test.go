@@ -118,7 +118,7 @@ func buildSuppliedResolved(t *testing.T) *resolve.Resolved {
 // builds anything: a consumer walking levels in order must be able to
 // treat "supplied" as already present, not as something to wait for.
 func TestToGraphReportsASuppliedValueAsALevelZeroNode(t *testing.T) {
-	g := ToGraph(buildSuppliedResolved(t), suppliedModRoot)
+	g := ToGraph(buildSuppliedResolved(t), load.NewPositions(suppliedModRoot, nil))
 
 	if len(g.Nodes) == 0 {
 		t.Fatal("no nodes")
@@ -159,7 +159,7 @@ func TestToGraphReportsASuppliedValueAsALevelZeroNode(t *testing.T) {
 // app never builds Flags, so reporting it as borrowed would name a
 // construction that does not exist.
 func TestScopeBorrowsASingletonReachedOnlyByTheKeyExtractor(t *testing.T) {
-	g := ToGraph(buildSuppliedResolved(t), suppliedModRoot)
+	g := ToGraph(buildSuppliedResolved(t), load.NewPositions(suppliedModRoot, nil))
 
 	if len(g.Scopes) != 1 {
 		t.Fatalf("got %d scopes, want 1", len(g.Scopes))
@@ -179,7 +179,7 @@ func TestScopeBorrowsASingletonReachedOnlyByTheKeyExtractor(t *testing.T) {
 // has to survive the round trip with its binding and its relative
 // position intact rather than being special-cased out of one of them.
 func TestJSONCarriesTheSuppliedNode(t *testing.T) {
-	out, err := JSON(ToGraph(buildSuppliedResolved(t), suppliedModRoot))
+	out, err := JSON(ToGraph(buildSuppliedResolved(t), load.NewPositions(suppliedModRoot, nil)))
 	if err != nil {
 		t.Fatalf("JSON: %v", err)
 	}
@@ -195,62 +195,5 @@ func TestJSONCarriesTheSuppliedNode(t *testing.T) {
 	}
 	if strings.Contains(out, suppliedModRoot) {
 		t.Errorf("JSON output embeds the module's absolute directory:\n%s", out)
-	}
-}
-
-// TestRelToMatchesTheGeneratedFilesPositions pins the whole point of
-// relTo: `servo graph --format=json` has to print the strings the
-// generated App.Graph() carries, and emit writes those relative to the
-// module root so the committed file is byte-identical across checkouts at
-// different absolute paths. Every case below is one where trimming would
-// produce something the generated file never writes, so the position is
-// left exactly as it came in instead.
-func TestRelToMatchesTheGeneratedFilesPositions(t *testing.T) {
-	cases := []struct {
-		name    string
-		modRoot string
-		pos     string
-		want    string
-	}{
-		{
-			// A Resolved built by hand in a test has no module to be
-			// relative to, and inventing one would rewrite positions
-			// against a root that does not exist.
-			name:    "no module root leaves the position alone",
-			modRoot: "",
-			pos:     "/mod/root/internal/store/store.go:12:6",
-			want:    "/mod/root/internal/store/store.go:12:6",
-		},
-		{
-			name:    "a position inside the module is trimmed to a module-relative path",
-			modRoot: "/mod/root",
-			pos:     "/mod/root/internal/store/store.go:12:6",
-			want:    "internal/store/store.go:12:6",
-		},
-		{
-			// A provider in a dependency module lives outside the tree
-			// entirely. "../../go/pkg/mod/..." is not a path anyone can
-			// open from the module root, so the absolute one is kept.
-			name:    "a position outside the module stays absolute rather than becoming a ..-path",
-			modRoot: "/mod/root",
-			pos:     "/elsewhere/dep/dep.go:3:1",
-			want:    "/elsewhere/dep/dep.go:3:1",
-		},
-		{
-			// filepath.Rel cannot relate a relative path to an absolute
-			// root, and the position is already in the form the generated
-			// file writes.
-			name:    "an already-relative position is passed through",
-			modRoot: "/mod/root",
-			pos:     "internal/store/store.go:12:6",
-			want:    "internal/store/store.go:12:6",
-		},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := RelTo(c.modRoot, c.pos); got != c.want {
-				t.Errorf("RelTo(%q, %q) = %q, want %q", c.modRoot, c.pos, got, c.want)
-			}
-		})
 	}
 }

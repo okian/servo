@@ -305,13 +305,3 @@ func joinOrNone(ss []string) string {
 	}
 	return strings.Join(ss, ", ")
 }
-
-// moduleRoot is the directory generated positions are written relative to.
-// `servo graph` reports the same strings the generated App.Graph() carries
-// only if it trims the same prefix.
-func moduleRoot(spec *load.Spec) string {
-	if mod := spec.InjectorPkg.Module; mod != nil {
-		return mod.Dir
-	}
-	return ""
-}

@@ -34,7 +34,7 @@
 //	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:68:6
 //	[L1] *github.com/okian/servo/v3/middleware.Recover
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/recover.go:17:6
+//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/recover.go:17:6
 //	[L1] *example.com/servoorders/internal/observability.Metrics
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | internal/observability/metrics.go:18:6
@@ -46,7 +46,7 @@
 //	      capabilities: Finalizer | binding: sole candidate | internal/observability/tracing.go:29:6
 //	[L1] *github.com/okian/servo/v3/middleware.AccessLog
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | /Users/kian/servo/middleware/accesslog.go:14:6
+//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/accesslog.go:14:6
 //	[L1] *example.com/servoorders/internal/auth.Issuer
 //	      deps: example.com/servoorders/internal/auth.Config
 //	      capabilities: none | binding: sole candidate | internal/auth/auth.go:39:6
@@ -1275,11 +1275,11 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/observability.Logger", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:34:6"},
 		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: []string{"example.com/servoorders/internal/transport/servoapi.ListenConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:91:6"},
 		{Type: "*example.com/servoorders/internal/transport/servoapi.ClaimsExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:68:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/recover.go:17:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/recover.go:17:6"},
 		{Type: "*example.com/servoorders/internal/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/metrics.go:18:6"},
 		{Type: "*example.com/servoorders/internal/resilience.RateLimiter", Level: 2, Deps: []string{"example.com/servoorders/internal/resilience.Config", "*example.com/servoorders/internal/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:30:6"},
 		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:29:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.AccessLog", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "/Users/kian/servo/middleware/accesslog.go:14:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.AccessLog", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/accesslog.go:14:6"},
 		{Type: "*example.com/servoorders/internal/auth.Issuer", Level: 1, Deps: []string{"example.com/servoorders/internal/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/auth/auth.go:39:6"},
 		{Type: "*example.com/servoorders/internal/transport/servoapi.Auth", Level: 2, Deps: []string{"*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:31:6"},
 		{Type: "*example.com/servoorders/internal/repository/postgres.Store", Level: 1, Deps: []string{"example.com/servoorders/internal/repository/postgres.config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "internal/repository/postgres/postgres.go:48:6"},
