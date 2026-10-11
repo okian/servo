@@ -247,7 +247,7 @@ jobs:
           for page in index.html preface.html comparison.html limitations.html \
                       reference/index.html reference/cli.html \
                       tutorial/01-architecture-overview.html \
-                      tutorial/21-alternatives-and-further-reading.html; do
+                      tutorial/22-alternatives-and-further-reading.html; do
             test -s "_site/$page" || { echo "::error::_site/$page missing or empty"; exit 1; }
           done
           python3 -c "import json,sys; json.load(open('_site/search.json'))"
