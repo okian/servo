@@ -109,6 +109,22 @@ type Booths interface {
 	Acquire(ctx context.Context) (*Booth, func(), error)
 }
 
+// ScopedSDK is a tracer provider whose constructor takes the key — scoped,
+// which no wrapper may depend on. Its Tracer method deliberately does not
+// match TracerProvider, so it never competes in the structural search.
+type ScopedSDK struct{}
+func (s *ScopedSDK) Tracer(name string) int { return 0 }
+func NewScopedSDK(k RoomKey) *ScopedSDK { return &ScopedSDK{} }
+
+// Pg is the widening mistake reached through a wrapper: a singleton
+// implementation of a traced interface that holds the scoped Room.
+type TracedStore interface{ Get(ctx context.Context) error }
+type Pg struct{}
+func NewPg(r *Room) *Pg { return &Pg{} }
+func (p *Pg) Get(ctx context.Context) error { return nil }
+type PgHolder struct{}
+func NewPgHolder(s TracedStore, l *Logger) *PgHolder { return &PgHolder{} }
+
 // LogHolder widens a scoped node that no accessor exposes.
 type LogHolder struct{}
 func NewLogHolder(rl *RoomLog) *LogHolder { return &LogHolder{} }

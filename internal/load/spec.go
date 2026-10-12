@@ -536,7 +536,7 @@ func parseTraceCall(pkg *packages.Package, spec *Spec, call *ast.CallExpr, typeA
 		// compile. Said here, at the declaration, rather than by the
 		// compiler inside a file the user is told not to read.
 		if hidden := unexportedNamedIn(m.Type(), spec.InjectorPkg.PkgPath, map[types.Type]bool{}); hidden != nil {
-			return TraceDecl{}, fmt.Errorf("%s: servo.Trace[%s]: method %s's signature uses %s, an unexported type the wrapper generated into package %s cannot name — export the type, or declare the interface in the injector's own package", pos, graph.TypeString(t), m.Name(), graph.TypeString(hidden), spec.InjectorPkg.PkgPath)
+			return TraceDecl{}, fmt.Errorf("%s: servo.Trace[%s]: method %s's signature uses %s, an unexported type the wrapper generated into package %s cannot name — export the type, or declare the interface in the injector's own package", pos, graph.TypeString(t), m.Name(), hiddenTypeString(hidden), spec.InjectorPkg.PkgPath)
 		}
 	}
 
@@ -565,6 +565,17 @@ func parseTraceCall(pkg *packages.Package, spec *Spec, call *ast.CallExpr, typeA
 		decl.Expected = append(decl.Expected, exp)
 	}
 	return decl, nil
+}
+
+// hiddenTypeString names the type unexportedNamedIn found. An alias is
+// named as the alias, not as what it stands for: graph.TypeString resolves
+// aliases, and "uses store.Public, an unexported type" would be wrong
+// about the one identifier the diagnostic is pointing at.
+func hiddenTypeString(t types.Type) string {
+	if a, ok := t.(*types.Alias); ok && a.Obj().Pkg() != nil {
+		return a.Obj().Pkg().Path() + "." + a.Obj().Name()
+	}
+	return graph.TypeString(t)
 }
 
 // unexportedNamedIn finds a named or alias type inside t that only its own
