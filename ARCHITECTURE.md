@@ -252,6 +252,53 @@ binds in `Run`, which is what `Ready`'s per-group entries report), joined into `
 and stopped **first** in `Shutdown` — the inbound edges drain before anything beneath them. A spec
 with no `servo.HTTP()` emits a byte-identical file, the same invariant scopes hold.
 
+## Traced interfaces
+
+`servo.Trace[I](...)` is parsed in `internal/load/spec.go` with every rule about the *type*
+checked there — named interface, at least one method, every method implementable from the
+injector package, not the OpenTelemetry API itself — because each would otherwise surface as a
+compile error inside a file the user is told not to read. `Expected` arguments are read the way
+`Include` reads a function name: the parser keeps the `types.Object` of the package-level
+variable or constant and never evaluates it, which is what lets the emitter write
+`errors.Is(err, cache.ErrMiss)` package-qualified.
+
+Resolution is a thin layer around the precedence walk rather than a step inside it:
+`resolveKey` now dispatches a traced key to `resolveTraced`, which resolves the interface through
+the untouched walk (`resolveUntraced`), resolves `trace.TracerProvider` as an ordinary dependency
+with a chain frame naming the declaration, and answers with a sixth `NodeKind`, `NodeTraced`,
+keyed as the interface's type string plus a `traced` tag — the first real use of `graph.Key.Tag`,
+and what keeps the wrapper apart from a provider that returns the interface itself. A `Bind`, a
+`Value` or an `Override` therefore decides what gets wrapped and never whether. The wrapper is
+gray while its two dependencies resolve, so a tracer provider that takes the traced interface is
+reported as the cycle it is.
+
+It is also the one synthetic kind that appears in `Resolved.Order`: a wrapper is constructed in
+`New`, after the implementation and the provider and before its consumers, so every loop over
+`Order` that reaches for `n.Provider` has a `Kind` branch — construction, rollback, the header,
+variable naming, graph data, the renderers, `explain` and `list`. Its capability list is empty by
+construction rather than detected, so an interface that happens to declare `Init` never gets
+initialised twice; `shutdownSteps` and scope membership walk *through* it, since a consumer's
+only path to the implementation's `Stop` runs through the wrapper. A wrapper around a scoped
+implementation is refused after membership is known (`checkTraces`), before the generic
+widening walk would describe the same edge less well.
+
+The tracer provider is the one key whose exact-type selection is restricted to the main module
+(`selectProvider`): the OpenTelemetry packages return `trace.TracerProvider` from several
+functions of their own — the global getter, the no-op provider — and "remove or rename all but
+one" is not advice a user can take about a module they do not own. A module in which nothing
+imports the trace API gets a diagnostic naming the import instead of a wrapper written against a
+package the build cannot see (`TraceInput` is nil; the pipeline looks the type up in
+`Loaded.ByPath`).
+
+`internal/emit/traced.go` follows `scope.go`'s discipline: identifiers allocated up front, the
+section spliced into the same file, the test variant's types prefixed since both files land in
+one package. What varies with types is generated — one method per interface method, parameter
+names taken from the interface unless they would shadow a local the body hard-codes — and the
+OpenTelemetry surface it is written against is the stable one (`TracerProvider`, `Tracer.Start`,
+`Span.End/RecordError/SetStatus`, `codes.Error`), imported in the *user's* module so servo's own
+`go.mod` carries no OpenTelemetry dependency, the same rule the config decoders follow. A graph
+declaring no `Trace` emits a byte-identical file.
+
 ## Canonical type identity
 
 Two written-differently type expressions can name the same type: a defined alias
@@ -263,8 +310,8 @@ values.
 
 ## Why the markers panic
 
-`servo.Build`, `Root`, `Bind`, `Override`, `Scoped`, `Value`, and `Include` (in the `servo`
-package) all panic unconditionally if actually called at runtime. They exist to be read as AST
+`servo.Build`, `Root`, `Bind`, `Override`, `Scoped`, `Value`, `Include`, `Trace` and the rest
+(in the `servo` package) all panic unconditionally if actually called at runtime. They exist to be read as AST
 syntax by `load.FindSpec`, inside a file carrying the `servoinject` build tag — a tag that's never
 set for the real binary, so the file, and the marker calls in it, compile out entirely. The panic
 is the fallback for the one way this can go wrong: the tag is missing, the marker call compiles

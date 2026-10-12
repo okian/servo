@@ -103,6 +103,8 @@ func (e *emitter) writeGraphNode(b *strings.Builder, n *resolve.Node, level int,
 		binding, pos = "supplied", n.SuppliedPos
 	case resolve.NodeConfig:
 		binding, pos = n.Binding, n.Config.Pos
+	case resolve.NodeTraced:
+		binding, pos = n.Binding, n.Traced.Decl.Pos
 	default:
 		binding, pos = n.Binding, n.Provider.Pos
 	}
@@ -110,6 +112,9 @@ func (e *emitter) writeGraphNode(b *strings.Builder, n *resolve.Node, level int,
 		n.Key.String(), level, stringSliceLiteral(deps), stringSliceLiteral(n.Capabilities), binding, e.posString(pos))
 	if scope != "" {
 		fmt.Fprintf(b, ", Scope: %q", scope)
+	}
+	if n.Kind == resolve.NodeTraced {
+		fmt.Fprintf(b, ", Wraps: %q", n.Traced.Inner.Key.String())
 	}
 	b.WriteString("},\n")
 }

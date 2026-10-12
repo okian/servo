@@ -63,6 +63,13 @@ type emitter struct {
 	// http is the emitted server's plan and identifiers, nil unless the
 	// spec declared servo.HTTP().
 	http *httpEmit
+	// traced is every servo.Trace wrapper, in declaration order, with the
+	// two OpenTelemetry import identifiers the wrappers are written
+	// against — set only when the graph uses a Trace.
+	traced       []*tracedEmit
+	tracedByNode map[*resolve.Node]*tracedEmit
+	traceIdent   string
+	codesIdent   string
 	// configFileFn and configFileVar name the generated config-file loader
 	// and the local its result lands in — set only when the spec declares
 	// a servo.ConfigFile and the graph uses a config.
@@ -88,6 +95,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 		scopeByScope:   map[*resolve.Scope]*scopeEmit{},
 		rootByAccessor: map[*resolve.ScopeRoot]*rootEmit{},
 		memberField:    map[*resolve.Node]string{},
+		tracedByNode:   map[*resolve.Node]*tracedEmit{},
 	}
 	e.servoAlias = e.imports.Add(graph.ServoPackagePath, "servo")
 	e.imports.Add("context", "context")
@@ -169,16 +177,18 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	shadowed := shadowingBaseNames(all, base)
 	for _, n := range all {
 		if shadowed[n] {
-			base[n] = qualifiedBaseName(nodeResultType(n))
+			base[n] = nodeQualifiedBaseName(n)
 		}
 		e.varName[n.Key] = allocateAppField(e.names, base[n])
 	}
 	e.planValues()
 	e.planScopes()
 	e.planHTTP()
+	e.planTraced()
 
 	scopeDecls := e.scopeDecls()
 	httpDecls := e.httpDecls()
+	tracedDecls := e.tracedDecls()
 	valuesDecl := e.valuesDecl()
 	configFileDecl := e.configFileDecl()
 	appStruct := e.appStruct()
@@ -202,6 +212,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	body.WriteString(configFileDecl)
 	body.WriteString(scopeDecls)
 	body.WriteString(httpDecls)
+	body.WriteString(tracedDecls)
 	body.WriteString(newFunc)
 	body.WriteString(stopMethods)
 	body.WriteString(runFunc)
@@ -257,7 +268,7 @@ func (e *emitter) header() string {
 			caps = strings.Join(n.Capabilities, ", ")
 		}
 		fmt.Fprintf(&b, "//   [L%d] %s\n//         deps: %s\n//         capabilities: %s | binding: %s | %s\n",
-			n.Level, n.Key.String(), deps, caps, n.Binding, e.posString(n.Provider.Pos))
+			n.Level, n.Key.String(), deps, caps, n.Binding, e.posString(nodeDeclPos(n)))
 	}
 	b.WriteString(e.scopeHeader())
 	b.WriteString(e.httpHeader())
@@ -336,6 +347,10 @@ func (e *emitter) appStruct() string {
 	fmt.Fprintf(&b, "type %s struct {\n", e.appType())
 	for _, n := range e.resolved.Order {
 		name := e.varName[n.Key]
+		if n.Kind == resolve.NodeTraced {
+			fmt.Fprintf(&b, "\t%s *%s\n", name, e.tracedByNode[n].TypeName)
+			continue
+		}
 		fmt.Fprintf(&b, "\t%s %s\n", name, e.qualifiedTypeString(n.Provider.ResultType))
 		if n.Provider.HasCleanup {
 			fmt.Fprintf(&b, "\t%sCleanup func()\n", name)
@@ -357,6 +372,11 @@ func (e *emitter) appStruct() string {
 }
 
 func (e *emitter) needsStopMethod(n *resolve.Node) bool {
+	// A wrapper has no provider, no cleanup and no capability: the
+	// implementation behind it is stopped on its own account.
+	if n.Kind == resolve.NodeTraced {
+		return false
+	}
 	if n.Provider.HasCleanup {
 		return true
 	}
@@ -500,6 +520,11 @@ func qualifiesWith(later *resolve.Node, ident string) bool {
 	if ident == "" {
 		return false
 	}
+	// A wrapper's construction line names a generated function and two
+	// locals, nothing package-qualified.
+	if later.Kind == resolve.NodeTraced {
+		return false
+	}
 	if packageNameOfType(nodeResultType(later)) == ident {
 		return true
 	}
@@ -510,4 +535,14 @@ func qualifiesWith(later *resolve.Node, ident string) bool {
 	}
 	pkg := later.Provider.Func.Pkg()
 	return pkg != nil && pkg.Name() == ident
+}
+
+// nodeDeclPos is the position the header and the graph data report for a
+// node: its provider's declaration, or for a wrapper the servo.Trace
+// declaration that asked for it.
+func nodeDeclPos(n *resolve.Node) token.Position {
+	if n.Kind == resolve.NodeTraced {
+		return n.Traced.Decl.Pos
+	}
+	return n.Provider.Pos
 }

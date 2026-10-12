@@ -8,6 +8,7 @@ import (
 	"example.com/servoorders/internal/broker"
 	"example.com/servoorders/internal/broker/natsbroker"
 	"example.com/servoorders/internal/cache"
+	"example.com/servoorders/internal/domain"
 	"example.com/servoorders/internal/mocks"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/repository"
@@ -57,5 +58,17 @@ func wire() {
 		servo.Override[repository.UserRepository, *mocks.UserRepositoryForServo](),
 		servo.Override[cache.OrderCache, *mocks.OrderCacheForServo](),
 		servo.Override[broker.EventPublisher, *mocks.EventPublisherForServo](),
+
+		// Every consumer of these four interfaces gets a generated
+		// OpenTelemetry wrapper: one span per method call, a child of the
+		// request span Tracer.Middleware opened, with nothing instrumented
+		// by hand. The wrapper takes *observability.Tracer as its
+		// trace.TracerProvider. A not-found and a cache miss are results,
+		// not failures, so they stay off the span. See
+		// docs/tutorial/16-observability.md.
+		servo.Trace[repository.OrderRepository](servo.Expected(domain.ErrNotFound)),
+		servo.Trace[repository.UserRepository](servo.Expected(domain.ErrNotFound)),
+		servo.Trace[cache.OrderCache](servo.Expected(cache.ErrMiss)),
+		servo.Trace[broker.EventPublisher](),
 	)
 }

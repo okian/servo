@@ -245,8 +245,12 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
+// Tracer embeds the SDK provider rather than holding it in a field. The
+// difference matters below, in "Spans around the dependencies": the
+// embedding promotes the provider's Tracer method, so *Tracer implements
+// trace.TracerProvider and is the node every generated wrapper depends on.
 type Tracer struct {
-	provider *sdktrace.TracerProvider
+	*sdktrace.TracerProvider
 }
 
 func NewTracer(cfg Config) (*Tracer, error) {
@@ -270,11 +274,11 @@ func NewTracer(cfg Config) (*Tracer, error) {
 		opts = append(opts, sdktrace.WithBatcher(exporter))
 	}
 
-	return &Tracer{provider: sdktrace.NewTracerProvider(opts...)}, nil
+	return &Tracer{TracerProvider: sdktrace.NewTracerProvider(opts...)}, nil
 }
 
 func (t *Tracer) Stop(ctx context.Context) error {
-	return t.provider.Shutdown(ctx)
+	return t.Shutdown(ctx)
 }
 ```
 
@@ -336,7 +340,7 @@ for a span name instead of a label:
 ```go
 func (t *Tracer) Middleware(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(next, "http.request",
-		otelhttp.WithTracerProvider(t.provider),
+		otelhttp.WithTracerProvider(t.TracerProvider),
 		otelhttp.WithSpanNameFormatter(func(operation string, r *http.Request) string {
 			if r.Pattern != "" {
 				return r.Pattern
@@ -346,6 +350,78 @@ func (t *Tracer) Middleware(next http.Handler) http.Handler {
 	)
 }
 ```
+
+## Spans around the dependencies, without instrumenting them
+
+The request span above answers "was this request slow". It does not answer "was it the database,
+the cache, or NATS", because none of those three is instrumented — and the honest options for
+instrumenting them are both bad. Reaching into `postgres.Store` to start a span in every method
+ties the repository to a tracing library it has no other reason to know about. Writing a
+decorator that implements `repository.OrderRepository`, starts a span, and delegates is clean,
+but it is the kind of code that is complete the day it is written and silently short one method
+after the next refactor: add `Archive` to the interface and the compiler makes you add it to the
+decorator, but nothing makes you add the span.
+
+The decorator is the right shape; the problem is maintaining it by hand. servo generates it. The
+directive injector from [chapter 13](13-directive-transport.md) carries four lines its spec has
+had since then, and this is what they do:
+
+```go
+servo.Trace[repository.OrderRepository](servo.Expected(domain.ErrNotFound)),
+servo.Trace[repository.UserRepository](servo.Expected(domain.ErrNotFound)),
+servo.Trace[cache.OrderCache](servo.Expected(cache.ErrMiss)),
+servo.Trace[broker.EventPublisher](),
+```
+
+For each interface, `servo generate` emits a type into `cmd/ordersservo/servo_gen.go` that
+implements it, and hands that type to every consumer of the interface in place of the
+implementation the interface resolved to — the same `postgres.Store` as before, now one layer
+down. Here is one method of the generated wrapper for the cache, verbatim:
+
+```go
+func (t *tracedOrderCache) Get(ctx context.Context, id uuid.UUID) (*domain.Order, error) {
+	ctx, span := t.tracer.Start(ctx, "cache.OrderCache/Get")
+	defer span.End()
+	r0, err := t.inner.Get(ctx, id)
+	if err != nil && !errors.Is(err, cache.ErrMiss) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return r0, err
+}
+```
+
+Three decisions in that method are worth seeing rather than taking on faith. The span's context
+is what `t.inner.Get` receives, so anything the implementation starts — a `pgx` query span, if you
+ever add one — nests beneath it, and the whole call nests beneath the request span
+`Tracer.Middleware` opened, because that is the context the handler was given. The error check
+names `cache.ErrMiss`: a miss is a result, not a failure, and without the `servo.Expected` line
+every miss would be a red span and the error rate a trace backend computes from spans would be
+meaningless. And the method set is regenerated from the interface every time — the `Archive`
+method from the paragraph above gets its span the moment `servo generate` runs.
+
+The wrapper is why `Tracer` embeds `*sdktrace.TracerProvider` instead of holding it in a field.
+Every generated wrapper takes `trace.TracerProvider` as an ordinary dependency — an interface,
+resolved like any other — and the embedding is what makes `*observability.Tracer` implement it:
+the SDK's `Tracer` method is promoted, `Tracer` is the one implementation in the module, and it
+auto-binds. There is no `otel.SetTracerProvider` anywhere in this service, for the reason the
+[logger](#why-the-logger-is-a-node-and-not-a-call-at-the-top-of-main) is a node rather than a
+call at the top of `main`: a global would be an ordering assertion nothing checks, and the
+dependency is a fact servo orders construction by.
+
+What stays out of the generated file is as deliberate as what goes in. `postgres.Store`,
+`redis.Cache` and `natsbroker.Publisher` did not change, and `internal/repository` still imports
+no tracing library — the wrapper lives in the injector package, and the OpenTelemetry imports it
+needs are this module's, not servo's. The implementation keeps its own `Init` and `Stop`; the
+wrapper has no lifecycle, so nothing is connected or closed twice. And `NewTestApp` wraps the
+gomock mocks through the same generated type, so the test in `cmd/ordersservo/app_test.go`
+exercises every wrapper without knowing they exist.
+
+Two things it cannot do, both by design. A constructor that takes `*postgres.Store` directly gets
+the store, not the wrapper — tracing is a property of the interface edge, which is one more
+reason the service layer depends on `repository.OrderRepository` rather than on Postgres. And the
+wrapper is spans only: the Prometheus metrics above stay where they are. The full contract,
+including every diagnostic, is at [Traced interfaces](../reference/tracing.md).
 
 ## Wire both into api.Server
 
@@ -447,6 +523,14 @@ duration (us): 2470
 
 The span is named `POST /orders` — the route pattern, exactly as configured — not a path with a
 UUID baked into a hundred different span names.
+
+Run `cmd/ordersservo` instead of `cmd/orders` and repeat the request, and the same trace gains
+children: `repository.OrderRepository/Create`, `cache.OrderCache/Set` and
+`broker.EventPublisher/PublishOrderPlaced`, each the duration of one call into the layer below,
+each nested under `POST /orders` because the handler's context flowed into the generated wrapper
+and out to the implementation. That is the whole promise of the four `servo.Trace` lines: the
+question "which of the three was slow" now has an answer in the trace, and nobody instrumented
+anything.
 
 ## Diagnostics
 

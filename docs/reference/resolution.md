@@ -225,6 +225,14 @@ a marker in the spec file, written by you, is the only thing that can pre-empt t
 Then the same three steps run for each of the selected provider's own parameters, recursively,
 until the graph closes or a diagnostic is produced.
 
+Two things sit *around* these steps rather than among them, both declared in the spec. A
+[traced interface](tracing.md) resolves exactly as above, and then every request for it is
+answered with the generated wrapper around that answer — so a `Bind`, a `Value` or an `Override`
+decides what gets wrapped, never whether. And the wrapper's own dependency on
+`trace.TracerProvider` is the one key whose exact-type step considers your module's constructors
+only: the OpenTelemetry packages return that interface from several functions of their own, none
+of which is the one you meant.
+
 ## Construction order and levels
 
 Two different orderings come out of resolution, and they answer different questions.

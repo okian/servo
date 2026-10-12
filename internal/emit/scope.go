@@ -122,7 +122,7 @@ func borrowedSingletons(s *resolve.Scope) []*resolve.Node {
 	seen := map[*resolve.Node]bool{}
 	var out []*resolve.Node
 	add := func(n *resolve.Node) {
-		if n == nil || n.Kind != resolve.NodeProvider || n.Scope != nil || seen[n] {
+		if n == nil || (n.Kind != resolve.NodeProvider && n.Kind != resolve.NodeTraced) || n.Scope != nil || seen[n] {
 			return
 		}
 		seen[n] = true
@@ -179,29 +179,51 @@ var scopeReservedIdents = []string{
 func baseNamesFor(nodes []*resolve.Node) map[*resolve.Node]string {
 	count := map[string]int{}
 	for _, n := range nodes {
-		count[baseName(nodeResultType(n))]++
+		count[nodeBaseName(n)]++
 	}
 	out := make(map[*resolve.Node]string, len(nodes))
 	for _, n := range nodes {
-		base := baseName(nodeResultType(n))
+		base := nodeBaseName(n)
 		if count[base] > 1 {
-			base = qualifiedBaseName(nodeResultType(n))
+			base = nodeQualifiedBaseName(n)
 		}
 		out[n] = base
 	}
 	return out
 }
 
+// nodeBaseName is the short identifier a node's variable is derived from.
+// A wrapper takes the interface's name with a Traced suffix, so
+// `storeTraced` sits beside the `store` it wraps rather than fighting it
+// for the name.
+func nodeBaseName(n *resolve.Node) string {
+	if n.Kind == resolve.NodeTraced {
+		return baseName(n.Traced.IfaceType) + "Traced"
+	}
+	return baseName(nodeResultType(n))
+}
+
+// nodeQualifiedBaseName is nodeBaseName qualified by package, for when
+// the short name is ambiguous.
+func nodeQualifiedBaseName(n *resolve.Node) string {
+	if n.Kind == resolve.NodeTraced {
+		return qualifiedBaseName(n.Traced.IfaceType) + "Traced"
+	}
+	return qualifiedBaseName(nodeResultType(n))
+}
+
 // nodeResultType is the type a node stands for, read from wherever that
 // node kind records it: a provider's result for an ordinary node, the
 // declared type for a servo.Value or a //servo:config, neither of which
-// has a provider at all.
+// has a provider at all, and the traced interface for a wrapper.
 func nodeResultType(n *resolve.Node) types.Type {
 	switch n.Kind {
 	case resolve.NodeSupplied:
 		return n.SuppliedType
 	case resolve.NodeConfig:
 		return n.Config.Type
+	case resolve.NodeTraced:
+		return n.Traced.IfaceType
 	default:
 		return n.Provider.ResultType
 	}
@@ -1015,7 +1037,7 @@ func shortTypeName(t types.Type) string {
 func scopeUsesApp(se *scopeEmit) bool {
 	for _, m := range se.Members {
 		for _, d := range m.N.Deps {
-			if d.Kind == resolve.NodeScopeAccessor || (d.Kind == resolve.NodeProvider && d.Scope == nil) {
+			if d.Kind == resolve.NodeScopeAccessor || ((d.Kind == resolve.NodeProvider || d.Kind == resolve.NodeTraced) && d.Scope == nil) {
 				return true
 			}
 		}

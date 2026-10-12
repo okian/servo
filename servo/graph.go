@@ -22,6 +22,10 @@ type GraphNode struct {
 	// Omitted from JSON when empty, so a graph with no scopes serializes
 	// byte for byte the way it did before scopes existed.
 	Scope string `json:"scope,omitempty"`
+	// Wraps is set only on a servo.Trace wrapper: the node it decorates,
+	// which is also its first dependency. Binding is "traced" for such a
+	// node. Omitted from JSON when empty, for the same reason Scope is.
+	Wraps string `json:"wraps,omitempty"`
 }
 
 // GraphScope is one declared scope: its key type, its policy, the

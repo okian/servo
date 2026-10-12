@@ -33,6 +33,9 @@ having the method.
 | [`Value`](#value) | func | Declares a type the caller supplies (marker) |
 | [`Include`](#include) | func | Splices another function's marker list in (marker) |
 | [`ConfigFile`](#configfile) | func | Declares the config file `//servo:config` types read (marker) |
+| [`Trace`](#trace) | func | Declares a generated OpenTelemetry wrapper for an interface (marker) |
+| [`Expected`](#trace) | func | Names an error the wrapper leaves off the span (marker) |
+| [`TraceOption`](#trace) | type | `Expected`'s opaque return type |
 | [`Linger`](#linger-and-max), [`Max`](#linger-and-max) | funcs | Scope policy (markers) |
 | [`Marker`](#marker) | type | The markers' opaque return type |
 | [`ScopeOption`](#scopeoption) | type | `Linger`/`Max`'s opaque return type |
@@ -185,6 +188,22 @@ then file, then environment; `CONFIG_FILE` overrides the path at runtime. At mos
 and one no config in the graph would read is a diagnostic. Full contract:
 [Generated configuration](config.md) and [Spec file and markers](spec.md#configfile).
 
+### `Trace`
+
+```go
+func Trace[I any](...TraceOption) Marker
+func Expected(err error) TraceOption
+type TraceOption struct{}
+```
+
+Declares that every consumer of interface `I` receives a generated OpenTelemetry wrapper around
+whatever `I` resolves to: a span named `<pkg>.<I>/<Method>` around every method with a leading
+`context.Context`, the span's context handed on, a non-nil error recorded unless an `Expected`
+option names it. The wrapper depends on `go.opentelemetry.io/otel/trace.TracerProvider` as an
+ordinary graph node your own constructor supplies. `Expected` is only legal inside `Trace` and
+names a package-level error variable or constant, read as syntax and never evaluated.
+`TraceOption` carries no data. Full contract: [Traced interfaces](tracing.md).
+
 ### `Linger` and `Max`
 
 ```go
@@ -209,8 +228,8 @@ effect on already-generated code.
 type Marker struct{}
 ```
 
-The opaque return type of every `Build` marker — `Root`, `Bind`, `Override`, `Scoped`, `Value` and
-`Include`. Carries no data; it exists so `Build`'s argument list type-checks, and so an included
+The opaque return type of every `Build` marker — `Root`, `Bind`, `Override`, `Scoped`, `HTTP`,
+`Extract`, `Value`, `Include`, `ConfigFile` and `Trace`. Carries no data; it exists so `Build`'s argument list type-checks, and so an included
 function has a slice element type to return.
 
 ### `ScopeOption`
@@ -603,6 +622,7 @@ type GraphNode struct {
 	Binding      string   `json:"binding"`
 	Pos          string   `json:"pos"`
 	Scope        string   `json:"scope,omitempty"`
+	Wraps        string   `json:"wraps,omitempty"`
 }
 ```
 
@@ -616,9 +636,10 @@ the form of every position, so the build-time and run-time views can't drift.
 | `Level` | `1 + max(level of deps)`; the unit of `Init` concurrency. `0` for a [supplied value](#value), which the app has before it builds anything |
 | `Deps` | Direct dependencies, as type strings. `nil`, not `[]`, when there are none — the generated `App.Graph()` emits a Go literal, and `servo graph --format=json` matches it |
 | `Capabilities` | Detected capability names, in a fixed order: `Initializer`, `Runner`, `Drainer`, `Flusher`, `Finalizer`, `Healther`, `Readier` |
-| `Binding` | `explicit bind`, `sole candidate`, `sole implementation`, or `supplied` for a `servo.Value` |
-| `Pos` | The provider's declaration site — or, for a supplied value, the `servo.Value[…]()` call site. Relative to the module root in both producers, so two checkouts at different absolute paths agree; a provider in another module is named by its package's import path plus the file name, and one in the standard library as `$GOROOT/src/…` |
+| `Binding` | `explicit bind`, `sole candidate`, `sole implementation`, `supplied` for a `servo.Value`, or `traced` for a [`servo.Trace`](tracing.md) wrapper |
+| `Pos` | The provider's declaration site — or, for a supplied value, the `servo.Value[…]()` call site, and for a trace wrapper the `servo.Trace[…]()` call site. Relative to the module root in both producers, so two checkouts at different absolute paths agree; a provider in another module is named by its package's import path plus the file name, and one in the standard library as `$GOROOT/src/…` |
 | `Scope` | The key type of the scope this node belongs to, or empty for a singleton |
+| `Wraps` | For a trace wrapper, the node it decorates — also its first dependency; empty for every other node |
 
 Display-only: type strings are labels, never lookup keys, and there is no path from a `GraphNode`
 back to the instance it describes.

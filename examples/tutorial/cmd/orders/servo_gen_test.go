@@ -51,7 +51,7 @@
 //	      capabilities: none | binding: sole candidate | internal/observability/metrics.go:18:6
 //	[L1] *example.com/servoorders/internal/observability.Tracer
 //	      deps: example.com/servoorders/internal/observability.Config
-//	      capabilities: Finalizer | binding: sole candidate | internal/observability/tracing.go:29:6
+//	      capabilities: Finalizer | binding: sole candidate | internal/observability/tracing.go:35:6
 //	[L2] *example.com/servoorders/internal/resilience.RateLimiter
 //	      deps: example.com/servoorders/internal/resilience.Config, *example.com/servoorders/internal/observability.Metrics
 //	      capabilities: none | binding: sole candidate | internal/resilience/ratelimit.go:30:6
@@ -847,7 +847,7 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/auth.Issuer", Level: 1, Deps: []string{"example.com/servoorders/internal/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/auth/auth.go:39:6"},
 		{Type: "*example.com/servoorders/internal/service.AuthService", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.UserRepositoryForServo", "*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/auth_service.go:18:6"},
 		{Type: "*example.com/servoorders/internal/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/metrics.go:18:6"},
-		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:29:6"},
+		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:35:6"},
 		{Type: "*example.com/servoorders/internal/resilience.RateLimiter", Level: 2, Deps: []string{"example.com/servoorders/internal/resilience.Config", "*example.com/servoorders/internal/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:30:6"},
 		{Type: "*example.com/servoorders/internal/transport/api.Server", Level: 3, Deps: []string{"example.com/servoorders/internal/transport/api.Config", "*example.com/servoorders/internal/service.OrderService", "*example.com/servoorders/internal/service.AuthService", "*example.com/servoorders/internal/auth.Issuer", "*example.com/servoorders/internal/observability.Metrics", "*example.com/servoorders/internal/observability.Tracer", "*example.com/servoorders/internal/resilience.RateLimiter", "example.com/servoorders/internal/session.Sessions", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Finalizer", "Readier"}, Binding: "sole candidate", Pos: "internal/transport/api/server.go:57:6"},
 		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Settings", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:82:6", Scope: "example.com/servoorders/internal/session.UserID"},

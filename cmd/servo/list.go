@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
@@ -69,6 +70,23 @@ func runList(cfg load.Config, rejected, showAll, jsonOut bool) error {
 				spec += " [" + rt.Group + "]"
 			}
 			fmt.Printf("  %-40s %-25s %s\n", spec, rt.Name, rt.Pos.String())
+		}
+	}
+	// Traced interfaces are this injector's own declarations, so unlike
+	// routes they are listed per spec: which consumers get a wrapper is
+	// exactly the question `servo list` exists to answer at a glance.
+	if len(p.spec.Traces) > 0 {
+		fmt.Println("\ntraced:")
+		for _, tr := range p.spec.Traces {
+			expected := ""
+			if len(tr.Expected) > 0 {
+				names := make([]string, len(tr.Expected))
+				for i, ex := range tr.Expected {
+					names[i] = ex.Obj.Pkg().Name() + "." + ex.Obj.Name()
+				}
+				expected = "expected: " + strings.Join(names, ", ")
+			}
+			fmt.Printf("  %-40s %-25s %s\n", tr.Iface.String(), expected, tr.Pos.String())
 		}
 	}
 	return nil

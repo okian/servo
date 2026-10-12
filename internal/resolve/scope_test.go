@@ -78,6 +78,37 @@ type Lobbies interface {
 type Server struct{}
 func NewServer(r Rooms, l *Logger) *Server { return &Server{} }
 
+// TracerProvider stands in for the OpenTelemetry one: the resolver only
+// needs a key and a type to depend on. SDK is its sole implementation.
+type TracerProvider interface{ Tracer(name string) string }
+type SDK struct{}
+func (s *SDK) Tracer(name string) string { return name }
+func NewSDK(l *Logger) *SDK { return &SDK{} }
+
+// Logs is a singleton interface a scoped member can take traced: the
+// wrapper is borrowed by the scope exactly as the Logger behind it is.
+type Logs interface{ Log(ctx context.Context, msg string) }
+func (l *Logger) Log(ctx context.Context, msg string) {}
+type Diary struct{}
+func NewDiary(k RoomKey, l Logs) *Diary { return &Diary{} }
+func (_ *Diary) ScopeKey(ctx context.Context) (RoomKey, error) { return "", nil }
+type Diaries interface {
+	Acquire(ctx context.Context) (*Diary, func(), error)
+}
+
+// Chatter is implemented only by the scoped Room, so a Trace on it would
+// wrap a scoped instance — which this release refuses. Booth shares the
+// RoomKey scope and takes Chatter, so the wrapper is reached from inside
+// the scope.
+type Chatter interface{ Say(ctx context.Context) error }
+func (r *Room) Say(ctx context.Context) error { return nil }
+type Booth struct{}
+func NewBooth(k RoomKey, c Chatter) *Booth { return &Booth{} }
+func (_ *Booth) ScopeKey(ctx context.Context) (RoomKey, error) { return "", nil }
+type Booths interface {
+	Acquire(ctx context.Context) (*Booth, func(), error)
+}
+
 // LogHolder widens a scoped node that no accessor exposes.
 type LogHolder struct{}
 func NewLogHolder(rl *RoomLog) *LogHolder { return &LogHolder{} }

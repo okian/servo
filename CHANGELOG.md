@@ -27,10 +27,36 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
 
 **Why MINOR.** This release adds comment directives (`//servo:config` and the `//servo:` HTTP
 routes), several markers, two packages (`middleware`, `servovet`), a subcommand, and generated
-companion files; nothing it changes is breaking under the rules above. A graph declaring neither
-`//servo:config` nor `servo.HTTP()` emits a byte-identical file.
+companion files; nothing it changes is breaking under the rules above. A graph declaring none of
+`//servo:config`, `servo.HTTP()` or `servo.Trace` emits a byte-identical file.
 
 ### Added
+- **`servo.Trace[I]()`: a generated OpenTelemetry wrapper around an interface.** Declared in
+  the spec, per injector, the marker makes every consumer of `I` receive an emitted decorator in
+  place of whatever `I` resolves to — a `Bind`, a structural match, a `Value`, or in the test
+  variant an `Override`, so `NewTestApp` traces the mock through a wrapper of its own. Each method
+  with a leading `context.Context` runs inside a span named `<pkg>.<I>/<Method>`, the
+  implementation receives the span's context, and a non-nil error is recorded on the span unless
+  a `servo.Expected(pkg.ErrX)` option names it — a cache miss or a not-found is a result, and a
+  span marked failed for every one would make any error rate computed from traces meaningless.
+  `Expected` names a package-level error variable or constant and is read as syntax, never
+  evaluated. Methods without a context are delegated untouched; the wrapper has no lifecycle of
+  its own, so the implementation's `Init` and `Stop` run exactly as before.
+
+  The wrapper depends on `go.opentelemetry.io/otel/trace.TracerProvider` as an ordinary graph
+  node — a constructor in the user's module, with no `otel.GetTracerProvider()` fallback —
+  resolved among the module's own constructors only, since the OpenTelemetry packages return that
+  interface from several functions of their own. The generated file imports the stable
+  OpenTelemetry API (`trace`, `codes`; nothing from `semconv`) in the *user's* module, so servo's
+  own `go.mod` stays OpenTelemetry-free, the same rule the config decoders follow. Interfaces
+  only: a concrete type has no seam to wrap and is refused at the declaration with the interface
+  to depend on instead; a scoped implementation is refused for this release. The wrapper is a
+  node everywhere the graph is visible — `explain`, `why`, `graph`, `list`, the header and
+  `App.Graph()`, keyed `<I>#traced` with binding `traced` and a new `GraphNode.Wraps` field
+  (`omitempty`, a schema **addition**). `servo-vet` knows the two new markers. Worked example:
+  the tutorial's directive injector traces its repository, cache and broker interfaces in
+  [chapter 16](docs/tutorial/16-observability.md). Reference:
+  [Traced interfaces](docs/reference/tracing.md).
 - **HTTP routes: `//servo:<method> <pattern>` directives and a generated server.** A route is a
   directive comment on an exported function — `func Order(ctx context.Context, req *OrderReq,
   st *store.Store) (servo.Json[*OrderResp], error)` — and a spec opts into serving the module's

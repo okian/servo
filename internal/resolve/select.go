@@ -27,7 +27,20 @@ func (r *resolver) selectProvider(k graph.Key, kType types.Type) selection {
 		explicitUsed = true
 	}
 
-	switch exact := r.byResult[effective]; len(exact) {
+	exact := r.byResult[effective]
+	// The tracer provider is the one dependency servo asks for on the
+	// user's behalf, and its type is declared in a package that also
+	// returns it from several functions — the global getter, the no-op
+	// provider, the auto-instrumentation shim. None of those is the one
+	// the user meant, and "remove or rename all but one" is not advice
+	// they can take about a module they do not own. So this key, alone,
+	// is answered from the main module: an exact match there, else the
+	// structural search below, which is main-module-only already.
+	if r.traceIn != nil && effective == r.traceIn.ProviderKey {
+		exact = r.inScope(exact)
+	}
+
+	switch len(exact) {
 	case 1:
 		binding := "sole candidate"
 		if explicitUsed {
@@ -73,4 +86,15 @@ func interfaceOf(t types.Type) (*types.Interface, bool) {
 		return nil, false
 	}
 	return iface, true
+}
+
+// inScope keeps the candidates declared in the main module.
+func (r *resolver) inScope(candidates []*graph.Provider) []*graph.Provider {
+	var out []*graph.Provider
+	for _, c := range candidates {
+		if r.scope[c.Pkg] {
+			out = append(out, c)
+		}
+	}
+	return out
 }

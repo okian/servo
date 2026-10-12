@@ -50,6 +50,11 @@ type Spec struct {
 	// per-request values.
 	Extracts []ExtractDecl
 
+	// Traces are the servo.Trace[I](...) declarations: interfaces whose
+	// every consumer receives the generated OpenTelemetry wrapper in
+	// place of the implementation I resolves to.
+	Traces []TraceDecl
+
 	// Variant is the canonical tag set the load ran under, copied from
 	// Loaded.Tags. Empty for a plain `servo generate`, which is what
 	// keeps that case writing servo_gen.go exactly as it always has.
@@ -105,6 +110,32 @@ type ExtractDecl struct {
 	Type  graph.Key
 	TypeT types.Type
 	Pos   token.Position
+}
+
+// TraceDecl is one servo.Trace[I](...) declaration. The interface is
+// validated here, at parse time, because every rule about it is a rule
+// about the type: it must be a named interface with at least one method,
+// every method must be one the injector package can implement, and it
+// must not be the OpenTelemetry API itself.
+type TraceDecl struct {
+	Iface     graph.Key
+	IfaceType types.Type
+	Pos       token.Position
+	// Expected is every servo.Expected(pkg.ErrX) option, in declaration
+	// order: errors the wrapper leaves off the span.
+	Expected []ExpectedErr
+	// Included marks a declaration spliced in by servo.Include; a local
+	// one for the same interface supersedes it, exactly as a Bind does.
+	Included bool
+}
+
+// ExpectedErr is one servo.Expected argument: the package-level variable
+// or constant it names, read as syntax and never evaluated. The emitter
+// renders it package-qualified inside the generated errors.Is check,
+// which is why it has to be exported or declared in the injector package.
+type ExpectedErr struct {
+	Obj types.Object
+	Pos token.Position
 }
 
 // ValueDecl is one servo.Value[T]() — a type the caller supplies to the
@@ -380,6 +411,25 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 				}
 			}
 			spec.Extracts = append(spec.Extracts, decl)
+		case "Trace":
+			decl, err := parseTraceCall(pkg, spec, argCall, typeArgs, pos)
+			if err != nil {
+				return err
+			}
+			// Same rule as Bind: a local declaration supersedes an
+			// included one, so a shared marker set can trace an interface
+			// and one injector can still add its own Expected list.
+			if prior, dup := findTrace(spec.Traces, decl.Iface); dup {
+				if prior.Included {
+					replaceTrace(spec.Traces, decl)
+					continue
+				}
+				return fmt.Errorf("%s: servo.Trace[%s] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
+			}
+			decl.Included = len(including) > 0
+			spec.Traces = append(spec.Traces, decl)
+		case "Expected":
+			return fmt.Errorf("%s: servo.Expected belongs inside servo.Trace[I](...)", pos)
 		case "Group", "Use":
 			return fmt.Errorf("%s: servo.%s belongs inside servo.HTTP(...)", pos, name)
 		case "Route":
@@ -426,6 +476,203 @@ func findValue(decls []ValueDecl, k graph.Key) (ValueDecl, bool) {
 		}
 	}
 	return ValueDecl{}, false
+}
+
+// findTrace is findByIface for Trace declarations.
+func findTrace(decls []TraceDecl, iface graph.Key) (TraceDecl, bool) {
+	for _, d := range decls {
+		if d.Iface == iface {
+			return d, true
+		}
+	}
+	return TraceDecl{}, false
+}
+
+// replaceTrace is replaceByIface for Trace declarations.
+func replaceTrace(decls []TraceDecl, decl TraceDecl) {
+	for i, d := range decls {
+		if d.Iface == decl.Iface {
+			decls[i] = decl
+			return
+		}
+	}
+}
+
+var errorIface = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
+
+// parseTraceCall reads one servo.Trace[I](options...) declaration. The
+// interface is checked here for everything the emitter would otherwise
+// discover while writing a type it cannot finish: a concrete type has no
+// seam to wrap, an empty interface has nothing to wrap, an unexported
+// method cannot be implemented from the injector package, and tracing the
+// OpenTelemetry API itself would wrap the thing that creates the spans.
+func parseTraceCall(pkg *packages.Package, spec *Spec, call *ast.CallExpr, typeArgs []types.Type, pos token.Position) (TraceDecl, error) {
+	if len(typeArgs) != 1 {
+		return TraceDecl{}, fmt.Errorf("%s: servo.Trace expects exactly one type argument", pos)
+	}
+	t := typeArgs[0]
+	iface, ok := types.Unalias(t).Underlying().(*types.Interface)
+	if !ok {
+		return TraceDecl{}, fmt.Errorf("%s: servo.Trace's type argument must be an interface, not %s — tracing wraps the methods a consumer reaches through an interface, and a consumer holding a concrete type has no seam to wrap; make the consumer depend on the interface instead", pos, graph.TypeString(t))
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return TraceDecl{}, fmt.Errorf("%s: servo.Trace's type argument must be a named interface, not an interface literal — the span names and the wrapper's type name are derived from the interface's name", pos)
+	}
+	if iface.NumMethods() == 0 {
+		return TraceDecl{}, fmt.Errorf("%s: servo.Trace[%s]: the interface declares no methods, so there is nothing to wrap", pos, graph.TypeString(t))
+	}
+	if named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == graph.OtelTracePackagePath {
+		return TraceDecl{}, fmt.Errorf("%s: servo.Trace[%s]: the OpenTelemetry trace API is what every wrapper is built from, not something to wrap", pos, graph.TypeString(t))
+	}
+	for i := 0; i < iface.NumMethods(); i++ {
+		m := iface.Method(i)
+		if !m.Exported() && (m.Pkg() == nil || m.Pkg().Path() != spec.InjectorPkg.PkgPath) {
+			return TraceDecl{}, fmt.Errorf("%s: servo.Trace[%s]: method %s is unexported, and the wrapper is generated into package %s, which cannot implement a method it cannot name — export the method, or declare the interface in the injector's own package", pos, graph.TypeString(t), m.Name(), spec.InjectorPkg.PkgPath)
+		}
+		// An exported method may still mention a type only its own package
+		// can name — `Get(ctx, opts option)` — which consumers never notice
+		// and the wrapper, which has to spell the signature out, cannot
+		// compile. Said here, at the declaration, rather than by the
+		// compiler inside a file the user is told not to read.
+		if hidden := unexportedNamedIn(m.Type(), spec.InjectorPkg.PkgPath, map[types.Type]bool{}); hidden != nil {
+			return TraceDecl{}, fmt.Errorf("%s: servo.Trace[%s]: method %s's signature uses %s, an unexported type the wrapper generated into package %s cannot name — export the type, or declare the interface in the injector's own package", pos, graph.TypeString(t), m.Name(), graph.TypeString(hidden), spec.InjectorPkg.PkgPath)
+		}
+	}
+
+	decl := TraceDecl{Iface: graph.NewKey(t, ""), IfaceType: t, Pos: pos}
+	for _, arg := range call.Args {
+		optCall, ok := arg.(*ast.CallExpr)
+		if !ok {
+			return TraceDecl{}, fmt.Errorf("%s: servo.Trace option is not a marker call", pkg.Fset.Position(arg.Pos()))
+		}
+		name, _, optPos, err := markerCall(pkg, optCall)
+		if err != nil {
+			return TraceDecl{}, err
+		}
+		if name != "Expected" {
+			return TraceDecl{}, fmt.Errorf("%s: servo.%s is not a servo.Trace option — the only option is servo.Expected(err)", optPos, name)
+		}
+		exp, err := parseExpectedCall(pkg, spec, optCall, optPos)
+		if err != nil {
+			return TraceDecl{}, err
+		}
+		for _, prior := range decl.Expected {
+			if prior.Obj == exp.Obj {
+				return TraceDecl{}, fmt.Errorf("%s: servo.Expected(%s) declared twice in the same servo.Trace — first at %s", optPos, exp.Obj.Name(), prior.Pos)
+			}
+		}
+		decl.Expected = append(decl.Expected, exp)
+	}
+	return decl, nil
+}
+
+// unexportedNamedIn finds a named or alias type inside t that only its own
+// package can name from outside injectorPath: an unexported one declared
+// anywhere else. It walks the composite types a signature can be built
+// from, with seen guarding the recursion a self-referential type allows.
+func unexportedNamedIn(t types.Type, injectorPath string, seen map[types.Type]bool) types.Type {
+	if t == nil || seen[t] {
+		return nil
+	}
+	seen[t] = true
+	hidden := func(obj *types.TypeName) bool {
+		return !obj.Exported() && obj.Pkg() != nil && obj.Pkg().Path() != injectorPath
+	}
+	switch u := t.(type) {
+	case *types.Alias:
+		if hidden(u.Obj()) {
+			return t
+		}
+		return unexportedNamedIn(types.Unalias(t), injectorPath, seen)
+	case *types.Named:
+		if hidden(u.Obj()) {
+			return t
+		}
+		if targs := u.TypeArgs(); targs != nil {
+			for i := 0; i < targs.Len(); i++ {
+				if h := unexportedNamedIn(targs.At(i), injectorPath, seen); h != nil {
+					return h
+				}
+			}
+		}
+		return nil // a named type's underlying is reachable by its name
+	case *types.Pointer:
+		return unexportedNamedIn(u.Elem(), injectorPath, seen)
+	case *types.Slice:
+		return unexportedNamedIn(u.Elem(), injectorPath, seen)
+	case *types.Array:
+		return unexportedNamedIn(u.Elem(), injectorPath, seen)
+	case *types.Chan:
+		return unexportedNamedIn(u.Elem(), injectorPath, seen)
+	case *types.Map:
+		if h := unexportedNamedIn(u.Key(), injectorPath, seen); h != nil {
+			return h
+		}
+		return unexportedNamedIn(u.Elem(), injectorPath, seen)
+	case *types.Signature:
+		for _, tuple := range []*types.Tuple{u.Params(), u.Results()} {
+			for i := 0; i < tuple.Len(); i++ {
+				if h := unexportedNamedIn(tuple.At(i).Type(), injectorPath, seen); h != nil {
+					return h
+				}
+			}
+		}
+		return nil
+	case *types.Struct:
+		for i := 0; i < u.NumFields(); i++ {
+			if h := unexportedNamedIn(u.Field(i).Type(), injectorPath, seen); h != nil {
+				return h
+			}
+		}
+		return nil
+	case *types.Interface:
+		for i := 0; i < u.NumMethods(); i++ {
+			if h := unexportedNamedIn(u.Method(i).Type(), injectorPath, seen); h != nil {
+				return h
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+// parseExpectedCall reads servo.Expected's one argument, which must name
+// a package-level variable or constant of an error type. It is read as
+// syntax: the generated wrapper writes `errors.Is(err, pkg.ErrX)`, so the
+// name is what servo needs, not the value — and the name has to be one
+// the injector package can spell.
+func parseExpectedCall(pkg *packages.Package, spec *Spec, call *ast.CallExpr, pos token.Position) (ExpectedErr, error) {
+	const shape = "servo.Expected's argument must name a package-level error variable or constant, like cache.ErrMiss — it is read as syntax and never evaluated, so a call, a literal or a local has no value servo could read"
+	if len(call.Args) != 1 {
+		return ExpectedErr{}, fmt.Errorf("%s: servo.Expected takes exactly one argument — %s", pos, shape)
+	}
+	var ident *ast.Ident
+	switch a := call.Args[0].(type) {
+	case *ast.Ident:
+		ident = a
+	case *ast.SelectorExpr:
+		ident = a.Sel
+	default:
+		return ExpectedErr{}, fmt.Errorf("%s: %s", pos, shape)
+	}
+	obj := pkg.TypesInfo.Uses[ident]
+	switch obj.(type) {
+	case *types.Var, *types.Const:
+	default:
+		return ExpectedErr{}, fmt.Errorf("%s: %s", pos, shape)
+	}
+	if obj.Pkg() == nil || obj.Parent() != obj.Pkg().Scope() {
+		return ExpectedErr{}, fmt.Errorf("%s: servo.Expected(%s): %s is not declared at package level — %s", pos, ident.Name, ident.Name, shape)
+	}
+	if !types.Implements(obj.Type(), errorIface) {
+		return ExpectedErr{}, fmt.Errorf("%s: servo.Expected(%s): %s is a %s, not an error", pos, ident.Name, ident.Name, graph.TypeString(obj.Type()))
+	}
+	if !obj.Exported() && obj.Pkg().Path() != spec.InjectorPkg.PkgPath {
+		return ExpectedErr{}, fmt.Errorf("%s: servo.Expected(%s): %s is unexported, and the generated errors.Is check lives in package %s, which cannot name it — export it", pos, ident.Name, ident.Name, spec.InjectorPkg.PkgPath)
+	}
+	return ExpectedErr{Obj: obj, Pos: pos}, nil
 }
 
 // replaceByIface overwrites the declaration bound to decl.Iface in place,

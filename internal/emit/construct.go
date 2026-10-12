@@ -35,6 +35,10 @@ func (e *emitter) newFunc() string {
 }
 
 func (e *emitter) writeConstruction(b *strings.Builder, index int, n *resolve.Node) {
+	if n.Kind == resolve.NodeTraced {
+		e.writeTracedConstruction(b, n)
+		return
+	}
 	name := e.varName[n.Key]
 	args := make([]string, len(n.Deps))
 	for i, dep := range n.Deps {

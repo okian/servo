@@ -40,6 +40,11 @@ return.
 → [HTTP routes](http.md), with the shipped middleware on its own page:
 [middleware package](middleware.md)
 
+**Traced interfaces** are the same shape in miniature: one marker in the spec, a wrapper in the
+generated file, and a span around every call a consumer makes through the interface — with the
+tracer provider resolved as an ordinary node rather than read from a global.
+→ [Traced interfaces](tracing.md)
+
 ## Find it by question
 
 | You want to know | Page |
@@ -58,6 +63,8 @@ return.
 | Why a singleton can't depend on a scoped type | [Scoped instances](scopes.md#diagnostics) |
 | When a scoped instance is actually torn down | [Scoped instances](scopes.md#lifetimes) |
 | How to declare an HTTP route, and what a handler may look like | [HTTP routes](http.md) |
+| How to get a span around every call into a dependency | [Traced interfaces](tracing.md) |
+| Why a cache miss should not mark a span failed, and how to say so | [Traced interfaces](tracing.md#expected-errors) |
 | What a handler can return, and which status the caller sees | [HTTP routes](http.md#responses) |
 | How routes split across listeners | [HTTP routes](http.md#groups--one-listener-per-port) |
 | How middleware attaches, and what ships ready-made | [middleware package](middleware.md) |

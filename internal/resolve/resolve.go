@@ -30,8 +30,9 @@ type Node struct {
 	Binding string
 
 	// Kind separates ordinary provider-built nodes from the synthetic
-	// kinds — the two a scope introduces, and a supplied value. Only
-	// NodeProvider nodes ever appear in Resolved.Order or Scope.Order.
+	// kinds — the two a scope introduces, a supplied value, a config, and
+	// a servo.Trace wrapper. Of those only NodeTraced ever appears in
+	// Resolved.Order, because it alone is constructed.
 	Kind NodeKind
 	// Scope is the scope this node belongs to, or nil for a singleton.
 	// Every node in the graph is one or the other; a node that a scope
@@ -53,6 +54,10 @@ type Node struct {
 	// Config is set only on NodeConfig nodes: the //servo:config
 	// declaration whose generated loader builds this value.
 	Config *graph.ConfigDecl
+
+	// Traced is set only on NodeTraced nodes: the servo.Trace declaration
+	// the wrapper answers, and the two nodes it is built from.
+	Traced *Traced
 }
 
 // Scoped reports whether this node is one instance per key rather than one
@@ -81,6 +86,13 @@ type Resolved struct {
 	// Order: their loaders run at the top of New, before any provider,
 	// and an app using none emits a byte-identical file.
 	Configs []*Node
+	// Traced is every servo.Trace wrapper the graph actually uses, in
+	// declaration order. Unlike the kinds above these ARE in Order — a
+	// wrapper is constructed in New, after the implementation and the
+	// tracer provider it takes and before its consumers — so they are the
+	// one non-provider kind the construction loop has to know about. An
+	// app declaring none emits a byte-identical file.
+	Traced []*Node
 }
 
 // Input is everything Resolve needs: the spec's roots/binds/scopes, the
@@ -110,6 +122,11 @@ type Input struct {
 	// scanned routes plus the config key the emitted server requires. Nil
 	// leaves resolution byte-for-byte as before.
 	HTTP *HTTPInput
+
+	// Trace is the trace.TracerProvider key every servo.Trace wrapper
+	// depends on, nil when the OpenTelemetry trace API is not in the
+	// module's build. Read only when the spec declares a Trace.
+	Trace *TraceInput
 }
 
 const (
@@ -148,6 +165,10 @@ type resolver struct {
 	configByKey    map[graph.Key]*graph.ConfigDecl
 	configNodes    []*Node
 	activeScope    *Scope
+	traceIn        *TraceInput
+	traceByKey     map[graph.Key]*load.TraceDecl
+	traceUsed      map[graph.Key]bool
+	traceNodes     []*Node
 }
 
 // Resolve builds the construction plan for in.Spec.Roots. On any
@@ -185,6 +206,8 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		suppliedUsed:  make(map[graph.Key]bool),
 		declaredScope: make(map[graph.Key]bool),
 		configByKey:   make(map[graph.Key]*graph.ConfigDecl),
+		traceByKey:    make(map[graph.Key]*load.TraceDecl),
+		traceUsed:     make(map[graph.Key]bool),
 	}
 	for _, c := range in.Candidates {
 		r.byResult[c.Result] = append(r.byResult[c.Result], c)
@@ -244,6 +267,10 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 			}
 		}
 	}
+	// After the accessors are known, so a Trace naming one is refused by
+	// name; before any traversal, so the first request for a traced
+	// interface already finds its declaration.
+	r.setupTraces(in)
 	if len(r.diags) > 0 {
 		return nil, r.diags
 	}
@@ -274,6 +301,10 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	if len(r.diags) > 0 {
 		return nil, r.diags
 	}
+	// Before the scope-edge walk: a wrapper around a scoped instance is
+	// refused here with its own message, and the generic widening
+	// diagnostic for the same edge would only say it less well.
+	r.checkTraces(in.Spec.Traces)
 	r.checkScopeEdges(roots)
 	r.checkAccessorInterfaces()
 	r.checkSuppliedValues(in.Spec.Values)
@@ -292,7 +323,7 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	sort.Slice(r.configNodes, func(i, j int) bool {
 		return graph.ComparePos(r.configNodes[i].Config.Pos, r.configNodes[j].Config.Pos) < 0
 	})
-	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, HTTP: httpPlan, Supplied: supplied, Configs: r.configNodes}, nil
+	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, HTTP: httpPlan, Supplied: supplied, Configs: r.configNodes, Traced: sortedTraceNodes(r.traceNodes)}, nil
 }
 
 // checkConfigs runs the config checks that only make sense once the graph
@@ -387,6 +418,19 @@ func (r *resolver) checkSuppliedValues(values []load.ValueDecl) {
 // its dependency's point of view, a "needed by" consumer — the diagnostic
 // prints both lines for such a node, not one replacing the other).
 func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry, rootPos token.Position) (*Node, bool) {
+	// A traced interface answers every request with its wrapper, whatever
+	// the interface itself would have resolved to — which is what the
+	// wrapper resolves next, through the ordinary path below.
+	if decl, traced := r.traceByKey[k]; traced {
+		return r.resolveTraced(decl, k, kType, chain, rootPos)
+	}
+	return r.resolveUntraced(k, kType, chain, rootPos)
+}
+
+// resolveUntraced is resolveKey without the trace indirection: the
+// precedence walk itself. resolveTraced calls it for the implementation
+// behind a wrapper; everything else goes through resolveKey.
+func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainEntry, rootPos token.Position) (*Node, bool) {
 	// A scope's key is produced per instance by its extractor, so it
 	// resolves only while some scope's sub-graph is being walked, and is
 	// deliberately never cached in resolvedKey: the identical key
@@ -444,7 +488,14 @@ func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry,
 
 	sel := r.selectProvider(k, kType)
 	if sel.provider == nil {
-		r.diags = append(r.diags, r.unresolvedDiagnostic(sel, chain, rootPos))
+		// The tracer provider is the one dependency the user did not ask
+		// for by name, so "no provider, zero implementations" needs to
+		// say whose job writing one is.
+		if r.traceIn != nil && k == r.traceIn.ProviderKey && len(sel.candidates) == 0 {
+			r.diags = append(r.diags, r.missingTracerProviderDiagnostic(chain, rootPos))
+		} else {
+			r.diags = append(r.diags, r.unresolvedDiagnostic(sel, chain, rootPos))
+		}
 		r.failedKey[k] = true
 		return nil, false
 	}

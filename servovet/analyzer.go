@@ -55,6 +55,8 @@ var markerNames = map[string]bool{
 	// The HTTP markers panic identically; HTTP/Extract sit at the Build
 	// top level, Group/Use/Route nest inside servo.HTTP(...).
 	"HTTP": true, "Group": true, "Use": true, "Route": true, "Extract": true,
+	// Trace sits at the Build top level; Expected nests inside it.
+	"Trace": true, "Expected": true,
 }
 
 func run(pass *analysis.Pass) (any, error) {

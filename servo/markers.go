@@ -3,9 +3,9 @@
 package servo
 
 // Marker is the opaque return type of Root, Bind, Override, Scoped, HTTP,
-// and Extract. It carries no data; `servo generate` reads calls to these
-// functions as syntax inside a Build(...) argument list and never executes
-// them.
+// Extract, Value, Include, ConfigFile and Trace. It carries no data;
+// `servo generate` reads calls to these functions as syntax inside a
+// Build(...) argument list and never executes them.
 type Marker struct{}
 
 // Build declares an injector: its roots, explicit bindings, scopes, HTTP
@@ -188,4 +188,51 @@ func ConfigFile(path string) Marker {
 // set worth having.
 func Include(func() []Marker) Marker {
 	panic("servo: Include executed at runtime — run `servo generate`")
+}
+
+// Trace declares that every consumer of interface I receives a generated
+// OpenTelemetry wrapper around whatever I resolves to — an explicit Bind,
+// a structural match, a supplied Value, or, in the test variant, an
+// Override:
+//
+//	servo.Build(
+//	    servo.Root[*api.Server](),
+//	    servo.Trace[repository.OrderRepository](),
+//	    servo.Trace[cache.OrderCache](servo.Expected(cache.ErrMiss)),
+//	)
+//
+// The wrapper is emitted into the injector package: a type implementing I
+// whose every method with a leading context.Context runs inside a span
+// named "<pkg>.<I>/<Method>", hands the span's context to the
+// implementation, and records a non-nil error on the span — unless an
+// Expected option names it. Methods without a context are delegated
+// untouched. The wrapper has no lifecycle of its own; the implementation
+// keeps its Init, Run and Stop exactly as before.
+//
+// The wrapper depends on go.opentelemetry.io/otel/trace.TracerProvider as
+// an ordinary graph node, so a constructor in your module has to produce
+// one — the SDK's *sdktrace.TracerProvider implements it, and so does a
+// type of your own that embeds it — and there is no global fallback. I
+// must be a named interface: a consumer holding a concrete type has no
+// seam to wrap. The generated code imports OpenTelemetry in your module;
+// servo itself never does.
+func Trace[I any](...TraceOption) Marker {
+	panic("servo: Trace executed at runtime — run `servo generate`")
+}
+
+// TraceOption is the opaque return type of Expected — read as syntax
+// inside servo.Trace's argument list, never executed, for the same reason
+// ScopeOption exists.
+type TraceOption struct{}
+
+// Expected, inside servo.Trace[I](...), names a package-level error the
+// wrapper treats as an ordinary result rather than a failure: a method
+// returning it (by errors.Is) ends its span cleanly with nothing recorded.
+// A cache miss and a not-found are errors in Go and nowhere else, and a
+// span marked failed for every one of them makes any error rate computed
+// from traces meaningless. The argument must name an exported
+// package-level variable or constant of an error type; it is read as
+// syntax and never evaluated.
+func Expected(err error) TraceOption {
+	panic("servo: Expected executed at runtime — run `servo generate`")
 }
