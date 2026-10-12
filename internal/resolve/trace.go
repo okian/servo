@@ -87,6 +87,13 @@ func (r *resolver) setupTraces(in Input) {
 // cycle it is.
 func (r *resolver) resolveTraced(decl *load.TraceDecl, k graph.Key, kType types.Type, chain []chainEntry, rootPos token.Position) (*Node, bool) {
 	wk := tracedKey(k)
+	// Checked before the node map, the way resolveUntraced checks its own
+	// failedKey first: a wrapper that failed on one dependency is still in
+	// r.nodes, black, and a second consumer must get the same refusal
+	// rather than the half-built node.
+	if r.failedKey[wk] {
+		return nil, false
+	}
 	if existing, ok := r.nodes[wk]; ok {
 		frame := chainEntry{Key: wk, Label: tracedLabel(k), Pos: decl.Pos}
 		if r.color[wk] == colorGray {
@@ -94,12 +101,7 @@ func (r *resolver) resolveTraced(decl *load.TraceDecl, k graph.Key, kType types.
 			r.failedKey[wk] = true
 			return nil, false
 		}
-		if r.color[wk] == colorBlack {
-			return existing, true
-		}
-	}
-	if r.failedKey[wk] {
-		return nil, false
+		return existing, true
 	}
 	r.traceUsed[k] = true
 

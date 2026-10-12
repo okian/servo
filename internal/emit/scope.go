@@ -197,19 +197,21 @@ func baseNamesFor(nodes []*resolve.Node) map[*resolve.Node]string {
 // `storeTraced` sits beside the `store` it wraps rather than fighting it
 // for the name.
 func nodeBaseName(n *resolve.Node) string {
+	base := baseName(nodeResultType(n))
 	if n.Kind == resolve.NodeTraced {
-		return baseName(n.Traced.IfaceType) + "Traced"
+		base += "Traced"
 	}
-	return baseName(nodeResultType(n))
+	return base
 }
 
 // nodeQualifiedBaseName is nodeBaseName qualified by package, for when
 // the short name is ambiguous.
 func nodeQualifiedBaseName(n *resolve.Node) string {
+	base := qualifiedBaseName(nodeResultType(n))
 	if n.Kind == resolve.NodeTraced {
-		return qualifiedBaseName(n.Traced.IfaceType) + "Traced"
+		base += "Traced"
 	}
-	return qualifiedBaseName(nodeResultType(n))
+	return base
 }
 
 // nodeResultType is the type a node stands for, read from wherever that

@@ -227,3 +227,158 @@ func TestEmitTracedTestVariantPrefixesTypes(t *testing.T) {
 		t.Errorf("test-variant source redeclares the production wrapper type:\n%s", src)
 	}
 }
+
+// otherSrc is a second package sharing the interface name Store, with its
+// own expected error: the two wrappers' fields have to be qualified apart,
+// the errors.Is check has to name the sentinel package-qualified, and a
+// Trace with no Expected at all is the other branch of the doc comment.
+const otherSrc = `
+package other
+
+import "context"
+
+type missing struct{}
+func (missing) Error() string { return "other: missing" }
+
+var ErrMissing error = missing{}
+
+type Store interface {
+	Lookup(ctx context.Context, key string) (string, error)
+	Reset()
+}
+`
+
+const twoPackageAppSrc = `
+package app
+
+import (
+	"context"
+
+	"example.com/other"
+)
+
+type DB struct{}
+func (d *DB) Get(ctx context.Context, key string) (string, error) { return "", nil }
+func (d *DB) Lookup(ctx context.Context, key string) (string, error) { return "", nil }
+func (d *DB) Reset() {}
+func NewDB() *DB { return &DB{} }
+
+type Store interface {
+	Get(ctx context.Context, key string) (string, error)
+}
+
+type TracerProvider interface{ Tracer(name string) string }
+type SDK struct{}
+func (s *SDK) Tracer(name string) string { return name }
+func NewSDK() *SDK { return &SDK{} }
+
+type Server struct{}
+func NewServer(st Store) *Server { return &Server{} }
+
+type Auditor struct{}
+func NewAuditor(st other.Store) *Auditor { return &Auditor{} }
+`
+
+func buildTwoPackageTracedResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
+	t.Helper()
+	servoPkg := loadServoPackage(t)
+	importer := newPkgImporter(servoPkg)
+	fset := token.NewFileSet()
+
+	otherFile, err := parser.ParseFile(fset, "other.go", otherSrc, 0)
+	if err != nil {
+		t.Fatalf("parse other: %v", err)
+	}
+	otherPkg, err := (&types.Config{Importer: importer}).Check("example.com/other", fset, []*ast.File{otherFile}, nil)
+	if err != nil {
+		t.Fatalf("typecheck other: %v", err)
+	}
+	importer.byPath["example.com/other"] = otherPkg
+
+	appFile, err := parser.ParseFile(fset, "app.go", twoPackageAppSrc, 0)
+	if err != nil {
+		t.Fatalf("parse app: %v", err)
+	}
+	pkg, err := (&types.Config{Importer: importer}).Check("example.com/app", fset, []*ast.File{appFile}, nil)
+	if err != nil {
+		t.Fatalf("typecheck app: %v", err)
+	}
+	appPkg := &packages.Package{Name: "app", PkgPath: "example.com/app", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{appPkg}, "example.com/app")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+
+	lookup := func(p *types.Package, name string) types.Type { return p.Scope().Lookup(name).Type() }
+	ptr := func(name string) types.Type { return types.NewPointer(lookup(pkg, name)) }
+	spec := &load.Spec{
+		InjectorPkg: appPkg,
+		Roots: []load.RootDecl{
+			{Key: graph.NewKey(ptr("Server"), ""), Type: ptr("Server"), Pos: token.Position{Filename: "spec.go", Line: 9}},
+			{Key: graph.NewKey(ptr("Auditor"), ""), Type: ptr("Auditor"), Pos: token.Position{Filename: "spec.go", Line: 10}},
+		},
+		Traces: []load.TraceDecl{
+			{Iface: graph.NewKey(lookup(pkg, "Store"), ""), IfaceType: lookup(pkg, "Store"), Pos: token.Position{Filename: "spec.go", Line: 11}},
+			{
+				Iface: graph.NewKey(lookup(otherPkg, "Store"), ""), IfaceType: lookup(otherPkg, "Store"),
+				Pos:      token.Position{Filename: "spec.go", Line: 12},
+				Expected: []load.ExpectedErr{{Obj: otherPkg.Scope().Lookup("ErrMissing"), Pos: token.Position{Filename: "spec.go", Line: 12, Column: 30}}},
+			},
+		},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{
+		Spec:       spec,
+		Candidates: candidates,
+		Caps:       caps,
+		Scope:      map[string]bool{"example.com/app": true},
+		Trace:      &resolve.TraceInput{ProviderKey: graph.NewKey(lookup(pkg, "TracerProvider"), ""), ProviderType: lookup(pkg, "TracerProvider")},
+	})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	return resolved, spec
+}
+
+// TestEmitTwoTracedInterfacesWithOneName pins the cases the golden
+// fixture cannot hold: two traced interfaces sharing a short name, an
+// expected error from another package, a wrapper with no Expected at
+// all, and a context-less method with no results.
+func TestEmitTwoTracedInterfacesWithOneName(t *testing.T) {
+	resolved, spec := buildTwoPackageTracedResolved(t)
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+	for _, want := range []string{
+		// Both fields qualified by package, both types distinct.
+		"appStoreTraced := newTracedStore(db, sdk)",
+		"otherStoreTraced := newTracedStore2(db, sdk)",
+		"server := NewServer(appStoreTraced)",
+		"auditor := NewAuditor(otherStoreTraced)",
+		"type tracedStore2 struct {\n\tinner  other.Store\n\ttracer trace.Tracer\n}",
+		`tp.Tracer("example.com/other")`,
+		// The foreign sentinel, package-qualified, in the check and the comment.
+		"if err != nil && !errors.Is(err, other.ErrMissing) {",
+		"span — except other.ErrMissing, declared expected.",
+		// No Expected on the first wrapper: the plain check and the plain comment.
+		"r0, err := t.inner.Get(ctx, key)\n\tif err != nil {\n\t\tspan.RecordError(err)",
+		"span. Methods without a\n// context are delegated untouched",
+		// Context-less, result-less: a bare delegation.
+		"func (t *tracedStore2) Reset() {\n\tt.inner.Reset()\n}",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated source missing %q\n---\n%s", want, src)
+		}
+	}
+}
+
+// TestTracedTypeNameFallsBackForAnUnnamedInterface: the loader never lets
+// an interface literal through, so the fallback exists only to keep the
+// emitter total.
+func TestTracedTypeNameFallsBackForAnUnnamedInterface(t *testing.T) {
+	if got := tracedTypeName(types.NewInterfaceType(nil, nil)); got != "Iface" {
+		t.Fatalf("tracedTypeName(interface{}) = %q, want Iface", got)
+	}
+}
