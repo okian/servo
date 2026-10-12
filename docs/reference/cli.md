@@ -647,6 +647,16 @@ routes:
   GET /healthz [telemetry]                 api.Healthz               api/api.go:158:1
 ```
 
+An injector declaring [`servo.Trace`](tracing.md) ends with a `traced:` section as well — per
+spec rather than module-wide, since which consumers get a wrapper is this injector's own
+declaration: the interface, its `Expected` sentinels when there are any, and the marker's
+position:
+
+```
+traced:
+  example.com/app/store.Store              expected: store.ErrMissing  cmd/app/spec.go:21:3
+```
+
 The `--json` schema is unchanged — still the bare candidate array — so nothing consuming it needs
 updating.
 

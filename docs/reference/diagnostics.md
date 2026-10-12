@@ -499,6 +499,32 @@ The route set and the graph:
 | `no provider for *app.Missing` + `needed by handler app.Order (POST /order/…)` | An unresolvable handler dependency — with a hint about binding tags when the type looks like a forgotten request struct |
 | `*chat.Session is scoped, but handler app.Me (GET /me) receives it from the HTTP server` | The widening rule, with the emitted server as the capturing singleton; depend on the accessor instead |
 
+## Tracing
+
+[`servo.Trace`](tracing.md) adds declaration-time checks — the type argument must be a named,
+non-empty interface the injector package can implement, and `Expected` must name an exported
+package-level error — and three resolution-time ones: a traced interface nothing depends on
+(same shape as an [unused supplied value](#unused-supplied-value), checked per generated file), a
+module in which nothing imports the OpenTelemetry trace API, and a missing
+`trace.TracerProvider` provider, which replaces the generic no-provider message with one that
+says the constructor is yours to write:
+
+```
+cmd/api/spec.go:21:3: servo: no provider for go.opentelemetry.io/otel/trace.TracerProvider
+  needed by the servo.Trace wrapper for example.com/app/store.Store  cmd/api/spec.go:21:3
+  needed by *example.com/app/api.Server                               api/api.go:15:6
+  root                                                                cmd/api/spec.go:12:3
+
+  Every servo.Trace wrapper takes the tracer provider as an ordinary dependency —
+  there is no global fallback. Write a constructor whose result implements it;
+  the SDK's *sdktrace.TracerProvider does, and so does a type of your own that
+  embeds it and adds the Stop servo will call at shutdown:
+  ...
+```
+
+A fourth refuses, for this release, a wrapper around a scoped implementation. The full table,
+with causes and fixes, is on [Traced interfaces](tracing.md#diagnostics).
+
 ## Emission
 
 ```

@@ -58,10 +58,13 @@ type ScopeRoot struct {
 	Pos           token.Position
 }
 
-// NodeKind separates the five things a *Node can stand for. All but
-// NodeProvider exist only as entries in another node's Deps: they are
-// never constructed by a provider function and never appear in an Order
-// (supplied values live in Resolved.Supplied, configs in Resolved.Configs).
+// NodeKind separates the six things a *Node can stand for. None but
+// NodeProvider is constructed by a provider function, and all but
+// NodeProvider and NodeTraced exist only as entries in another node's
+// Deps, never in an Order (supplied values live in Resolved.Supplied,
+// configs in Resolved.Configs). A trace wrapper is the exception because
+// it is constructed — by generated code, in New — and so has a place in
+// the construction order like a provider's node does.
 type NodeKind int
 
 const (
@@ -86,6 +89,13 @@ const (
 	// start or stop is a component that should receive the config, not
 	// be one.
 	NodeConfig
+	// NodeTraced is a servo.Trace wrapper: generated code implementing a
+	// traced interface, built in New from the implementation the
+	// interface resolved to and the trace.TracerProvider node. It is the
+	// one synthetic kind that appears in an Order, because it is
+	// constructed — but it has no provider, no capabilities (the
+	// implementation keeps its own lifecycle) and nothing to stop.
+	NodeTraced
 )
 
 // scopeName renders a scope's stable identifier.
@@ -328,7 +338,10 @@ func (r *resolver) assignMembership() {
 }
 
 func (r *resolver) collectReachable(n *Node, seen map[*Node]bool) {
-	if seen[n] || n.Kind != NodeProvider {
+	// A wrapper is walked through, not stopped at: the implementation
+	// behind it is reachable, and if that implementation takes the key,
+	// the wrapper is a member too — which checkTraces then refuses.
+	if seen[n] || (n.Kind != NodeProvider && n.Kind != NodeTraced) {
 		return
 	}
 	seen[n] = true
@@ -389,6 +402,12 @@ func (r *resolver) checkScopeEdges(roots []*Node) {
 
 	seen := map[string]bool{}
 	for _, n := range r.order {
+		// A wrapper's edges are checked by checkTraces, with a message
+		// about tracing rather than about widening — and it has no
+		// provider for the widening diagnostic to name a parameter of.
+		if n.Kind == NodeTraced {
+			continue
+		}
 		for _, d := range n.Deps {
 			// A dependency on a scope's *key* is a scope edge too, and the
 			// one edge a membership fixpoint cannot classify by itself: a
@@ -573,12 +592,12 @@ func (r *resolver) chainTo(roots []*Node, target *Node) ([]chainEntry, token.Pos
 		if item.node == target {
 			entries := make([]chainEntry, 0, len(item.path))
 			for _, n := range item.path {
-				entries = append(entries, chainEntry{Key: n.Key, Label: n.Key.String(), Pos: nodePos(n)})
+				entries = append(entries, chainEntry{Key: n.Key, Label: nodeLabel(n), Pos: nodePos(n)})
 			}
 			return entries, r.rootPos[item.path[0]]
 		}
 		for _, dep := range item.node.Deps {
-			if visited[dep] || dep.Kind != NodeProvider {
+			if visited[dep] || (dep.Kind != NodeProvider && dep.Kind != NodeTraced) {
 				continue
 			}
 			visited[dep] = true
@@ -588,9 +607,22 @@ func (r *resolver) chainTo(roots []*Node, target *Node) ([]chainEntry, token.Pos
 	return []chainEntry{{Key: target.Key, Label: target.Key.String(), Pos: nodePos(target)}}, r.rootPos[target]
 }
 
+// nodeLabel is how a node reads in a needed-by chain: its key, or for a
+// wrapper the same phrase traversal uses, so a chain rebuilt after the
+// fact reads like one printed during it.
+func nodeLabel(n *Node) string {
+	if n.Kind == NodeTraced {
+		return tracedLabel(graph.Key{Type: n.Key.Type})
+	}
+	return n.Key.String()
+}
+
 func nodePos(n *Node) token.Position {
 	if n.Provider != nil {
 		return n.Provider.Pos
+	}
+	if n.Kind == NodeTraced {
+		return n.Traced.Decl.Pos
 	}
 	if n.Scope != nil {
 		return n.Scope.Pos

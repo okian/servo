@@ -97,7 +97,7 @@ func scopeAwareDeps(n *resolve.Node) []*resolve.Node {
 			if dep.ScopeRoot != nil && dep.ScopeRoot.Node != nil {
 				out = append(out, dep.ScopeRoot.Node)
 			}
-		case resolve.NodeProvider, resolve.NodeSupplied, resolve.NodeConfig:
+		case resolve.NodeProvider, resolve.NodeSupplied, resolve.NodeConfig, resolve.NodeTraced:
 			// A supplied value or a config is a real edge — the consumer
 			// depends on it exactly as it would on a constructed one — so
 			// `why` has to traverse it or report a node it can plainly see

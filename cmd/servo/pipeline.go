@@ -228,6 +228,18 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 			ConfigType: configType,
 		}
 	}
+	// The trace input exists only for specs that declare servo.Trace, and
+	// only when the OpenTelemetry trace API is in the build at all — a
+	// nil input with a Trace declared is the resolver's diagnostic to
+	// make, naming the provider whose import brings the package in.
+	var traceIn *resolve.TraceInput
+	if len(p.spec.Traces) > 0 && p.loaded != nil {
+		if otel := p.loaded.ByPath[graph.OtelTracePackagePath]; otel != nil && otel.Types != nil {
+			if obj := otel.Types.Scope().Lookup(graph.OtelTracerProviderName); obj != nil {
+				traceIn = &resolve.TraceInput{ProviderKey: graph.NewKey(obj.Type(), ""), ProviderType: obj.Type()}
+			}
+		}
+	}
 	resolved, diags := resolve.Resolve(resolve.Input{
 		Spec:       p.spec,
 		Candidates: p.candidates,
@@ -238,6 +250,7 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 		Fset:       fset,
 		Pkgs:       pkgs,
 		HTTP:       httpIn,
+		Trace:      traceIn,
 	})
 	if len(diags) > 0 {
 		msg := fmt.Sprintf("servo: %d diagnostic(s):\n", len(diags))

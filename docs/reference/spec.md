@@ -41,7 +41,8 @@ real spec file, and it uses every marker a service without scopes, HTTP or confi
 `Scoped` appears in [`examples/scoped`](https://github.com/okian/servo/blob/master/examples/scoped/cmd/chat/spec.go)'s
 spec, and the HTTP markers — `HTTP` with its `Group`/`Use`/`Route` options, and `Extract` — in
 [`examples/http`](https://github.com/okian/servo/blob/master/examples/http/cmd/app/spec.go)'s;
-[`Value`](#value), [`Include`](#include) and [`ConfigFile`](#configfile) are on this page too.
+[`Value`](#value), [`Include`](#include), [`ConfigFile`](#configfile) and [`Trace`](#trace) are
+on this page too.
 
 Note what is *not* in it: the `//go:generate` directive. That lives in an untagged
 `servo_generate.go` beside it, because `go generate` honours build constraints and would never
@@ -79,8 +80,8 @@ as written it would compile into the real binary
 ```
 
 The reason is the markers themselves. `Build`, `Root`, `Bind`, `Override`, `Scoped` (with its
-`Linger`/`Max` options), `HTTP` (with `Group`/`Use`/`Route`), `Extract`, `Value`, `Include` and
-`ConfigFile` all `panic` when executed — they exist to be *read*, and a marker call that actually
+`Linger`/`Max` options), `HTTP` (with `Group`/`Use`/`Route`), `Extract`, `Value`, `Include`,
+`ConfigFile` and `Trace` (with `Expected`) all `panic` when executed — they exist to be *read*, and a marker call that actually
 runs means generation was skipped or the tag was missing. Rather than silently returning a nil app,
 they fail loudly. The build tag is what guarantees they never run: `servo generate` loads your
 module with `-tags=servoinject`, so it sees the spec file, and an ordinary `go build` doesn't.
@@ -138,7 +139,7 @@ func Build(...Marker)
 ```
 
 Declares the injector. Every argument must be a `Root`, `Bind`, `Override`, `Scoped`, `HTTP`,
-`Extract`, `Value` or `Include` call written inline — with explicit type arguments for the generic
+`Extract`, `Value`, `Include`, `ConfigFile` or `Trace` call written inline — with explicit type arguments for the generic
 ones, and with a function *name* for `Include`.
 
 That is a real constraint, not a style preference. Servo reads the type arguments out of the
@@ -551,6 +552,62 @@ The full contract — the directive, the tag grammar, the generated loader, and 
 injector sharing a config must agree about declaring a file — is on
 [Generated configuration](config.md).
 
+## `Trace`
+
+```go
+func Trace[I any](...TraceOption) Marker
+func Expected(err error) TraceOption
+```
+
+```go
+servo.Build(
+	servo.Root[*api.Server](),
+	servo.Trace[repository.OrderRepository](servo.Expected(domain.ErrNotFound)),
+	servo.Trace[cache.OrderCache](servo.Expected(cache.ErrMiss)),
+	servo.Trace[broker.EventPublisher](),
+)
+```
+
+Declares that every consumer of interface `I` receives a generated OpenTelemetry wrapper in place
+of whatever `I` resolves to — an explicit `Bind`, a structural match, a supplied `Value`, or in
+the test variant an `Override`. The wrapper is emitted into the injector package: a type
+implementing `I` whose every method with a leading `context.Context` runs inside a span named
+`<pkg>.<I>/<Method>`, hands the span's context to the implementation, and records a non-nil error
+on the span. Methods without a context are delegated untouched, and the wrapper has no lifecycle
+of its own. It depends on `go.opentelemetry.io/otel/trace.TracerProvider` as an ordinary graph
+node, which a constructor in your module has to produce. The full contract — what can be traced,
+exactly what is generated, the tracer provider, and every diagnostic — is on its own page:
+[Traced interfaces](tracing.md).
+
+Four rules at the declaration:
+
+**`I` must be a named interface with at least one method**, every method of which the injector
+package can implement. A concrete type has no seam to wrap, so `servo.Trace[*postgres.DB]()` is
+refused with the interface to depend on instead; an unexported method from another package cannot
+be named from the generated file. The OpenTelemetry trace API itself is refused too.
+
+**`Expected` names an error the wrapper leaves off the span** — a cache miss, a not-found — and
+must name an exported package-level variable or constant of an error type (or one declared in the
+injector's own package). It is read as syntax, exactly as `Include` reads a function's name: the
+generated check is `errors.Is(err, cache.ErrMiss)`, so a call, a literal or a local has no value
+servo could read and is refused.
+
+**One `Trace` per interface per spec file**, with the same include rule `Bind` has: a declaration
+written after an `Include` supersedes the included one for the same interface, so a shared set can
+trace an interface and one injector can still give it its own `Expected` list.
+
+**A traced interface nothing depends on is a diagnostic**, checked per generated file like an
+unused `Value`.
+
+### `Expected`
+
+```go
+func Expected(err error) TraceOption
+```
+
+Only legal inside a `Trace` argument list; at `Build`'s top level it says so. The argument names a
+sentinel, never evaluates it. See [Expected errors](tracing.md#expected-errors).
+
 ## The `go:generate` directive
 
 ```go
@@ -608,6 +665,20 @@ Everything the spec parser can reject, in one place:
 | ``servo.Include names …, which is declared in a file without a `//go:build servoinject` constraint`` | The included file is untagged |
 | ``X must be exactly `return []servo.Marker{ ... }` `` | The included function's body is something servo would have to run |
 | `servo.Include cycle — X includes itself, through:` | Two included sets include each other |
+| `servo.Trace expects exactly one type argument` | `Trace` with the wrong arity |
+| `servo.Trace's type argument must be an interface, not …` | A concrete type; depend on the interface instead |
+| `servo.Trace's type argument must be a named interface` | An interface literal |
+| `servo.Trace[…]: the interface declares no methods` | Nothing to wrap |
+| `servo.Trace[…]: method m is unexported, and the wrapper is generated into package …` | The injector package cannot implement it |
+| `servo.Trace[…]: method M's signature uses …, an unexported type the wrapper … cannot name` | The injector package cannot spell the signature |
+| `servo.Trace[…]: the OpenTelemetry trace API is what every wrapper is built from` | Tracing `trace.TracerProvider` itself |
+| `servo.Trace[…] declared twice` | Two local declarations for one interface |
+| `servo.X is not a servo.Trace option` | Anything but `Expected` inside `Trace(...)` |
+| `servo.Expected belongs inside servo.Trace[I](...)` | `Expected` at the top level of `Build` |
+| `servo.Expected's argument must name a package-level error variable or constant` | A literal, a call, a local, or a field |
+| `servo.Expected(X): X is a …, not an error` | A package-level name that is not an error |
+| `servo.Expected(X): X is unexported, and the generated errors.Is check lives in package …` | An unexported sentinel from another package |
+| `servo.Expected(X) declared twice in the same servo.Trace` | One mention per sentinel |
 | `servo.Scoped expects exactly two type arguments` | `Scoped` with the wrong arity |
 | `servo.Scoped's first type argument must be the concrete scoped type` | An interface where the scoped type belongs |
 | `servo.Scoped's first type argument must be a pointer, not X` | `Acquire` has to be able to return a zero alongside an error |

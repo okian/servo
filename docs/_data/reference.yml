@@ -32,11 +32,11 @@ sections:
           per-configuration build variants.
       - title: Spec file and markers
         url: /reference/spec.html
-        blurb: Build, Root, Bind, Override, Scoped, Value, Include, ConfigFile, and the build tag that keeps them out of your binary.
+        blurb: Build, Root, Bind, Override, Scoped, Value, Include, ConfigFile, Trace, and the build tag that keeps them out of your binary.
         description: >-
           Reference for servo's spec file: the servoinject build tag, spec
           discovery, and the Build/Root/Bind/Override/Scoped/Value/Include/
-          ConfigFile markers, with Linger and Max.
+          ConfigFile/Trace markers, with Linger, Max and Expected.
       - title: Resolution rules
         url: /reference/resolution.html
         blurb: What counts as a constructor, how a dependency is matched, and how order is derived.
@@ -87,6 +87,19 @@ sections:
           ones needing only the Use line, the configurable ones reading a
           config node your own provider supplies.
 
+  - title: Observability
+    summary: Spans around the dependencies you already have, generated rather than hand-written.
+    pages:
+      - title: Traced interfaces
+        url: /reference/tracing.html
+        blurb: The Trace marker, the Expected option, the generated wrapper, and the tracer provider it depends on.
+        description: >-
+          Reference for servo's generated OpenTelemetry wrappers: the
+          servo.Trace marker and its Expected option, which interfaces can be
+          traced, the wrapper servo emits and its span naming and error
+          status, the trace.TracerProvider dependency, and every tracing
+          diagnostic.
+
   - title: Configuration
     summary: Settings parsed by generated code — no reflection, no per-package boilerplate.
     pages:
@@ -126,7 +139,7 @@ sections:
         blurb: The markers, the capability interfaces, and the small stdlib-only runtime.
         description: >-
           Complete API reference for the servo package — markers, including
-          Value and Include, capability interfaces, Report, NodeResult,
+          Value, Include and Trace, capability interfaces, Report, NodeResult,
           NodeStatus, Graph, GraphScope, StartupReport, RunStop,
           MergeNodeResults, DefaultStopBudget, and the scope surface: Scoped,
           Linger, Max, ScopeStats and the scope errors.

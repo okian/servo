@@ -59,6 +59,14 @@ func TestExtractPanics(t *testing.T) {
 	expectPanic(t, "servo: Extract executed at runtime", func() { Extract[int]() })
 }
 
+func TestTracePanics(t *testing.T) {
+	expectPanic(t, "servo: Trace executed at runtime — run `servo generate`", func() { Trace[error]() })
+}
+
+func TestExpectedPanics(t *testing.T) {
+	expectPanic(t, "servo: Expected executed at runtime — run `servo generate`", func() { Expected(nil) })
+}
+
 // TestValuePanicsAndSaysHowToFixIt asserts the whole message, not just the
 // prefix the older markers check. A marker only ever executes because the
 // servoinject build tag went missing from the spec file, and this panic is

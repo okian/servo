@@ -204,6 +204,12 @@ rather than a subtle bug in a constructor.
 fifth. If a selector names a route that doesn't exist — a typo, a renamed pattern —
 `servo generate` fails and says so.
 
+The spec file carries four more lines, `servo.Trace[repository.OrderRepository](...)` and its
+siblings, that have nothing to do with the transport: they put a span around every call the
+service layer makes into the repository, the cache and the broker, generated the same way the
+server is. They are [chapter 16](16-observability.md#spans-around-the-dependencies-without-instrumenting-them)'s
+to explain, once there is a tracer to send the spans to.
+
 The listener address comes from a `*servo.HTTPConfig` provider reading the same `HTTP_ADDR` every
 deployment already sets. servo never constructs config; you do — chapter 3's rule, unchanged.
 

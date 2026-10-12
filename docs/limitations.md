@@ -190,12 +190,37 @@ a store, not the store. Write through it.
 
 ### servo exports no metrics
 
-`Stats()` on the accessor is the whole of the observability surface: live instances, outstanding
-references, and monotonic totals for acquires, evictions and failures. It is test- and debug-facing.
-servo has no Prometheus dependency, no registry and no exporter, and won't grow one.
+`Stats()` on the accessor is the whole of the runtime's observability surface: live instances,
+outstanding references, and monotonic totals for acquires, evictions and failures. It is test- and
+debug-facing. servo has no Prometheus dependency, no registry and no exporter, and won't grow one.
+
+Spans are a different matter, and a generate-time one: [`servo.Trace`](reference/tracing.md)
+emits an OpenTelemetry wrapper around an interface into *your* package, against *your* tracer
+provider. The runtime still knows nothing about OpenTelemetry, and the wrapper records spans
+only — no per-method histograms or counters.
 
 *What to do instead:* read `Stats()` from whatever you already scrape with. It is four ints and two
 counters, and wiring it to a gauge is a few lines you can see.
+
+### Tracing wraps interface edges only
+
+A [`servo.Trace`](reference/tracing.md) wrapper is a different type from the implementation it
+decorates, so it can only be handed to a consumer whose parameter is the interface. A constructor
+taking `*postgres.DB` directly gets the store and no span, and a `Trace` on a concrete type is
+refused at the declaration.
+
+*What to do instead:* depend on the interface. That is the advice the rest of servo gives too, and
+`servo explain` on the concrete type shows which consumers still take it directly.
+
+### A scoped implementation cannot be traced
+
+A scoped member may take a traced *singleton* interface — the wrapper is borrowed like the logger
+behind it — but a `Trace` on an interface whose implementation is itself scoped is a diagnostic in
+this release. A per-key wrapper would have to be built and torn down inside the scope's entry,
+which is well-defined and not yet generated.
+
+*What to do instead:* trace the singleton interfaces the scoped type depends on, which is where
+the I/O usually is.
 
 ### A scope accessor cannot be overridden
 

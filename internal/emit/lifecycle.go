@@ -181,7 +181,10 @@ func (e *emitter) shutdownSteps() []stopStep {
 	var visitScope func(se *scopeEmit)
 
 	visitNode = func(n *resolve.Node) {
-		if n == nil || n.Kind != resolve.NodeProvider || visitedNode[n] {
+		// A wrapper is walked through: it has nothing to stop itself, but
+		// the implementation behind it does, and a consumer's only path to
+		// that implementation runs through the wrapper.
+		if n == nil || (n.Kind != resolve.NodeProvider && n.Kind != resolve.NodeTraced) || visitedNode[n] {
 			return
 		}
 		visitedNode[n] = true

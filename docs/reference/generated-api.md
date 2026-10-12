@@ -140,6 +140,7 @@ One field per node, in construction order, plus bookkeeping only where it's need
 | Field | Emitted when |
 | --- | --- |
 | `<name>` | Always — the component itself, or, for a [supplied value](spec.md#value), the value copied out of `Values` |
+| `<iface>Traced *traced<Iface>` | The spec declares [`servo.Trace[I]()`](tracing.md) — the generated wrapper, held like any node and handed to every consumer of `I`; no stop bookkeeping, since the wrapper has no lifecycle of its own |
 | `<name>Cleanup func()` | The constructor returned a cleanup func |
 | `<name>StopOnce sync.Once` | The node has something to stop (`Drain`, `Flush`, `Stop`, or a cleanup func) |
 | `<name>StopResult servo.NodeResult` | Same condition — memoises the result so the stop path is idempotent |
@@ -188,6 +189,7 @@ Derived from the type's own name, so the generated code reads like something a p
 | Keywords and predeclared names are avoided | `*pkg.Range`, `*pkg.New` | `range2`, `new2` |
 | A scope is named for its key type | `chat.RoomKey` | `roomKeyScope` |
 | An accessor is named for its interface | `chat.Rooms` | `rooms` |
+| A trace wrapper is named for its interface, suffixed | `store.Store` | `storeTraced`, of type `tracedStore` |
 
 That last rule covers both the illegal case (`range` can't be an identifier) and the merely
 unwise one (`new` would legally shadow the builtin — fine for the compiler, not something to emit
@@ -332,7 +334,10 @@ A consumer written against one works against the other — which was the point o
 now true of the bytes as well as the schema.
 
 A [supplied value](spec.md#value) appears here too, first and at `Level: 0`, with `Binding:
-"supplied"` and the `servo.Value[…]()` call site as its `Pos`.
+"supplied"` and the `servo.Value[…]()` call site as its `Pos`. A [trace wrapper](tracing.md)
+appears as a node keyed `<interface>#traced`, with `Binding: "traced"`, the `servo.Trace[…]()`
+call site as its `Pos`, and `Wraps` naming the node it decorates — a field that is `omitempty`,
+so a graph with nothing traced serialises exactly as before.
 
 Scoped nodes appear here too, after the singletons, each carrying its scope's key in `Scope` and
 its level *within that scope* in `Level`. The scopes themselves are listed in `Graph.Scopes`, with

@@ -80,12 +80,16 @@ func graphNode(n *resolve.Node, level int, scope string, positions *load.Positio
 	}
 	binding := n.Binding
 	pos := ""
+	wraps := ""
 	switch n.Kind {
 	case resolve.NodeSupplied:
 		binding = "supplied"
 		pos = positions.String(n.SuppliedPos)
 	case resolve.NodeConfig:
 		pos = positions.String(n.Config.Pos)
+	case resolve.NodeTraced:
+		pos = positions.String(n.Traced.Decl.Pos)
+		wraps = n.Traced.Inner.Key.String()
 	default:
 		pos = positions.String(n.Provider.Pos)
 	}
@@ -97,6 +101,7 @@ func graphNode(n *resolve.Node, level int, scope string, positions *load.Positio
 		Binding:      binding,
 		Pos:          pos,
 		Scope:        scope,
+		Wraps:        wraps,
 	}
 }
 
@@ -124,7 +129,7 @@ func borrowedOf(s *resolve.Scope) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(n *resolve.Node) {
-		if n == nil || n.Kind != resolve.NodeProvider || n.Scope != nil || seen[n.Key.String()] {
+		if n == nil || (n.Kind != resolve.NodeProvider && n.Kind != resolve.NodeTraced) || n.Scope != nil || seen[n.Key.String()] {
 			return
 		}
 		seen[n.Key.String()] = true

@@ -12,8 +12,14 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 )
 
+// Tracer embeds the SDK provider rather than holding it in a field, and
+// the difference is what servo.Trace needs: the embedding promotes the
+// provider's Tracer method, so *Tracer implements trace.TracerProvider
+// structurally and is the one node every generated wrapper depends on —
+// no second constructor, no global otel.SetTracerProvider. See
+// docs/tutorial/16-observability.md.
 type Tracer struct {
-	provider *sdktrace.TracerProvider
+	*sdktrace.TracerProvider
 }
 
 // NewTracer sets the provider up completely, synchronously — not in a
@@ -47,18 +53,18 @@ func NewTracer(cfg Config) (*Tracer, error) {
 		opts = append(opts, sdktrace.WithBatcher(exporter))
 	}
 
-	return &Tracer{provider: sdktrace.NewTracerProvider(opts...)}, nil
+	return &Tracer{TracerProvider: sdktrace.NewTracerProvider(opts...)}, nil
 }
 
 func (t *Tracer) Stop(ctx context.Context) error {
-	return t.provider.Shutdown(ctx)
+	return t.Shutdown(ctx)
 }
 
 // Middleware wraps next with a span per request, named after the matched
 // route (see Metrics.Middleware for why the pattern, not the raw path).
 func (t *Tracer) Middleware(next http.Handler) http.Handler {
 	return otelhttp.NewHandler(next, "http.request",
-		otelhttp.WithTracerProvider(t.provider),
+		otelhttp.WithTracerProvider(t.TracerProvider),
 		otelhttp.WithSpanNameFormatter(func(operation string, r *http.Request) string {
 			if r.Pattern != "" {
 				return r.Pattern

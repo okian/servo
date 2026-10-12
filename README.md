@@ -523,6 +523,39 @@ The runnable version is [`examples/http`](./examples/http); the full contract �
 binding table, status semantics, lifecycle — is documented at
 [HTTP routes](https://okian.github.io/servo/reference/http.html).
 
+## Tracing dependencies
+
+A request span from a tracing middleware tells you a request was slow. It doesn't tell you which
+of the four things the handler called was slow, unless each of them is instrumented — and a
+hand-written decorator per interface is the kind of code that is complete the day it is written
+and silently short one method after the next refactor. `servo.Trace[I]()` generates that
+decorator from the interface's current method set, every time:
+
+```go
+servo.Build(
+	servo.Root[*api.Server](),
+	servo.Trace[repository.OrderRepository](servo.Expected(domain.ErrNotFound)),
+	servo.Trace[cache.OrderCache](servo.Expected(cache.ErrMiss)),
+	servo.Trace[broker.EventPublisher](),
+)
+```
+
+Every consumer of a traced interface receives the wrapper instead of whatever the interface
+resolved to — a `Bind`, a structural match, a `Value`, or in `NewTestApp` the `Override`. Each
+method with a leading `context.Context` runs inside a span named `cache.OrderCache/Get`, the
+implementation receives the span's context so its own spans nest beneath, and a non-nil error
+marks the span — except the ones `servo.Expected` names, because a miss and a not-found are
+results, not failures, and a trace backend's error rate should say so. Methods without a context
+are delegated untouched; the wrapper has no lifecycle of its own, so the implementation's `Init`
+and `Stop` run exactly as before.
+
+The wrapper takes `trace.TracerProvider` as an ordinary graph dependency — a constructor of
+yours, with no global fallback — and the generated code imports OpenTelemetry in *your* module;
+servo's own module never does. Interfaces only: a consumer holding a concrete type has no seam to
+wrap, and the diagnostic says which parameter to change. Full contract:
+[Traced interfaces](https://okian.github.io/servo/reference/tracing.html); the tutorial's
+[observability chapter](docs/tutorial/16-observability.md) wires it into a real service.
+
 ## Multiple instances of the same type
 
 This section is about a narrower problem than [interface vs. concrete-type

@@ -76,6 +76,9 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 		provider = fmt.Sprintf("%s.ServoConfig (generated, env prefix %s)", node.Config.PkgName, node.Config.Prefix)
 		pos = node.Config.Pos.String()
 		lifetime = "config — loaded by New before construction, held for the life of the process"
+	case resolve.NodeTraced:
+		provider = fmt.Sprintf("generated OpenTelemetry wrapper around %s", node.Traced.Inner.Key.String())
+		pos = node.Traced.Decl.Pos.String()
 	default:
 		provider, pos = node.Provider.Name, node.Provider.Pos.String()
 	}

@@ -37,7 +37,7 @@
 //	      capabilities: none | binding: sole candidate | internal/resilience/ratelimit.go:30:6
 //	[L1] *example.com/servoorders/internal/observability.Tracer
 //	      deps: example.com/servoorders/internal/observability.Config
-//	      capabilities: Finalizer | binding: sole candidate | internal/observability/tracing.go:29:6
+//	      capabilities: Finalizer | binding: sole candidate | internal/observability/tracing.go:35:6
 //	[L1] *github.com/okian/servo/v3/middleware.AccessLog
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/accesslog.go:14:6
@@ -50,20 +50,32 @@
 //	[L1] *example.com/servoorders/internal/mocks.UserRepositoryForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | internal/mocks/servo_adapters.go:34:6
-//	[L2] *example.com/servoorders/internal/service.AuthService
-//	      deps: *example.com/servoorders/internal/mocks.UserRepositoryForServo, *example.com/servoorders/internal/auth.Issuer
+//	[L2] example.com/servoorders/internal/repository.UserRepository#traced
+//	      deps: *example.com/servoorders/internal/mocks.UserRepositoryForServo, *example.com/servoorders/internal/observability.Tracer
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:70:3
+//	[L3] *example.com/servoorders/internal/service.AuthService
+//	      deps: example.com/servoorders/internal/repository.UserRepository#traced, *example.com/servoorders/internal/auth.Issuer
 //	      capabilities: none | binding: sole candidate | internal/service/auth_service.go:18:6
 //	[L1] *example.com/servoorders/internal/mocks.OrderRepositoryForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | internal/mocks/servo_adapters.go:24:6
+//	[L2] example.com/servoorders/internal/repository.OrderRepository#traced
+//	      deps: *example.com/servoorders/internal/mocks.OrderRepositoryForServo, *example.com/servoorders/internal/observability.Tracer
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:69:3
 //	[L1] *example.com/servoorders/internal/mocks.OrderCacheForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | internal/mocks/servo_adapters.go:44:6
+//	[L2] example.com/servoorders/internal/cache.OrderCache#traced
+//	      deps: *example.com/servoorders/internal/mocks.OrderCacheForServo, *example.com/servoorders/internal/observability.Tracer
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:71:3
 //	[L1] *example.com/servoorders/internal/mocks.EventPublisherForServo
 //	      deps: none
 //	      capabilities: none | binding: explicit bind | internal/mocks/servo_adapters.go:54:6
-//	[L2] *example.com/servoorders/internal/service.OrderService
-//	      deps: *example.com/servoorders/internal/mocks.OrderRepositoryForServo, *example.com/servoorders/internal/mocks.OrderCacheForServo, *example.com/servoorders/internal/mocks.EventPublisherForServo, *example.com/servoorders/internal/observability.Logger
+//	[L2] example.com/servoorders/internal/broker.EventPublisher#traced
+//	      deps: *example.com/servoorders/internal/mocks.EventPublisherForServo, *example.com/servoorders/internal/observability.Tracer
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:72:3
+//	[L3] *example.com/servoorders/internal/service.OrderService
+//	      deps: example.com/servoorders/internal/repository.OrderRepository#traced, example.com/servoorders/internal/cache.OrderCache#traced, example.com/servoorders/internal/broker.EventPublisher#traced, *example.com/servoorders/internal/observability.Logger
 //	      capabilities: none | binding: sole candidate | internal/service/service.go:28:6
 //
 // scope example.com/servoorders/internal/session.UserID
@@ -74,7 +86,7 @@
 //	      capabilities: Initializer, Flusher, Finalizer
 //	borrows: *example.com/servoorders/internal/session.Settings, *example.com/servoorders/internal/observability.Logger
 //
-// http (servo.HTTP() at cmd/ordersservo/spec.go:31:3):
+// http (servo.HTTP() at cmd/ordersservo/spec.go:32:3):
 //
 //	config: *github.com/okian/servo/v3/servo.HTTPConfig
 //	use: *github.com/okian/servo/v3/middleware.Recover -> every group
@@ -111,16 +123,23 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"uuid"
 
 	"example.com/servoorders/internal/auth"
+	"example.com/servoorders/internal/broker"
+	"example.com/servoorders/internal/cache"
+	"example.com/servoorders/internal/domain"
 	"example.com/servoorders/internal/mocks"
 	"example.com/servoorders/internal/observability"
+	"example.com/servoorders/internal/repository"
 	"example.com/servoorders/internal/resilience"
 	"example.com/servoorders/internal/service"
 	"example.com/servoorders/internal/session"
 	"example.com/servoorders/internal/transport/servoapi"
 	"github.com/okian/servo/v3/middleware"
 	"github.com/okian/servo/v3/servo"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type TestApp struct {
@@ -138,10 +157,14 @@ type TestApp struct {
 	issuer                  *auth.Issuer
 	auth                    *servoapi.Auth
 	userRepositoryForServo  *mocks.UserRepositoryForServo
+	userRepositoryTraced    *testTracedUserRepository
 	authService             *service.AuthService
 	orderRepositoryForServo *mocks.OrderRepositoryForServo
+	orderRepositoryTraced   *testTracedOrderRepository
 	orderCacheForServo      *mocks.OrderCacheForServo
+	orderCacheTraced        *testTracedOrderCache
 	eventPublisherForServo  *mocks.EventPublisherForServo
+	eventPublisherTraced    *testTracedEventPublisher
 	orderService            *service.OrderService
 	userIDScope             *testUserIDScope
 	sessions                testSessionsAccessor
@@ -938,6 +961,158 @@ func testHttpWriteError(w http.ResponseWriter, code int, msg string) {
 	}{Error: msg})
 }
 
+// testTracedOrderRepository is the OpenTelemetry wrapper servo.Trace[repository.OrderRepository] declares
+// (cmd/ordersservo/spec.go:69:3): every method whose first parameter is a
+// context.Context runs inside a span named "repository.OrderRepository/<Method>", the span's
+// context is what the implementation receives, and a non-nil error marks the
+// span — except domain.ErrNotFound, declared expected. Methods without a
+// context are delegated untouched: there is no context to carry a span. The
+// wrapper has no lifecycle of its own; the implementation keeps its own.
+type testTracedOrderRepository struct {
+	inner  repository.OrderRepository
+	tracer trace.Tracer
+}
+
+func newTestTracedOrderRepository(inner repository.OrderRepository, tp trace.TracerProvider) *testTracedOrderRepository {
+	return &testTracedOrderRepository{inner: inner, tracer: tp.Tracer("example.com/servoorders/internal/repository")}
+}
+
+func (t *testTracedOrderRepository) Create(ctx context.Context, o *domain.Order) error {
+	ctx, span := t.tracer.Start(ctx, "repository.OrderRepository/Create")
+	defer span.End()
+	err := t.inner.Create(ctx, o)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+func (t *testTracedOrderRepository) Get(ctx context.Context, id uuid.UUID) (*domain.Order, error) {
+	ctx, span := t.tracer.Start(ctx, "repository.OrderRepository/Get")
+	defer span.End()
+	r0, err := t.inner.Get(ctx, id)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return r0, err
+}
+
+func (t *testTracedOrderRepository) ListByUser(ctx context.Context, userID uuid.UUID, limit int, offset int) ([]*domain.Order, error) {
+	ctx, span := t.tracer.Start(ctx, "repository.OrderRepository/ListByUser")
+	defer span.End()
+	r0, err := t.inner.ListByUser(ctx, userID, limit, offset)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return r0, err
+}
+
+// testTracedUserRepository is the OpenTelemetry wrapper servo.Trace[repository.UserRepository] declares
+// (cmd/ordersservo/spec.go:70:3): every method whose first parameter is a
+// context.Context runs inside a span named "repository.UserRepository/<Method>", the span's
+// context is what the implementation receives, and a non-nil error marks the
+// span — except domain.ErrNotFound, declared expected. Methods without a
+// context are delegated untouched: there is no context to carry a span. The
+// wrapper has no lifecycle of its own; the implementation keeps its own.
+type testTracedUserRepository struct {
+	inner  repository.UserRepository
+	tracer trace.Tracer
+}
+
+func newTestTracedUserRepository(inner repository.UserRepository, tp trace.TracerProvider) *testTracedUserRepository {
+	return &testTracedUserRepository{inner: inner, tracer: tp.Tracer("example.com/servoorders/internal/repository")}
+}
+
+func (t *testTracedUserRepository) GetByUsername(ctx context.Context, username string) (*domain.User, error) {
+	ctx, span := t.tracer.Start(ctx, "repository.UserRepository/GetByUsername")
+	defer span.End()
+	r0, err := t.inner.GetByUsername(ctx, username)
+	if err != nil && !errors.Is(err, domain.ErrNotFound) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return r0, err
+}
+
+// testTracedOrderCache is the OpenTelemetry wrapper servo.Trace[cache.OrderCache] declares
+// (cmd/ordersservo/spec.go:71:3): every method whose first parameter is a
+// context.Context runs inside a span named "cache.OrderCache/<Method>", the span's
+// context is what the implementation receives, and a non-nil error marks the
+// span — except cache.ErrMiss, declared expected. Methods without a
+// context are delegated untouched: there is no context to carry a span. The
+// wrapper has no lifecycle of its own; the implementation keeps its own.
+type testTracedOrderCache struct {
+	inner  cache.OrderCache
+	tracer trace.Tracer
+}
+
+func newTestTracedOrderCache(inner cache.OrderCache, tp trace.TracerProvider) *testTracedOrderCache {
+	return &testTracedOrderCache{inner: inner, tracer: tp.Tracer("example.com/servoorders/internal/cache")}
+}
+
+func (t *testTracedOrderCache) Get(ctx context.Context, id uuid.UUID) (*domain.Order, error) {
+	ctx, span := t.tracer.Start(ctx, "cache.OrderCache/Get")
+	defer span.End()
+	r0, err := t.inner.Get(ctx, id)
+	if err != nil && !errors.Is(err, cache.ErrMiss) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return r0, err
+}
+
+func (t *testTracedOrderCache) Invalidate(ctx context.Context, id uuid.UUID) error {
+	ctx, span := t.tracer.Start(ctx, "cache.OrderCache/Invalidate")
+	defer span.End()
+	err := t.inner.Invalidate(ctx, id)
+	if err != nil && !errors.Is(err, cache.ErrMiss) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+func (t *testTracedOrderCache) Set(ctx context.Context, o *domain.Order) error {
+	ctx, span := t.tracer.Start(ctx, "cache.OrderCache/Set")
+	defer span.End()
+	err := t.inner.Set(ctx, o)
+	if err != nil && !errors.Is(err, cache.ErrMiss) {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+// testTracedEventPublisher is the OpenTelemetry wrapper servo.Trace[broker.EventPublisher] declares
+// (cmd/ordersservo/spec.go:72:3): every method whose first parameter is a
+// context.Context runs inside a span named "broker.EventPublisher/<Method>", the span's
+// context is what the implementation receives, and a non-nil error marks the
+// span. Methods without a
+// context are delegated untouched: there is no context to carry a span. The
+// wrapper has no lifecycle of its own; the implementation keeps its own.
+type testTracedEventPublisher struct {
+	inner  broker.EventPublisher
+	tracer trace.Tracer
+}
+
+func newTestTracedEventPublisher(inner broker.EventPublisher, tp trace.TracerProvider) *testTracedEventPublisher {
+	return &testTracedEventPublisher{inner: inner, tracer: tp.Tracer("example.com/servoorders/internal/broker")}
+}
+
+func (t *testTracedEventPublisher) PublishOrderPlaced(ctx context.Context, o *domain.Order) error {
+	ctx, span := t.tracer.Start(ctx, "broker.EventPublisher/PublishOrderPlaced")
+	defer span.End()
+	err := t.inner.PublishOrderPlaced(ctx, o)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
 func NewTestApp(ctx context.Context) (*TestApp, error) {
 	a := &TestApp{}
 
@@ -1011,19 +1186,31 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	userRepositoryForServo := mocks.NewUserRepositoryForServo()
 	a.userRepositoryForServo = userRepositoryForServo
 
-	authService := service.NewAuthService(userRepositoryForServo, issuer)
+	userRepositoryTraced := newTestTracedUserRepository(userRepositoryForServo, tracer)
+	a.userRepositoryTraced = userRepositoryTraced
+
+	authService := service.NewAuthService(userRepositoryTraced, issuer)
 	a.authService = authService
 
 	orderRepositoryForServo := mocks.NewOrderRepositoryForServo()
 	a.orderRepositoryForServo = orderRepositoryForServo
 
+	orderRepositoryTraced := newTestTracedOrderRepository(orderRepositoryForServo, tracer)
+	a.orderRepositoryTraced = orderRepositoryTraced
+
 	orderCacheForServo := mocks.NewOrderCacheForServo()
 	a.orderCacheForServo = orderCacheForServo
+
+	orderCacheTraced := newTestTracedOrderCache(orderCacheForServo, tracer)
+	a.orderCacheTraced = orderCacheTraced
 
 	eventPublisherForServo := mocks.NewEventPublisherForServo()
 	a.eventPublisherForServo = eventPublisherForServo
 
-	orderService := service.New(orderRepositoryForServo, orderCacheForServo, eventPublisherForServo, logger)
+	eventPublisherTraced := newTestTracedEventPublisher(eventPublisherForServo, tracer)
+	a.eventPublisherTraced = eventPublisherTraced
+
+	orderService := service.New(orderRepositoryTraced, orderCacheTraced, eventPublisherTraced, logger)
 	a.orderService = orderService
 
 	httpServer, err := newTestHttpServer(a)
@@ -1161,16 +1348,20 @@ func (a *TestApp) Graph() servo.Graph {
 		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/recover.go:17:6"},
 		{Type: "*example.com/servoorders/internal/observability.Metrics", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/metrics.go:18:6"},
 		{Type: "*example.com/servoorders/internal/resilience.RateLimiter", Level: 2, Deps: []string{"example.com/servoorders/internal/resilience.Config", "*example.com/servoorders/internal/observability.Metrics"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/resilience/ratelimit.go:30:6"},
-		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:29:6"},
+		{Type: "*example.com/servoorders/internal/observability.Tracer", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "internal/observability/tracing.go:35:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.AccessLog", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/accesslog.go:14:6"},
 		{Type: "*example.com/servoorders/internal/auth.Issuer", Level: 1, Deps: []string{"example.com/servoorders/internal/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/auth/auth.go:39:6"},
 		{Type: "*example.com/servoorders/internal/transport/servoapi.Auth", Level: 2, Deps: []string{"*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:31:6"},
 		{Type: "*example.com/servoorders/internal/mocks.UserRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:34:6"},
-		{Type: "*example.com/servoorders/internal/service.AuthService", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.UserRepositoryForServo", "*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/auth_service.go:18:6"},
+		{Type: "example.com/servoorders/internal/repository.UserRepository#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.UserRepositoryForServo", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:70:3", Wraps: "*example.com/servoorders/internal/mocks.UserRepositoryForServo"},
+		{Type: "*example.com/servoorders/internal/service.AuthService", Level: 3, Deps: []string{"example.com/servoorders/internal/repository.UserRepository#traced", "*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/auth_service.go:18:6"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderRepositoryForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:24:6"},
+		{Type: "example.com/servoorders/internal/repository.OrderRepository#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.OrderRepositoryForServo", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:69:3", Wraps: "*example.com/servoorders/internal/mocks.OrderRepositoryForServo"},
 		{Type: "*example.com/servoorders/internal/mocks.OrderCacheForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:44:6"},
+		{Type: "example.com/servoorders/internal/cache.OrderCache#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.OrderCacheForServo", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:71:3", Wraps: "*example.com/servoorders/internal/mocks.OrderCacheForServo"},
 		{Type: "*example.com/servoorders/internal/mocks.EventPublisherForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "internal/mocks/servo_adapters.go:54:6"},
-		{Type: "*example.com/servoorders/internal/service.OrderService", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.OrderRepositoryForServo", "*example.com/servoorders/internal/mocks.OrderCacheForServo", "*example.com/servoorders/internal/mocks.EventPublisherForServo", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/service.go:28:6"},
+		{Type: "example.com/servoorders/internal/broker.EventPublisher#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/mocks.EventPublisherForServo", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:72:3", Wraps: "*example.com/servoorders/internal/mocks.EventPublisherForServo"},
+		{Type: "*example.com/servoorders/internal/service.OrderService", Level: 3, Deps: []string{"example.com/servoorders/internal/repository.OrderRepository#traced", "example.com/servoorders/internal/cache.OrderCache#traced", "example.com/servoorders/internal/broker.EventPublisher#traced", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/service.go:28:6"},
 		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Settings", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:82:6", Scope: "example.com/servoorders/internal/session.UserID"},
 	}, Scopes: []servo.GraphScope{
 		{Key: "example.com/servoorders/internal/session.UserID", Linger: "5m0s", Max: 50000, Accessors: []string{"example.com/servoorders/internal/session.Sessions"}, Members: []string{"*example.com/servoorders/internal/session.Session"}, Borrows: []string{"*example.com/servoorders/internal/session.Settings", "*example.com/servoorders/internal/observability.Logger"}},
