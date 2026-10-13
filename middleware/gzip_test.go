@@ -76,3 +76,15 @@ func TestGzipSkipsPreEncodedResponses(t *testing.T) {
 		t.Fatalf("body = %q", w.Body.String())
 	}
 }
+
+// Statuses that carry no body get no gzip frame and no encoding header.
+func TestGzipSkipsBodylessStatuses(t *testing.T) {
+	for _, code := range []int{http.StatusNoContent, http.StatusNotModified} {
+		w := gzipped(t, "gzip", func(rw http.ResponseWriter, r *http.Request) {
+			rw.WriteHeader(code)
+		})
+		if w.Code != code || w.Header().Get("Content-Encoding") != "" || w.Body.Len() != 0 {
+			t.Fatalf("%d: code=%d encoding=%q body=%d bytes", code, w.Code, w.Header().Get("Content-Encoding"), w.Body.Len())
+		}
+	}
+}

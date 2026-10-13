@@ -122,8 +122,8 @@ func (e *emitter) expectedRef(obj types.Object) string {
 func (e *emitter) writeTracedMethod(b *strings.Builder, te *tracedEmit, m *types.Func, spanPrefix string) {
 	sig := m.Type().(*types.Signature)
 	params, results := sig.Params(), sig.Results()
-	traced := params.Len() > 0 && isContextType(params.At(0).Type())
-	returnsErr := results.Len() > 0 && isErrorType(results.At(results.Len()-1).Type())
+	traced := params.Len() > 0 && graph.IsContextType(params.At(0).Type())
+	returnsErr := results.Len() > 0 && graph.IsErrorType(results.At(results.Len()-1).Type())
 
 	// Parameter names come from the interface where they are usable, so
 	// the wrapper reads like the interface it implements. One that is
@@ -221,17 +221,6 @@ func (e *emitter) writeTracedMethod(b *strings.Builder, te *tracedEmit, m *types
 		}
 	}
 	b.WriteString("}\n\n")
-}
-
-// isContextType reports whether t is context.Context itself.
-func isContextType(t types.Type) bool {
-	named, ok := types.Unalias(t).(*types.Named)
-	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == "context" && named.Obj().Name() == "Context"
-}
-
-// isErrorType reports whether t is the predeclared error type.
-func isErrorType(t types.Type) bool {
-	return types.Identical(t, types.Universe.Lookup("error").Type())
 }
 
 // writeTracedConstruction emits a wrapper's one construction line: no

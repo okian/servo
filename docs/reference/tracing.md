@@ -213,7 +213,7 @@ well-defined and not yet generated, so it is a diagnostic rather than a silent s
 | `servo.Expected(X): X is a int, not an error` | A non-error at package level | Name an error |
 | `servo.Expected(X): X is unexported, and the generated errors.Is check lives in package main` | An unexported sentinel from another package | Export it |
 | `servo.Expected(X) declared twice in the same servo.Trace` | The same sentinel named twice | Once is enough |
-| `servo.Trace[I]() is declared, but nothing in the graph depends on I` | No consumer requests the interface — checked per generated file, so an `Override` can make this true of the test variant alone | Take it as a constructor parameter the roots reach, or delete the declaration |
+| `servo.Trace[I]() is declared, but nothing in the graph depends on I` | No consumer requests the interface in the production graph; the test variant, where an `Override` may have removed the consumer, simply emits no wrapper | Take it as a constructor parameter the roots reach, or delete the declaration |
 | `servo.Trace[I] needs go.opentelemetry.io/otel/trace, which nothing in this module's build imports` | No package in the build imports the trace API | Write the tracer provider's constructor; its import brings the package in |
 | `no provider for go.opentelemetry.io/otel/trace.TracerProvider` | No constructor in your module produces one | Write it, as [above](#the-tracer-provider) |
 | `servo.Trace[I]: I is a scope accessor interface` | Tracing a `Scoped` declaration's accessor | Trace the interfaces the scoped type depends on |

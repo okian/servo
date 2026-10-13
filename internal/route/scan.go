@@ -27,8 +27,6 @@ var methods = map[string]string{
 	"delete": "DELETE", "head": "HEAD", "options": "OPTIONS",
 }
 
-const methodList = "get, post, put, patch, delete, head, options"
-
 // IsDirectiveMethod reports whether name is one of the route verbs this
 // scanner owns. servovet uses it to decide whether an unknown //servo:
 // name belongs to routes or to the config feature.
@@ -255,11 +253,11 @@ func parseDirective(text string, pos token.Position) (directive, *Diagnostic) {
 	rest := strings.TrimPrefix(text, directivePrefix)
 	fields := strings.Fields(rest)
 	if len(fields) == 0 {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: empty //servo: directive — the //servo: comment prefix is reserved; methods: %s", methodList)}
+		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: empty //servo: directive — the //servo: comment prefix is reserved; methods: %s", graph.RouteVerbList)}
 	}
 	method, ok := methods[fields[0]]
 	if !ok {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: unknown //servo: directive %q — the //servo: comment prefix is reserved; methods: %s", fields[0], methodList)}
+		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: unknown //servo: directive %q — the //servo: comment prefix is reserved; methods: %s", fields[0], graph.RouteVerbList)}
 	}
 	if len(fields) < 2 {
 		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s needs a route pattern, e.g. //servo:%s /order/{category}/", fields[0], fields[0])}
@@ -339,7 +337,7 @@ func validateHandler(pkg *packages.Package, fd *ast.FuncDecl, st *servoHTTPTypes
 	}
 
 	params := sig.Params()
-	if params.Len() == 0 || !isContextType(params.At(0).Type()) {
+	if params.Len() == 0 || !graph.IsContextType(params.At(0).Type()) {
 		return nil, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo: handler %s's first parameter must be context.Context", name)}
 	}
 
@@ -384,8 +382,8 @@ func checkResults(sig *types.Signature, st *servoHTTPTypes, name string, pos tok
 		return nil, shape("")
 	}
 	second := res.At(1).Type()
-	if !types.Identical(second, types.Universe.Lookup("error").Type()) {
-		if types.Implements(second, types.Universe.Lookup("error").Type().Underlying().(*types.Interface)) {
+	if !graph.IsErrorType(second) {
+		if graph.ImplementsError(second) {
 			return nil, shape(fmt.Sprintf("the second result is %s, which implements error but is not the error interface itself", graph.TypeString(second)))
 		}
 		return nil, shape("")
@@ -402,15 +400,6 @@ func checkResults(sig *types.Signature, st *servoHTTPTypes, name string, pos tok
 		}
 	}
 	return nil, nil
-}
-
-func isContextType(t types.Type) bool {
-	named, ok := types.Unalias(t).(*types.Named)
-	if !ok {
-		return false
-	}
-	obj := named.Obj()
-	return obj.Pkg() != nil && obj.Pkg().Path() == "context" && obj.Name() == "Context"
 }
 
 // bindingTags are the four explicit source tags; json marks a body field.

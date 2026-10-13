@@ -7,7 +7,7 @@ servo end to end rather than servo's own internals, see [docs/tutorial/](docs/tu
 
 ## Pipeline
 
-Every command (`generate`, `check`, `graph`, `explain`, `why`, `list`, `doctor`) is a different
+Every command (`generate`, `check`, `graph`, `explain`, `why`, `list`, `config`, `doctor`) is a different
 view onto the same stages, orchestrated by `cmd/servo/pipeline.go`:
 
 ```
@@ -246,9 +246,10 @@ What varies with types is generated — one adapter per route with exact `strcon
 field, per-request `Extract` calls, the handler call with `a.<dep>` arguments, middleware wraps
 applied in reverse declaration order so the first-declared is outermost (server → group → route) —
 and what doesn't is a handful of small runtime types (`Json`, `HTTPStatus`/`Status`, `HTTPConfig`,
-`HTTPListener`). Each group's server is a pseudo-root: constructed at the end of `New` (wiring
-only, except the named-group `HTTPConfig.Groups` lookup, the one runtime check — the listener
-binds in `Run`, which is what `Ready`'s per-group entries report), joined into `Run`'s errgroup,
+`HTTPListener`). Each group's server is a pseudo-root: constructed after every node and before the
+Init phase (wiring only, except the named-group `HTTPConfig.Groups` lookup, the one runtime check —
+placed ahead of `Init` so a wrong name fails before anything expensive starts; the listener binds in
+`Run`, which is what `Ready`'s per-group entries report), joined into `Run`'s errgroup,
 and stopped **first** in `Shutdown` — the inbound edges drain before anything beneath them. A spec
 with no `servo.HTTP()` emits a byte-identical file, the same invariant scopes hold.
 
@@ -338,7 +339,11 @@ A `servo.Override[I, C]()` in the spec produces a second resolve pass — the sa
 capabilities, with `C` merged in ahead of whatever `Bind` or structural search would otherwise
 choose for `I` (`pipeline.resolve`'s `extraBinds` parameter) — emitted as `NewTestApp` in a
 separate `servo_gen_test.go` (`generateOne` in `cmd/servo/generate.go`), so the override only
-exists while testing and `New` in the real `servo_gen.go` is unaffected.
+exists while testing and `New` in the real `servo_gen.go` is unaffected. That pass is also the one
+place an unused `Value`, `Trace` or `ConfigFile` is tolerated rather than refused
+(`resolve.Input.OverrideVariant`): a mock that takes fewer things than the real implementation is
+the ordinary case, so the declaration is left out of the test variant's file — off `TestValues`, no
+wrapper, no file read — instead of failing an injector whose production graph is fine.
 
 ## Writes are atomic, checks never write
 
@@ -356,6 +361,6 @@ package's API. Godoc `Example` functions in `servo` and `servotest` show real, e
 where the API allows it — some exported functions there panic by design or require a `*testing.T`
 that an `ExampleXxx` function has no way to supply, so not every function has one; see the
 comments in `servo/example_test.go` and `servotest/example_test.go` for which and why.
-`internal/emit`'s golden-file tests (`internal/emit/testdata/golden/fullapp.go.golden` and
-`scopedapp.go.golden`, both refreshed with `UPDATE_GOLDEN=1`) are the authoritative reference for
-exactly what emitted code looks like.
+`internal/emit`'s golden-file tests (the files under `internal/emit/testdata/golden/` — the full
+app, scopes, HTTP, tracing and the two config loaders, all refreshed with `UPDATE_GOLDEN=1`) are
+the authoritative reference for exactly what emitted code looks like.

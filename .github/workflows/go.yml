@@ -133,6 +133,13 @@ jobs:
       - name: servo check (examples/http)
         run: go run ./cmd/servo check --dir examples/http
 
+      # examples/tutorial has its own workflow, but that one is path-filtered
+      # to the tutorial, so a generator change here could not fail on the
+      # tutorial's four committed generated files. The check needs no
+      # services, so it runs on every push too.
+      - name: servo check (examples/tutorial)
+        run: go run ./cmd/servo check --dir examples/tutorial
+
       # examples/variants holds two generated variants of one injector, so
       # everything is done once per build configuration — which is exactly
       # what a project using build variants has to do in its own CI.

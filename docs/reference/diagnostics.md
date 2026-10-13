@@ -176,9 +176,10 @@ A [`servo.Value`](spec.md#value) declares a parameter every caller of `NewWith` 
 one nothing reads is a cost with no return. Reported against the marker's own call site rather than
 against the type, since the declaration is what has to change.
 
-Checked per generated file, which is where this most often surprises people: if a
-[`servo.Override`](spec.md#override) swaps out the only consumer of a supplied value, the value is
-unused in the **test variant** and reported there while the production graph resolves fine.
+Checked against the production graph only. If a [`servo.Override`](spec.md#override) swaps out the
+only consumer of a supplied value, the **test variant** leaves the value off `TestValues` rather than
+reporting it: a mock that takes fewer things than the real implementation is the ordinary case, not a
+mistake in the spec file.
 
 ## Spec file
 

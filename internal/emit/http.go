@@ -206,10 +206,14 @@ func (e *emitter) httpAppFields() string {
 	return b.String()
 }
 
-// httpSetup is the tail of New: the servers are pure wiring — listeners
-// bind in run() — so they can safely follow Init. A named group missing
-// its HTTPConfig.Groups entry fails here, through the same
-// Shutdown-and-join path an Init failure takes.
+// httpSetup wires the servers once every node is constructed and before
+// any Init runs. They are pure wiring — a middleware's Middleware method is
+// called here under the guarantee every constructor gets, that its
+// dependencies' constructors have returned and their Inits have not — and
+// the listeners bind in run(). Sitting ahead of Init is what makes a named
+// group missing its HTTPConfig.Groups entry fail before anything expensive
+// has started; the unwind is the same Shutdown-and-join an Init failure
+// takes, on a context the signal cannot cancel.
 func (e *emitter) httpSetup() string {
 	if e.http == nil {
 		return ""
@@ -219,8 +223,7 @@ func (e *emitter) httpSetup() string {
 	for _, g := range e.http.Groups {
 		fmt.Fprintf(&b, "\t%s, err := %s(a)\n", g.Field, g.NewFunc)
 		b.WriteString("\tif err != nil {\n")
-		b.WriteString("\t\treport := a.Shutdown(ctx)\n")
-		b.WriteString("\t\treturn nil, errors.Join(err, report)\n")
+		b.WriteString(e.rollbackReturn())
 		b.WriteString("\t}\n")
 		fmt.Fprintf(&b, "\ta.%s = %s\n\n", g.Field, g.Field)
 	}
@@ -467,8 +470,9 @@ func (e *emitter) httpHandlerFunc() string {
 
 // httpStopMethods are the App-level stops, sequenced first in Shutdown:
 // the servers are the inbound edges, so they drain before anything they
-// depend on. The nil guard covers construction-failure rollback, which
-// calls Shutdown before the servers are wired.
+// depend on. The nil guard covers the setup failure path: a group missing
+// its HTTPConfig.Groups entry unwinds through Shutdown while that server,
+// and every one after it, is still nil.
 func (e *emitter) httpStopMethod() string {
 	if e.http == nil {
 		return ""
@@ -489,8 +493,8 @@ func (e *emitter) httpStopMethod() string {
 	return b.String()
 }
 
-// writeHTTPAdapter emits one route's http.HandlerFunc: typed decode,
-// per-request extraction, the handler call with graph-resolved arguments,
+// writeHTTPAdapter emits one route's http.HandlerFunc: per-request
+// extraction, typed decode, the handler call with graph-resolved arguments,
 // and the status contract.
 func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *httpRouteEmit) {
 	h := e.http
@@ -498,6 +502,29 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 	routeLabel := rt.Method + " " + rt.Pattern
 
 	fmt.Fprintf(b, "func (s *%s) %s(w http.ResponseWriter, r *http.Request) {\n", g.ServerType, re.Adapter)
+
+	// Extracted parameters come first, before a byte of the request is
+	// decoded: an extractor is usually the credential check, so a rejected
+	// request should cost nothing — the body is never read — and a
+	// malformed body must not turn its 401 into a 400. Each failure goes
+	// through the shared status mapping. The handler's arguments are still
+	// assembled in parameter order, below.
+	extractedNames := NewNameAllocator()
+	for _, reserved := range []string{"w", "r", "req", "q", "raw", "v", "res", "err", "hs", "s"} {
+		extractedNames.AllocateName(reserved)
+	}
+	depArgs := make([]string, 0, len(re.R.Args))
+	for _, arg := range re.R.Args {
+		if arg.Node != nil {
+			depArgs = append(depArgs, "s.app."+e.httpDepField(arg.Node))
+			continue
+		}
+		local := extractedNames.AllocateName(baseName(arg.Extractor.ProducesType))
+		fmt.Fprintf(b, "\t%s, err := s.app.%s.Extract(r)\n", local, e.varName[arg.Extractor.Node.Key])
+		b.WriteString("\tif err != nil {\n")
+		fmt.Fprintf(b, "\t\t%s(w, %q, %q, err)\n\t\treturn\n\t}\n", h.WriteFailure, rt.Name, routeLabel)
+		depArgs = append(depArgs, local)
+	}
 
 	args := []string{"r.Context()"}
 	if rt.Req != nil {
@@ -524,24 +551,7 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 		}
 		args = append(args, "req")
 	}
-
-	// Extracted parameters are produced per request, before the handler,
-	// each failing through the shared status mapping.
-	extractedNames := NewNameAllocator()
-	for _, reserved := range []string{"w", "r", "req", "q", "raw", "v", "res", "err", "hs", "s"} {
-		extractedNames.AllocateName(reserved)
-	}
-	for _, arg := range re.R.Args {
-		if arg.Node != nil {
-			args = append(args, "s.app."+e.httpDepField(arg.Node))
-			continue
-		}
-		local := extractedNames.AllocateName(baseName(arg.Extractor.ProducesType))
-		fmt.Fprintf(b, "\t%s, err := s.app.%s.Extract(r)\n", local, e.varName[arg.Extractor.Node.Key])
-		b.WriteString("\tif err != nil {\n")
-		fmt.Fprintf(b, "\t\t%s(w, %q, %q, err)\n\t\treturn\n\t}\n", h.WriteFailure, rt.Name, routeLabel)
-		args = append(args, local)
-	}
+	args = append(args, depArgs...)
 
 	fmt.Fprintf(b, "\tres, err := %s(%s)\n", e.httpFuncRef(rt.Func), strings.Join(args, ", "))
 	b.WriteString("\tif err != nil {\n")

@@ -23,7 +23,9 @@ import (
 // emitted adapters must reference them (and the request structs) with a
 // package qualifier. It carries one route per feature: typed binding with
 // a dependency, a JSON body, a bare handler, a telemetry-group route, an
-// extracted parameter, and middleware at all three levels.
+// extracted parameter, a body beside an extracted parameter (which pins
+// that extraction runs first), and middleware at all three levels. Repo
+// has an Init so the servers' place relative to the Init phase is visible.
 const httpAppSrc = `
 package httpapp
 
@@ -36,6 +38,7 @@ import (
 
 type Repo struct{}
 func NewRepo() *Repo { return &Repo{} }
+func (r *Repo) Init(ctx context.Context) error { return nil }
 func (r *Repo) Stop(ctx context.Context) error { return nil }
 
 func NewHTTPConfig() *servo.HTTPConfig { return &servo.HTTPConfig{} }
@@ -74,6 +77,9 @@ func (e *UserExtractor) Extract(r *http.Request) (*User, error) { return &User{}
 
 //servo:get /me
 func Me(ctx context.Context, u *User) (servo.Json[*OrderResp], error) { return nil, nil }
+
+//servo:post /me/notes
+func UpdateMe(ctx context.Context, req *NoteReq, u *User) (servo.Json[*OrderResp], error) { return nil, nil }
 
 type Guard struct{}
 func NewGuard() *Guard { return &Guard{} }
@@ -199,8 +205,8 @@ func TestEmitHTTPServer(t *testing.T) {
 	src := string(out)
 
 	wantSubstrings := []string{
-		// One server type per group, each constructed fallibly at the end
-		// of New.
+		// One server type per group, each constructed fallibly after every
+		// node and before the Init phase.
 		"type httpServer struct",
 		"type httpTelemetryServer struct",
 		"func newHttpServer(a *App) (*httpServer, error)",
@@ -404,5 +410,57 @@ func TestEmitHTTPGolden(t *testing.T) {
 	}
 	if string(want) != string(out) {
 		t.Errorf("output does not match golden file %s (run with UPDATE_GOLDEN=1 to review+accept changes)\n--- got ---\n%s", goldenPath, out)
+	}
+}
+
+// Extraction runs before the request is decoded: a rejected credential
+// costs nothing, and a malformed body cannot turn a 401 into a 400.
+func TestEmitHTTPExtractorsRunBeforeDecode(t *testing.T) {
+	resolved, spec := buildHTTPResolved(t)
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+
+	start := strings.Index(src, "func (s *httpServer) handleUpdateMe(")
+	if start < 0 {
+		t.Fatalf("no handleUpdateMe adapter:\n%s", src)
+	}
+	adapter := src[start:]
+	adapter = adapter[:strings.Index(adapter, "\n}\n")]
+	extract := strings.Index(adapter, "user, err := s.app.userExtractor.Extract(r)")
+	decode := strings.Index(adapter, "json.NewDecoder(r.Body).Decode(req)")
+	call := strings.Index(adapter, "httpapp.UpdateMe(r.Context(), req, user)")
+	if extract < 0 || decode < 0 || call < 0 || extract > decode || decode > call {
+		t.Fatalf("adapter order wrong (extract=%d decode=%d call=%d):\n%s", extract, decode, call, adapter)
+	}
+}
+
+// The servers are wired after the last constructor and before the first
+// Init, so a group missing its HTTPConfig.Groups entry fails before anything
+// expensive has started — and unwinds the way an Init failure does.
+func TestEmitHTTPServersBuiltBeforeInit(t *testing.T) {
+	resolved, spec := buildHTTPResolved(t)
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+
+	start := strings.Index(src, "func New(ctx context.Context) (*App, error) {")
+	if start < 0 {
+		t.Fatalf("no New:\n%s", src)
+	}
+	body := src[start:]
+	body = body[:strings.Index(body, "\n}\n")]
+	lastCtor := strings.Index(body, "repo := httpapp.NewRepo()")
+	server := strings.Index(body, "httpServer, err := newHttpServer(a)")
+	initCall := strings.Index(body, "a.repo.Init(ctx)")
+	if lastCtor < 0 || server < 0 || initCall < 0 || lastCtor > server || server > initCall {
+		t.Fatalf("New order wrong (ctor=%d server=%d init=%d):\n%s", lastCtor, server, initCall, body)
+	}
+	if !strings.Contains(body, "report := a.Shutdown(context.WithoutCancel(ctx))") || strings.Contains(body, "report := a.Shutdown(ctx)") {
+		t.Fatalf("server setup must roll back on a context the signal cannot cancel:\n%s", body)
 	}
 }

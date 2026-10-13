@@ -15,7 +15,7 @@
 //	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/recover.go:17:6
 //	[L1] *github.com/okian/servo/v3/middleware.RequestID
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/requestid.go:17:6
+//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/requestid.go:40:6
 //	[L1] *github.com/okian/servo/v3/middleware.CORSConfig
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | api/api.go:25:6
@@ -380,13 +380,13 @@ func newHttpInternalServer(a *App) (*httpInternalServer, error) {
 }
 
 func (s *httpInternalServer) handleReplicate(w http.ResponseWriter, r *http.Request) {
-	req := &api.ReplicateReq{}
-	req.Shard = r.PathValue("shard")
 	user, err := s.app.userExtractor.Extract(r)
 	if err != nil {
 		httpWriteFailure(w, "api.Replicate", "POST /replicate/{shard}", err)
 		return
 	}
+	req := &api.ReplicateReq{}
+	req.Shard = r.PathValue("shard")
 	res, err := api.Replicate(r.Context(), req, user)
 	if err != nil {
 		var hs servo.HTTPStatus
@@ -583,21 +583,30 @@ func New(ctx context.Context) (*App, error) {
 
 	httpServer, err := newHttpServer(a)
 	if err != nil {
-		report := a.Shutdown(ctx)
+		report := a.Shutdown(context.WithoutCancel(ctx))
+		if report.Clean() {
+			return nil, err
+		}
 		return nil, errors.Join(err, report)
 	}
 	a.httpServer = httpServer
 
 	httpInternalServer, err := newHttpInternalServer(a)
 	if err != nil {
-		report := a.Shutdown(ctx)
+		report := a.Shutdown(context.WithoutCancel(ctx))
+		if report.Clean() {
+			return nil, err
+		}
 		return nil, errors.Join(err, report)
 	}
 	a.httpInternalServer = httpInternalServer
 
 	httpTelemetryServer, err := newHttpTelemetryServer(a)
 	if err != nil {
-		report := a.Shutdown(ctx)
+		report := a.Shutdown(context.WithoutCancel(ctx))
+		if report.Clean() {
+			return nil, err
+		}
 		return nil, errors.Join(err, report)
 	}
 	a.httpTelemetryServer = httpTelemetryServer
@@ -712,7 +721,7 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:38:6"},
 		{Type: "*example.com/servohttp/mw.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:35:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/recover.go:17:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/requestid.go:17:6"},
+		{Type: "*github.com/okian/servo/v3/middleware.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/requestid.go:40:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.CORSConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:25:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.CORS", Level: 2, Deps: []string{"*github.com/okian/servo/v3/middleware.CORSConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/cors.go:44:6"},
 		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:17:6"},

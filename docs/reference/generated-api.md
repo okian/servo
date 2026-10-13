@@ -168,9 +168,9 @@ group — `httpServer` for the default group, `httpTelemetryServer` for a group 
 with the same `StopOnce`/`StopResult` bookkeeping every stoppable node gets. The server types are
 package-level declarations in the same file, and like a scope registry they are emitted machinery
 rather than graph nodes: each holds its listener config, its `*http.Server` and a readiness flag.
-They are constructed at the **end** of `New`, after every node — fallibly, because a declared
+They are constructed after every node and **before** the Init phase — fallibly, because a declared
 group missing from `HTTPConfig.Groups` is the one wiring error only runtime values can reveal, and
-it fails `New` with the same rollback any `Init` failure gets.
+it fails `New` with the same rollback any `Init` failure gets, before any `Init` has run.
 
 **Every field is unexported.** The generated file is part of *your* package, so code in that package
 — including its tests — can reach any component directly, and code outside it cannot. That boundary
@@ -391,8 +391,9 @@ order is not a supported operation.
 
 Emitted HTTP servers get the same treatment — a `stopHttpServer` (or `stopHttp<Group>Server`) per
 group, draining via `net/http.Server.Shutdown` under the stop budget. Each is nil-guarded: the
-servers are built last in `New`, so a rollback can reach a server that was never constructed, and
-the guard reports it as a clean no-op instead of dereferencing nothing.
+servers are built after every node, so the rollback for a group missing its `Groups` entry reaches
+servers that were never constructed, and the guard reports each as a clean no-op instead of
+dereferencing nothing.
 
 ## The test variant
 
@@ -412,10 +413,12 @@ Every generated name is prefixed the same way, for the same reason: a spec that 
 [`servo.Value`](spec.md#value) gets `TestValues` and `NewTestAppWith` beside `NewTestApp`, and the
 scope registries and accessors get a `test` prefix.
 
-That distinctness has one consequence worth planning for. The two graphs are resolved separately, so
-a `servo.Value` that only the production graph depends on is *unused* in the override graph — and an
-unused value is a diagnostic. If overriding an interface removes the only consumer of a supplied
-value, either the mock has to take it too or the value has to go.
+The two graphs are resolved separately, so a `servo.Value` that only the production graph depends on
+is *unused* in the override graph. That is not the diagnostic it would be in production: a mock that
+takes fewer things than the real implementation is the ordinary case, so the value is left off
+`TestValues` — and when nothing in the test graph reads any value, `TestValues` and `NewTestAppWith`
+are not emitted at all, leaving `NewTestApp` alone. An unused `servo.Trace` (no wrapper is emitted)
+and an unused `servo.ConfigFile` (no file is read) get the same treatment there.
 
 Because it lives in a `_test.go` file, it exists only under `go test`. A typical test:
 

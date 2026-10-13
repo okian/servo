@@ -79,11 +79,13 @@ default), and its request context is cancelled.
 
 ## `RequestID`
 
-Reads or generates `X-Request-Id`, sets it on the response, and plants it in the context;
+Reads `X-Request-Id` when it is at most 128 bytes of printable ASCII and generates one otherwise,
+sets it on the response, and plants it in the context;
 `middleware.RequestIDFromContext(ctx)` reads it back in handlers and extractors.
 
 ## `Gzip`
 
 Compresses when the client accepts gzip. The decision is made at `WriteHeader` time: responses
-already carrying a `Content-Encoding`, or with inherently compressed content types (`image/`,
-`video/`, `audio/`, zip/gzip/zstd), pass through untouched. Sets `Vary: Accept-Encoding`.
+already carrying a `Content-Encoding`, with inherently compressed content types (`image/`, `video/`,
+`audio/`, zip/gzip/zstd), or with a body-less status (1xx, 204, 304), pass through untouched. Sets
+`Vary: Accept-Encoding`.

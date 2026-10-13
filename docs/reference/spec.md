@@ -403,7 +403,9 @@ the graph depends on example.com/app/conf.Flags
 ```
 
 The position is the `servo.Value[…]()` call site — the declaration servo is complaining about, not
-the type.
+the type. The check is against the production graph only: in the test variant an `Override` may
+have swapped out the value's only consumer, and there the value is left off `TestValues` instead of
+refused — see [the test variant](generated-api.md#the-test-variant).
 
 Note that this is checked per generated file, so a value used only by a type an
 [`Override`](#override) replaces is reported when the test variant is resolved.
@@ -546,7 +548,8 @@ Precedence per setting is default, then file, then environment — the environme
 runtime the path can be overridden with the `CONFIG_FILE` environment variable (same extension
 family only); the declared path being absent is fine, an explicitly set one must exist. Declaring
 a `ConfigFile` no config in the graph would read is a diagnostic, the same judgement an unused
-`Value` gets.
+`Value` gets — and with the same exception for the test variant, where an `Override` may have
+removed the only consumer and the file is simply not read.
 
 The full contract — the directive, the tag grammar, the generated loader, and the rule that every
 injector sharing a config must agree about declaring a file — is on
@@ -596,8 +599,9 @@ servo could read and is refused.
 written after an `Include` supersedes the included one for the same interface, so a shared set can
 trace an interface and one injector can still give it its own `Expected` list.
 
-**A traced interface nothing depends on is a diagnostic**, checked per generated file like an
-unused `Value`.
+**A traced interface nothing depends on is a diagnostic** in the production graph, like an unused
+`Value`; in the test variant, where an `Override` may have removed the consumer, the wrapper is
+simply not emitted.
 
 ### `Expected`
 

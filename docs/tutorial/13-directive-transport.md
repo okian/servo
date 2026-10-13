@@ -220,21 +220,23 @@ The file's header now documents the routing table alongside the graph. Each rout
 — here is the interesting middle of `handleCreateOrder`:
 
 ```go
+claims, err := s.app.claimsExtractor.Extract(r)
+if err != nil {
+	httpWriteFailure(w, "servoapi.CreateOrder", "POST /orders", err)
+	return
+}
 req := &servoapi.CreateOrderReq{}
 r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 	httpWriteError(w, http.StatusBadRequest, "malformed request body")
 	return
 }
-claims, err := s.app.claimsExtractor.Extract(r)
-if err != nil {
-	httpWriteFailure(w, "servoapi.CreateOrder", "POST /orders", err)
-	return
-}
 res, err := servoapi.CreateOrder(r.Context(), req, claims, s.app.orderService)
 ```
 
-That is `handlers.go`'s boilerplate from chapter 10, emitted instead of maintained. The
+That is `handlers.go`'s boilerplate from chapter 10, emitted instead of maintained. The claims
+come first, before a byte of the body is read: an unauthenticated request is refused at no cost,
+and a malformed body cannot turn its 401 into a 400. The
 registration probe already ran at generate time: two routes that would make `http.ServeMux` panic
 at startup are a build failure with net/http's own message.
 

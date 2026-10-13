@@ -14,8 +14,6 @@ import (
 	"github.com/okian/servo/v3/internal/load"
 )
 
-var errorType = types.Universe.Lookup("error").Type()
-
 // Node is one resolved value in the object graph, keyed by its provider's
 // own result key (its identity — a singleton per graph, or one per live
 // key within a scope).
@@ -107,6 +105,14 @@ type Input struct {
 	Caps       *graph.Capabilities
 	Scope      map[string]bool
 	ExtraBinds []load.BindDecl
+	// OverrideVariant marks the resolve that produces NewTestApp. An
+	// Override may legitimately remove the only consumer of a declared
+	// Value, Trace or ConfigFile — a mock taking fewer things than the real
+	// implementation is the ordinary case — so in this variant an unused
+	// declaration is left out of the generated file rather than refused.
+	// The production resolve, where the spec file is the whole truth about
+	// the graph, still refuses it.
+	OverrideVariant bool
 	// Configs is every //servo:config declaration in the main module. A
 	// requested type matching one resolves to its generated loader; the
 	// ones nothing requests are simply not part of this graph.
@@ -169,6 +175,9 @@ type resolver struct {
 	traceByKey     map[graph.Key]*load.TraceDecl
 	traceUsed      map[graph.Key]bool
 	traceNodes     []*Node
+	// overrideVariant is Input.OverrideVariant: the unused-declaration
+	// checks step aside, and Resolved.Supplied carries only the used values.
+	overrideVariant bool
 }
 
 // Resolve builds the construction plan for in.Spec.Roots. On any
@@ -185,29 +194,30 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		fset = token.NewFileSet()
 	}
 	r := &resolver{
-		caps:          in.Caps,
-		scope:         in.Scope,
-		all:           in.Candidates,
-		byResult:      make(map[graph.Key][]*graph.Provider),
-		explicit:      make(map[graph.Key]graph.Key),
-		nodes:         make(map[graph.Key]*Node),
-		resolvedKey:   make(map[graph.Key]*Node),
-		failedKey:     make(map[graph.Key]bool),
-		color:         make(map[graph.Key]int),
-		fset:          fset,
-		pkgs:          in.Pkgs,
-		rootPos:       make(map[*Node]token.Position),
-		specRootPos:   make(map[*Node]token.Position),
-		specRootDecl:  make(map[*Node]graph.Key),
-		explicitPos:   make(map[graph.Key]token.Position),
-		scopeByKey:    make(map[graph.Key]*Scope),
-		accessorByKey: make(map[graph.Key]*ScopeRoot),
-		suppliedByKey: make(map[graph.Key]*Node),
-		suppliedUsed:  make(map[graph.Key]bool),
-		declaredScope: make(map[graph.Key]bool),
-		configByKey:   make(map[graph.Key]*graph.ConfigDecl),
-		traceByKey:    make(map[graph.Key]*load.TraceDecl),
-		traceUsed:     make(map[graph.Key]bool),
+		caps:            in.Caps,
+		scope:           in.Scope,
+		all:             in.Candidates,
+		byResult:        make(map[graph.Key][]*graph.Provider),
+		explicit:        make(map[graph.Key]graph.Key),
+		nodes:           make(map[graph.Key]*Node),
+		resolvedKey:     make(map[graph.Key]*Node),
+		failedKey:       make(map[graph.Key]bool),
+		color:           make(map[graph.Key]int),
+		fset:            fset,
+		pkgs:            in.Pkgs,
+		rootPos:         make(map[*Node]token.Position),
+		specRootPos:     make(map[*Node]token.Position),
+		specRootDecl:    make(map[*Node]graph.Key),
+		explicitPos:     make(map[graph.Key]token.Position),
+		scopeByKey:      make(map[graph.Key]*Scope),
+		accessorByKey:   make(map[graph.Key]*ScopeRoot),
+		suppliedByKey:   make(map[graph.Key]*Node),
+		suppliedUsed:    make(map[graph.Key]bool),
+		declaredScope:   make(map[graph.Key]bool),
+		configByKey:     make(map[graph.Key]*graph.ConfigDecl),
+		traceByKey:      make(map[graph.Key]*load.TraceDecl),
+		traceUsed:       make(map[graph.Key]bool),
+		overrideVariant: in.OverrideVariant,
 	}
 	for _, c := range in.Candidates {
 		r.byResult[c.Result] = append(r.byResult[c.Result], c)
@@ -315,6 +325,12 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 
 	var supplied []*Node
 	for _, v := range in.Spec.Values {
+		// In the override variant a value the overridden graph no longer
+		// reads is left off TestValues rather than refused — see
+		// checkSuppliedValues — so only the used ones are handed on.
+		if r.overrideVariant && !r.suppliedUsed[v.Key] {
+			continue
+		}
 		supplied = append(supplied, r.suppliedByKey[v.Key])
 	}
 	// Declaration-position order, not discovery order: which root's DFS
@@ -376,7 +392,10 @@ func (r *resolver) checkConfigs(spec *load.Spec) {
 			}
 		}
 	}
-	if spec.ConfigFile != nil && len(r.configNodes) == 0 {
+	// Not in the override variant: a mock may have replaced the only
+	// consumer of a config, and the test variant then simply reads no file
+	// — the same leniency an unused Value gets there.
+	if spec.ConfigFile != nil && len(r.configNodes) == 0 && !r.overrideVariant {
 		r.diags = append(r.diags, r.unusedConfigFileDiagnostic(spec.ConfigFile))
 	}
 }
@@ -400,6 +419,14 @@ func sortedConfigNodes(nodes []*Node) []*Node {
 // consistent with how servo treats the rest of the spec: an unresolvable
 // declaration is a build failure, not a warning.
 func (r *resolver) checkSuppliedValues(values []load.ValueDecl) {
+	// The override variant is the one place an unused declaration is not
+	// the spec file's mistake: an Override swaps in a mock, and a mock that
+	// takes fewer things than the real implementation is the ordinary case.
+	// The value is left off TestValues instead (see Resolve), so the test
+	// API describes what the test graph actually reads.
+	if r.overrideVariant {
+		return
+	}
 	for _, v := range values {
 		if r.suppliedUsed[v.Key] {
 			continue

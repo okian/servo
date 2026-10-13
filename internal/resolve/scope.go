@@ -531,7 +531,7 @@ func accessorMethodOK(m *types.Func, impl types.Type) error {
 		if fn, ok := sig.Results().At(1).Type().Underlying().(*types.Signature); !ok || fn.Params().Len() != 0 || fn.Results().Len() != 0 {
 			return fmt.Errorf("the Acquire method's second result must be func(), the release closure")
 		}
-		if !types.Identical(sig.Results().At(2).Type(), errorType) {
+		if !graph.IsErrorType(sig.Results().At(2).Type()) {
 			return fmt.Errorf("the Acquire method's third result must be error")
 		}
 		return nil

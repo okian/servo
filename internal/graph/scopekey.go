@@ -70,7 +70,7 @@ func ScopeKeyShaped(t types.Type) bool {
 	if sig.Params().Len() == 0 || !IsContextType(sig.Params().At(0).Type()) {
 		return false
 	}
-	if sig.Results().Len() != 2 || !types.Identical(sig.Results().At(1).Type(), errorType) {
+	if sig.Results().Len() != 2 || !IsErrorType(sig.Results().At(1).Type()) {
 		return false
 	}
 	named, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Named)
@@ -181,7 +181,7 @@ func FindScopeKey(fset *token.FileSet, t types.Type) (*ScopeKey, error) {
 			"%s's first parameter must be context.Context — the scope key comes from the request context",
 			ScopeKeyMethodName)}
 	}
-	if sig.Results().Len() != 2 || !types.Identical(sig.Results().At(1).Type(), errorType) {
+	if sig.Results().Len() != 2 || !IsErrorType(sig.Results().At(1).Type()) {
 		return nil, &ScopeKeyError{pos, fmt.Sprintf(
 			"%s must return exactly (K, error) — without the error a missing key becomes the zero K, and every keyless caller silently shares one instance",
 			ScopeKeyMethodName)}

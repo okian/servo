@@ -57,8 +57,7 @@ func scopeKeyShaped(pass *analysis.Pass, fn *ast.FuncDecl) bool {
 	if sig.Results().Len() != 2 {
 		return false
 	}
-	errType := types.Universe.Lookup("error").Type()
-	if !types.Identical(sig.Results().At(1).Type(), errType) {
+	if !graph.IsErrorType(sig.Results().At(1).Type()) {
 		return false
 	}
 	key, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Named)

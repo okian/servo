@@ -280,7 +280,7 @@ func extractMethodResult(t types.Type) (types.Type, string) {
 		return nil, "its parameter list must be exactly (r *http.Request)"
 	}
 	res := sig.Results()
-	if res.Len() != 2 || !types.Identical(res.At(1).Type(), errorType) {
+	if res.Len() != 2 || !graph.IsErrorType(res.At(1).Type()) {
 		return nil, "its results must be exactly (T, error)"
 	}
 	return res.At(0).Type(), ""

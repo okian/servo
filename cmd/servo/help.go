@@ -32,7 +32,7 @@ var commands = []struct{ Name, Usage, Summary string }{
 }
 
 // buildFlagsHelp is appended to the general usage rather than repeated per
-// command: the seven commands that load packages all take the same four,
+// command: the eight commands that load packages all take the same four,
 // spelled exactly as `go build` spells them.
 const buildFlagsHelp = `Build flags, accepted by every command that loads packages (generate, check,
 graph, explain, why, list, config, doctor) with the same meaning as in go build:

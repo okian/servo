@@ -470,3 +470,87 @@ func wire() {
 		t.Fatalf("generated test variant does not compile: %v\n%s\n---\n%s", err, out, gen)
 	}
 }
+
+// TestOverrideMayDropAValuesOnlyConsumer: the mock an Override swaps in
+// takes fewer things than the real implementation — here, no Flags — so the
+// test graph never reads the declared value. That used to fail the whole
+// injector with "declared, but nothing in the graph depends on"; now the
+// production file keeps Values/NewWith, and the test variant, with no value
+// left to carry, is emitted with NewTestApp alone.
+func TestOverrideMayDropAValuesOnlyConsumer(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", `module example.com/tv
+
+go 1.27.0
+
+require github.com/okian/servo/v3 v3.0.0
+
+replace github.com/okian/servo/v3 => `+repoRoot(t)+`
+`)
+	mustWriteFile(t, dir, "app/app.go", `package app
+
+type Flags struct{ DSN string }
+
+type Store interface{ Get() string }
+
+type Real struct{ f Flags }
+
+func NewReal(f Flags) *Real { return &Real{f: f} }
+
+func (r *Real) Get() string { return r.f.DSN }
+
+type Fake struct{}
+
+func NewFake() *Fake { return &Fake{} }
+
+func (f *Fake) Get() string { return "fake" }
+
+type Server struct{ s Store }
+
+func NewServer(s Store) *Server { return &Server{s: s} }
+`)
+	mustWriteFile(t, dir, "cmd/app/main.go", "package main\n\nfunc main() {}\n")
+	mustWriteFile(t, dir, "cmd/app/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/tv/app"
+	"github.com/okian/servo/v3/servo"
+)
+
+func wire() {
+	servo.Build(
+		servo.Value[app.Flags](),
+		servo.Bind[app.Store, *app.Real](),
+		servo.Override[app.Store, *app.Fake](),
+		servo.Root[*app.Server](),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	prod := mustRead(t, filepath.Join(dir, "cmd", "app", "servo_gen.go"))
+	for _, want := range []string{"type Values struct {", "func NewWith(ctx context.Context, v Values) (*App, error)"} {
+		if !strings.Contains(prod, want) {
+			t.Errorf("production file missing %q:\n%s", want, prod)
+		}
+	}
+	gen := mustRead(t, filepath.Join(dir, "cmd", "app", "servo_gen_test.go"))
+	if !strings.Contains(gen, "func NewTestApp(ctx context.Context) (*TestApp, error)") {
+		t.Errorf("override variant missing NewTestApp:\n%s", gen)
+	}
+	for _, unwanted := range []string{"TestValues", "NewTestAppWith", "Flags"} {
+		if strings.Contains(gen, unwanted) {
+			t.Errorf("override variant still carries %q, which nothing in the test graph reads:\n%s", unwanted, gen)
+		}
+	}
+
+	cmd := exec.Command("go", "test", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated test variant does not compile: %v\n%s\n---\n%s", err, out, gen)
+	}
+}

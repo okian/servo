@@ -29,8 +29,8 @@ func wire() {
 }
 
 // Every new HTTP marker is a panic waiting for an untagged file, exactly
-// like the originals — this test is what notices one being forgotten in
-// markerNames.
+// like the originals — this test is what notices one slipping past
+// isMarkerFunc.
 func TestFlagsGroupUseRouteExtractMarkerCalls(t *testing.T) {
 	const src = `package fixture
 

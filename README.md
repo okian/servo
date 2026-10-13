@@ -75,8 +75,9 @@ package api
 func New(s store.Store) *Server { ... } // depends on the interface, not postgres directly
 ```
 
-Scaffold the spec file (`servo init`) and declare the roots — everything they transitively depend
-on is what gets built; nothing else is:
+Scaffold the spec file (`servo init` writes it as `servo_spec.go`; the examples in this repository
+name theirs `spec.go`) and declare the roots — everything they transitively depend on is what gets
+built; nothing else is:
 
 ```go
 //go:build servoinject
@@ -252,8 +253,9 @@ example.com/app/conf.Flags
 "Once" is the boundary worth reading twice: `Values` is filled in when the app is constructed, so
 this is a per-app value and not a per-call one — a `*testing.T` still has no way in (see
 [Mocking](#mocking)). A declared value nothing in the graph depends on is a generate-time
-diagnostic, not an unused struct field, and a graph declaring no value at all emits exactly the
-file it always did. Full contract:
+diagnostic, not an unused struct field — except in the test variant, where an `Override` may have
+swapped out the value's only consumer, and the value is left off `TestValues` instead — and a
+graph declaring no value at all emits exactly the file it always did. Full contract:
 [`Value`](https://okian.github.io/servo/reference/spec.html#value).
 
 ## Configuration from env and files
@@ -707,8 +709,8 @@ tags and writes a correspondingly constrained generated file, so one injector ca
 a `--tags=prod` variant side by side. [`examples/variants`](./examples/variants) is exactly that —
 one injector, two generated files, both built and tested in CI — and
 [Build variants](./docs/reference/cli.md#build-variants) is the contract. `servovet` is a
-`go/analysis` analyzer for the mistakes the compiler can't catch: a marker call — `Build`,
-`Root`, `Bind`, `Override`, `Scoped`, `Value`, `Include`, `ConfigFile`, `Linger`, `Max` — in a
+`go/analysis` analyzer for the mistakes the compiler can't catch: a marker call — `Build`, or
+any `servo` function returning `Marker`, `HTTPOption`, `ScopeOption` or `TraceOption` — in a
 file missing the `servoinject` build tag, a `ScopeKey` method whose body can reach its own
 receiver (servo calls it on a typed nil), and a broken `//servo:` directive — a typo'd
 `//servo:confg` is otherwise just a comment that compiles, generates, and silently loads nothing.

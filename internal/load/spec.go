@@ -498,8 +498,6 @@ func replaceTrace(decls []TraceDecl, decl TraceDecl) {
 	}
 }
 
-var errorIface = types.Universe.Lookup("error").Type().Underlying().(*types.Interface)
-
 // parseTraceCall reads one servo.Trace[I](options...) declaration. The
 // interface is checked here for everything the emitter would otherwise
 // discover while writing a type it cannot finish: a concrete type has no
@@ -677,7 +675,7 @@ func parseExpectedCall(pkg *packages.Package, spec *Spec, call *ast.CallExpr, po
 	if obj.Pkg() == nil || obj.Parent() != obj.Pkg().Scope() {
 		return ExpectedErr{}, fmt.Errorf("%s: servo.Expected(%s): %s is not declared at package level — %s", pos, ident.Name, ident.Name, shape)
 	}
-	if !types.Implements(obj.Type(), errorIface) {
+	if !graph.ImplementsError(obj.Type()) {
 		return ExpectedErr{}, fmt.Errorf("%s: servo.Expected(%s): %s is a %s, not an error", pos, ident.Name, ident.Name, graph.TypeString(obj.Type()))
 	}
 	if !obj.Exported() && obj.Pkg().Path() != spec.InjectorPkg.PkgPath {

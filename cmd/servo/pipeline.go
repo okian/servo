@@ -246,11 +246,14 @@ func (p *pipeline) resolve(extraBinds []load.BindDecl) (*resolve.Resolved, error
 		Caps:       p.caps,
 		Scope:      p.scope,
 		ExtraBinds: extraBinds,
-		Configs:    p.configs,
-		Fset:       fset,
-		Pkgs:       pkgs,
-		HTTP:       httpIn,
-		Trace:      traceIn,
+		// Non-empty extraBinds is the NewTestApp resolve, where an Override
+		// may legitimately remove a declaration's only consumer.
+		OverrideVariant: len(extraBinds) > 0,
+		Configs:         p.configs,
+		Fset:            fset,
+		Pkgs:            pkgs,
+		HTTP:            httpIn,
+		Trace:           traceIn,
 	})
 	if len(diags) > 0 {
 		msg := fmt.Sprintf("servo: %d diagnostic(s):\n", len(diags))
