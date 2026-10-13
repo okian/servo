@@ -756,3 +756,29 @@ func TestUnusedSuppliedValueIsRejectedAndOffersBothWaysOut(t *testing.T) {
 		t.Errorf("message names *app.Config, which Tunable does depend on:\n%s", msg)
 	}
 }
+
+// TestUnusedSuppliedValueIsOmittedInTheOverrideVariant: an Override may
+// swap in a mock that takes fewer things than the real implementation, so
+// the test-variant resolve leaves an unused value off TestValues instead of
+// refusing the whole injector for a spec that is fine in production.
+func TestUnusedSuppliedValueIsOmittedInTheOverrideVariant(t *testing.T) {
+	pkg, all := checkFixture(t)
+	candidates := []*graph.Provider{findProvider(t, all, "NewTunable")}
+	roots := []load.RootDecl{{Key: ptrKey(pkg, "Tunable"), Type: ptrType(pkg, "Tunable"), Pos: token.Position{Filename: "spec.go", Line: 9}}}
+
+	in := baseInput(pkg, candidates, roots, nil)
+	in.Spec.Values = []load.ValueDecl{valueDecl(pkg, "Config", 11), valueDecl(pkg, "Clock", 12)}
+	in.OverrideVariant = true
+
+	resolved, diags := Resolve(in)
+	if len(diags) != 0 || resolved == nil {
+		t.Fatalf("got diags=%v resolved=%v, want a plan with no diagnostics", diags, resolved != nil)
+	}
+	if len(resolved.Supplied) != 1 || resolved.Supplied[0].Key != in.Spec.Values[0].Key {
+		keys := make([]string, len(resolved.Supplied))
+		for i, n := range resolved.Supplied {
+			keys[i] = n.Key.String()
+		}
+		t.Fatalf("Supplied = %v, want only the used *Config", keys)
+	}
+}

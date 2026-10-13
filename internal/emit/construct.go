@@ -8,7 +8,8 @@ import (
 )
 
 // newFunc emits the constructor: sequential DFS-post-order construction
-// with statically unrolled rollback, then the Init phase.
+// with statically unrolled rollback, then the emitted HTTP servers (wiring
+// only), then the Init phase.
 func (e *emitter) newFunc() string {
 	var b strings.Builder
 	b.WriteString(e.zeroValueDelegate())
@@ -26,8 +27,8 @@ func (e *emitter) newFunc() string {
 		e.writeConstruction(&b, i, n)
 	}
 
-	b.WriteString(e.initPhase())
 	b.WriteString(e.httpSetup())
+	b.WriteString(e.initPhase())
 
 	b.WriteString("\treturn a, nil\n")
 	b.WriteString("}\n\n")

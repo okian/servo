@@ -250,3 +250,45 @@ func wire() {
 		t.Fatalf("got %d diagnostics for unrelated calls, want 0: %v", len(got), got)
 	}
 }
+
+// TestMarkerDetectionCoversTheServoPackage: a marker is any servo function
+// returning one of the opaque option types, and every such function panics
+// when executed. The list of those types is the one thing kept by hand, so
+// the expectation here is derived from the package itself — an exported
+// function whose single result is a servo-declared empty struct — and the
+// test fails the moment the package gains an option type the analyzer does
+// not know.
+func TestMarkerDetectionCoversTheServoPackage(t *testing.T) {
+	servoPkg := loadServoPackage(t).Types
+	scope := servoPkg.Scope()
+	recognised := map[string]bool{}
+	for _, name := range scope.Names() {
+		fn, ok := scope.Lookup(name).(*types.Func)
+		if !ok || !fn.Exported() {
+			continue
+		}
+		sig := fn.Type().(*types.Signature)
+		want := name == "Build"
+		if sig.Results().Len() == 1 {
+			if named, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Named); ok && named.Obj().Pkg() == servoPkg {
+				if st, ok := named.Underlying().(*types.Struct); ok && st.NumFields() == 0 {
+					want = true
+				}
+			}
+		}
+		if got := isMarkerFunc(fn); got != want {
+			t.Errorf("isMarkerFunc(servo.%s) = %v, want %v", name, got, want)
+		}
+		recognised[name] = isMarkerFunc(fn)
+	}
+	for _, name := range []string{"Build", "Root", "Bind", "Override", "Scoped", "Linger", "Max", "Value", "Include", "ConfigFile", "HTTP", "Group", "Use", "Route", "Extract", "Trace", "Expected"} {
+		if !recognised[name] {
+			t.Errorf("servo.%s is not recognised as a marker", name)
+		}
+	}
+	for _, name := range []string{"JSON", "XML", "Text", "Redirect", "WriteResponse", "RunStop", "MergeNodeResults", "LingerWindow"} {
+		if recognised[name] {
+			t.Errorf("servo.%s is a runtime function, not a marker", name)
+		}
+	}
+}

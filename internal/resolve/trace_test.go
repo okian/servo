@@ -570,3 +570,26 @@ func TestTraceOnScopedImplementationIsRejected(t *testing.T) {
 		}
 	}
 }
+
+// TestTraceUnusedIsOmittedInTheOverrideVariant: the same spec resolved for
+// NewTestApp, where an Override may have removed the interface's only
+// consumer, emits no wrapper rather than failing the injector.
+func TestTraceUnusedIsOmittedInTheOverrideVariant(t *testing.T) {
+	pkg, all := checkTraceFixture(t)
+	in := baseInput(pkg, providers(t, all, "NewLogger", "NewPostgres", "NewSDK", "NewDirect"),
+		[]load.RootDecl{rootDecl(pkg, "Direct")}, nil)
+	in.Spec.Traces = []load.TraceDecl{traceDecl(pkg, "Store")}
+	in.Trace = traceInput(pkg)
+	in.OverrideVariant = true
+
+	resolved, diags := Resolve(in)
+	if len(diags) != 0 || resolved == nil {
+		t.Fatalf("got diags=%v, want a plan with no diagnostics", diags)
+	}
+	if len(resolved.Traced) != 0 {
+		t.Fatalf("Traced = %d wrappers, want none for an interface nothing requests", len(resolved.Traced))
+	}
+	if _, ok := resolved.ByKey[tracedKey(namedKey(pkg, "Store"))]; ok {
+		t.Fatal("a wrapper node was created for an interface nothing requests")
+	}
+}

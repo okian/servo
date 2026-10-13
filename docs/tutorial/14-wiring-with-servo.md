@@ -223,7 +223,10 @@ func New(ctx context.Context) (*App, error) {
 		})
 		// ... cache.Init, publisher.Init, run concurrently in the same errgroup ...
 		if err := g.Wait(); err != nil {
-			report := a.Shutdown(ctx)
+			report := a.Shutdown(context.WithoutCancel(ctx))
+			if report.Clean() {
+				return nil, err
+			}
 			return nil, errors.Join(err, report)
 		}
 	}

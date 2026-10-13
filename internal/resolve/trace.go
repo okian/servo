@@ -141,6 +141,12 @@ func (r *resolver) checkTraces(decls []load.TraceDecl) {
 		if r.traceByKey[d.Iface] == nil || r.traceUsed[d.Iface] {
 			continue // rejected at setup, or in use
 		}
+		// An Override may have replaced the interface's only consumer; the
+		// test variant then simply emits no wrapper, the way it leaves an
+		// unused Value off TestValues.
+		if r.overrideVariant {
+			continue
+		}
 		r.diags = append(r.diags, r.unusedTraceDiagnostic(d))
 	}
 	for _, n := range r.traceNodes {

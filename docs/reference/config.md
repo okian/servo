@@ -37,7 +37,7 @@ after `//`. It takes two options:
 - **`key=`** (optional) — `lower_snake`. Overrides the file-section key when the lowercased prefix
   isn't what you want in the file.
 
-The directive is servo's only comment directive, and it is validated twice: `servo generate`
+Like the route directives, it is validated twice: `servo generate`
 refuses a malformed one, and [`servo-vet`](cli.md#servo-vet) flags a typo'd one
 (`//servo:confg`) in the editor — a misspelled comment directive otherwise compiles, generates,
 and silently loads nothing.

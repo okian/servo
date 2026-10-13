@@ -1,9 +1,9 @@
 // Package servovet is the go/analysis analyzer for the servo mistakes the
 // compiler cannot catch.
 //
-// The first is a marker call (Build/Root/Bind/Override/Scoped/Include/
-// Value/ConfigFile/Linger/Max) in a file that doesn't carry a build
-// constraint requiring the servoinject tag. Marker bodies panic when
+// The first is a marker call — servo.Build, or any servo function
+// returning Marker, HTTPOption, ScopeOption or TraceOption — in a file that
+// doesn't carry a build constraint requiring the servoinject tag. Marker bodies panic when
 // actually executed, so such a call would compile into the real binary and
 // panic at runtime instead of being caught here, in the editor, before `go
 // generate` ever runs.
@@ -44,19 +44,36 @@ var Analyzer = &analysis.Analyzer{
 	Run:  run,
 }
 
-var markerNames = map[string]bool{
-	"Build": true, "Root": true, "Bind": true, "Override": true,
-	"Scoped": true, "Linger": true, "Max": true,
-	// Value, Include and ConfigFile panic when executed for the same
-	// reason the rest do, and Include is the one most likely to be written
-	// outside a spec file — a shared marker set lives in its own package,
-	// where the tag is easy to forget.
-	"Value": true, "Include": true, "ConfigFile": true,
-	// The HTTP markers panic identically; HTTP/Extract sit at the Build
-	// top level, Group/Use/Route nest inside servo.HTTP(...).
-	"HTTP": true, "Group": true, "Use": true, "Route": true, "Extract": true,
-	// Trace sits at the Build top level; Expected nests inside it.
-	"Trace": true, "Expected": true,
+// markerResultTypes are the opaque types a marker function returns. A
+// marker is recognised by its result rather than by name: every function in
+// the servo package returning one of these panics when executed, so a new
+// marker returning an existing option type is flagged with no change here,
+// and nothing has to be kept in step with the parser in internal/load.
+// Build, which returns nothing, is the one named exception.
+// TestMarkerDetectionCoversTheServoPackage fails the moment the servo
+// package gains an option type this map does not know.
+var markerResultTypes = map[string]bool{"Marker": true, "HTTPOption": true, "ScopeOption": true, "TraceOption": true}
+
+// isMarkerFunc reports whether fn is a servo marker: Build, or a function
+// (not a method) of the servo package whose single result is one of
+// markerResultTypes.
+func isMarkerFunc(fn *types.Func) bool {
+	if fn.Pkg() == nil || fn.Pkg().Path() != graph.ServoPackagePath {
+		return false
+	}
+	if fn.Name() == "Build" {
+		return true
+	}
+	sig, ok := fn.Type().(*types.Signature)
+	if !ok || sig.Recv() != nil || sig.Results().Len() != 1 {
+		return false
+	}
+	named, ok := types.Unalias(sig.Results().At(0).Type()).(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Pkg() != nil && obj.Pkg().Path() == graph.ServoPackagePath && markerResultTypes[obj.Name()]
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -110,7 +127,7 @@ func markerFuncCalled(pass *analysis.Pass, call *ast.CallExpr) (*types.Func, boo
 	}
 
 	fn, ok := pass.TypesInfo.Uses[ident].(*types.Func)
-	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != graph.ServoPackagePath || !markerNames[fn.Name()] {
+	if !ok || !isMarkerFunc(fn) {
 		return nil, false
 	}
 	return fn, true

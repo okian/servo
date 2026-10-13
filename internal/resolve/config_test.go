@@ -412,3 +412,28 @@ func checkConfigScopeFixture(t *testing.T) (*types.Package, *token.FileSet, []*p
 	accepted, _ := graph.ScanCandidates(pkgs, "example.com/scopedcfg")
 	return pkg, fset, pkgs, accepted
 }
+
+// TestConfigFileUnusedIsToleratedInTheOverrideVariant: a mock may have
+// replaced the only consumer of a config, so the test-variant resolve
+// reads no file rather than refusing the injector.
+func TestConfigFileUnusedIsToleratedInTheOverrideVariant(t *testing.T) {
+	pkg, all := checkConfigFixture(t)
+	decl := configDecl(pkg, "redisSettings", "REDIS", 9, "addr")
+	resolved, diags := Resolve(Input{
+		Spec: &load.Spec{
+			Roots:      []load.RootDecl{rootDecl(pkg, "Standalone")},
+			ConfigFile: &load.ConfigFileDecl{Path: "config.yaml", Pos: token.Position{Filename: "spec.go", Line: 12}},
+		},
+		Candidates:      all,
+		Caps:            graph.EmptyCapabilities(),
+		Scope:           map[string]bool{"example.com/app": true},
+		Configs:         []*graph.ConfigDecl{decl},
+		OverrideVariant: true,
+	})
+	if len(diags) != 0 || resolved == nil {
+		t.Fatalf("diags = \n%s", diagText(diags))
+	}
+	if len(resolved.Configs) != 0 {
+		t.Fatalf("Configs = %d, want none: Standalone reads no config", len(resolved.Configs))
+	}
+}

@@ -47,7 +47,7 @@ func checkConfigDirectives(pass *analysis.Pass) {
 						}
 						continue
 					}
-					pass.Reportf(c.Pos(), "servo: unrecognized directive //servo:%s — the directives are //servo:%s on a type and the route verbs (get, post, put, patch, delete, head, options) on a function", name, graph.ConfigDirective)
+					pass.Reportf(c.Pos(), "servo: unrecognized directive //servo:%s — the directives are //servo:%s on a type and the route verbs (%s) on a function", name, graph.ConfigDirective, graph.RouteVerbList)
 					continue
 				}
 				spec, attached := typeDoc[c]

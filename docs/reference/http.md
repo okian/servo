@@ -92,7 +92,8 @@ Groups are **declared per injector** with `servo.Group("name")` inside `servo.HT
   directive: a typo must not silently strand a route.
 - A declared group missing from `HTTPConfig.Groups` fails `New` with an error naming it — group
   names are generate-time facts, port numbers are runtime values, so this is the one check that
-  waits for startup.
+  waits for `New`. It runs after every constructor and before any `Init`, so a wrong name fails
+  before a database is ever connected.
 
 Each group's server reports independently: `Ready` has one entry per group (`"http"`,
 `"http:telemetry"`), and `Shutdown` stops every group server before any node.
@@ -156,8 +157,10 @@ handler parameter of the method's result type** is extracted:
 func GetOrder(ctx context.Context, req *GetReq, user *auth.User, repo *repo.Repository) (servo.Json[*Order], error)
 ```
 
-`user` comes from the extractor, per request; `repo` still comes from the graph. An extraction
-error short-circuits through the exact status contract below — the handler never runs. Generate-time
+`user` comes from the extractor, per request; `repo` still comes from the graph. Extractors run
+before the request struct is decoded, so a rejected credential costs nothing — the body is never
+read — and a malformed body cannot turn a 401 into a 400. An extraction error short-circuits
+through the exact status contract below; the handler never runs. Generate-time
 rules: the method's exact shape; one extractor per produced type; and a type that has **both** a
 provider and an extractor is an error ("constructed once or extracted per request, never both").
 
@@ -274,8 +277,9 @@ the standard needed-by chain, rooted at the marker.
 ## Lifecycle
 
 The servers are emitted machinery, not graph nodes — the same standing scope registries have. Each
-group's server is constructed at the end of `New` (wiring only; the listener is not bound yet —
-though a declared group missing its `Groups` entry fails right here, with rollback), and in `Run`
+group's server is constructed after every node and before the Init phase (wiring only; the listener
+is not bound yet — though a declared group missing its `Groups` entry fails right here, with the
+same rollback an `Init` failure gets, before any `Init` has run), and in `Run`
 every server binds explicitly, flips its readiness flag, and serves until the context ends.
 `Ready` reports one entry per group (`"http"`, `"http:telemetry"`) meaning exactly "that listener
 is bound". In `Shutdown` the servers stop **first**, before every singleton: they are the inbound

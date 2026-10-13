@@ -8,9 +8,9 @@ import (
 
 // Gzip compresses responses for clients that accept it. The decision is
 // made at WriteHeader time, when the handler's own headers are known:
-// responses that already carry a Content-Encoding, or whose content type is
-// inherently compressed (images, audio, video, archives), pass through
-// untouched. Zero config.
+// responses that already carry a Content-Encoding, whose content type is
+// inherently compressed (images, audio, video, archives), or whose status
+// carries no body (1xx, 204, 304) pass through untouched. Zero config.
 type Gzip struct{}
 
 func NewGzip() *Gzip { return &Gzip{} }
@@ -60,7 +60,11 @@ func (g *gzipWriter) WriteHeader(code int) {
 	}
 	g.wroteHeader = true
 	h := g.Header()
-	if h.Get("Content-Encoding") != "" || incompressible(h.Get("Content-Type")) {
+	// A status that carries no body gets no encoding header and no gzip
+	// frame: net/http refuses the bytes the trailer would write to such a
+	// response, and a Content-Encoding on an empty body misleads caches.
+	bodyless := code < 200 || code == http.StatusNoContent || code == http.StatusNotModified
+	if bodyless || h.Get("Content-Encoding") != "" || incompressible(h.Get("Content-Type")) {
 		g.skip = true
 		g.ResponseWriter.WriteHeader(code)
 		return

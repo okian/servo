@@ -225,6 +225,47 @@ companion files; nothing it changes is breaking under the rules above. A graph d
   toolchain's export format, so it is bumped to v0.52.0 (Go 1.27.2 moved the format to
   version 5, which v0.49.0 could not read).
 
+### Fixed
+- **An `Override` can no longer fail a spec that is fine in production.** The `NewTestApp`
+  resolve ran the same unused-declaration checks as the production one, so a mock that takes
+  fewer things than the real implementation — the ordinary mock — tripped "declared, but nothing
+  in the graph depends on" for a `servo.Value`, a `servo.Trace` or a `servo.ConfigFile` whose
+  only consumer it had replaced, and `servo generate` refused the whole injector. The test
+  variant now leaves such a declaration out instead: the value is omitted from `TestValues`
+  (`TestValues` and `NewTestAppWith` are not emitted at all when nothing is left), the wrapper is
+  not generated, the file is not read. The production graph, where the spec file is the whole
+  truth, still refuses an unused declaration.
+- **Extractors run before the request is decoded.** The emitted adapter decoded the JSON or form
+  body first and called `Extract` after, so an unauthenticated client had its body read and
+  parsed before its 401, and a malformed body answered 400 where the credential check should have
+  answered 401. Extraction now comes first; the handler's arguments keep their parameter order.
+- **The emitted HTTP servers are wired before `Init`.** They were constructed at the end of
+  `New`, after every `Init`, so a declared group missing from `HTTPConfig.Groups` was discovered
+  after the database had connected, then rolled back. Construction is pure wiring — a
+  middleware's `Middleware` method is called with the same guarantee every constructor gets, that
+  its dependencies' constructors have returned — so it now follows the last constructor and
+  precedes the first `Init`. Its failure path uses the same rollback the `Init` phase does:
+  `Shutdown` on a context the signal cannot cancel, with the report joined only when it is not
+  clean. Regenerate to pick up the new shape — `examples/http` and the tutorial's `ordersservo`
+  injector are regenerated here.
+- **`middleware.Gzip` leaves body-less statuses alone.** A 1xx, 204 or 304 response used to get
+  a `Content-Encoding: gzip` header and a gzip trailer written into a body net/http refuses.
+- **`middleware.RequestID` validates an inbound id.** `X-Request-Id` is kept only when it is at
+  most 128 bytes of printable ASCII; anything else is replaced rather than echoed into logs and
+  response headers.
+- **`servo-vet` recognises markers by their result type.** A marker is `servo.Build` or any
+  `servo` function returning `Marker`, `HTTPOption`, `ScopeOption` or `TraceOption`, so a new
+  marker returning an existing option type needs no change to the analyzer and cannot be
+  forgotten; a test fails when the `servo` package gains an option type the analyzer does not
+  know. The hand-kept name table is gone.
+- **The generator's unrecognized-directive message names both directive families**, as
+  `servo-vet`'s already did: `//servo:config` on a type, the route verbs on a function. It used
+  to call `//servo:config` the only comment directive.
+- **CI checks the tutorial's generated files on every push.** `servo check --dir
+  examples/tutorial` ran only in the tutorial workflow, which is path-filtered to the tutorial,
+  so a generator change could not fail on its four committed `servo_gen.go` files. The main
+  workflow runs it too.
+
 ## [3.3.0] - 2026-08-30
 
 **Why MINOR, and not PATCH or a new major.** This release adds two markers, a package, two

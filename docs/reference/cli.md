@@ -1043,10 +1043,12 @@ A standalone [`go/analysis`](https://pkg.go.dev/golang.org/x/tools/go/analysis) 
 github.com/okian/servo/v3/cmd/servo-vet@latest` works too; `go run` against the module path does
 not, for the [same go.sum reason](#installing) it doesn't for `cmd/servo`.
 
-**A marker call without the build tag.** Calls to `servo.Build`, `Root`, `Bind`, `Override`,
-`Scoped`, `Value`, `Include`, `Linger`, `Max`, or any of the [HTTP markers](http.md) (`HTTP`,
-`Group`, `Use`, `Route`, `Extract`) in any file that doesn't carry a build constraint requiring
-`servoinject`. The markers panic when actually executed, so such a call compiles straight into your
+**A marker call without the build tag.** Calls to `servo.Build`, or to any `servo` function
+returning `Marker`, `HTTPOption`, `ScopeOption` or `TraceOption` — `Root`, `Bind`, `Override`,
+`Scoped`, `Linger`, `Max`, `Value`, `Include`, `ConfigFile`, the [HTTP markers](http.md) and the
+[tracing ones](tracing.md) alike — in any file that doesn't carry a build constraint requiring
+`servoinject`. The analyzer recognises a marker by its result type, so a marker added later is
+covered without a change to it. The markers panic when actually executed, so such a call compiles straight into your
 real binary and panics at runtime. This catches it in the editor instead:
 
 ```

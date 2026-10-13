@@ -155,20 +155,20 @@ func classifyResults(sig *types.Signature) (result types.Type, hasCleanup, hasEr
 	case 2:
 		second := res.At(1).Type()
 		switch {
-		case isErrorType(second):
+		case IsErrorType(second):
 			return res.At(0).Type(), false, true, ""
 		case isCleanupFunc(second):
 			return res.At(0).Type(), true, false, ""
-		case implementsError(second):
+		case ImplementsError(second):
 			return nil, false, false, errorPositionReason("second", second)
 		}
 	case 3:
 		second, third := res.At(1).Type(), res.At(2).Type()
 		if isCleanupFunc(second) {
-			if isErrorType(third) {
+			if IsErrorType(third) {
 				return res.At(0).Type(), true, true, ""
 			}
-			if implementsError(third) {
+			if ImplementsError(third) {
 				return nil, false, false, errorPositionReason("third", third)
 			}
 		}
@@ -176,14 +176,20 @@ func classifyResults(sig *types.Signature) (result types.Type, hasCleanup, hasEr
 	return nil, false, false, "does not match a supported result shape"
 }
 
-func isErrorType(t types.Type) bool {
+// IsErrorType reports whether t is the predeclared error interface itself
+// — not merely a type that satisfies it, which ImplementsError answers.
+// Exported because the same question is asked of a handler's second result
+// (internal/route), an accessor's third (internal/resolve), a traced
+// method's last (internal/emit) and a ScopeKey's second (servovet), and one
+// answer is better than five.
+func IsErrorType(t types.Type) bool {
 	return types.Identical(t, errorType)
 }
 
-// implementsError reports whether t satisfies the error interface
-// structurally without being the error interface itself — the case
-// isErrorType already rejected before this is checked.
-func implementsError(t types.Type) bool {
+// ImplementsError reports whether t satisfies the error interface
+// structurally. Callers check IsErrorType first: a type that merely
+// satisfies error is the specific mistake errorPositionReason names.
+func ImplementsError(t types.Type) bool {
 	return types.Implements(t, errorType.Underlying().(*types.Interface))
 }
 

@@ -40,8 +40,9 @@ per instance and on its own schedule; see
 
 The third case is an emitted [HTTP server](http.md) — machinery, not a graph node, so it implements
 no capability and appears in no level. It is folded into the same three calls at fixed points:
-constructed at the **end** of `New` (fallibly — a declared group missing from `HTTPConfig.Groups`
-fails `New` with the usual rollback), run inside `Run`'s errgroup, drained **first** in `Shutdown`,
+constructed after every node and **before** the Init phase (fallibly — a declared group missing
+from `HTTPConfig.Groups` fails `New` with the usual rollback, before anything expensive has
+started), run inside `Run`'s errgroup, drained **first** in `Shutdown`,
 and reported per group by `Ready`.
 
 `servo explain <type>` prints the capabilities detected for any node, and the generated file's

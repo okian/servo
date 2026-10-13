@@ -1075,3 +1075,20 @@ func AsAny(ctx context.Context) (servo.Response, error) { return servo.Text("hi"
 		t.Fatalf("resp types = %v", byName)
 	}
 }
+
+// The verb list graph spells for diagnostics and the table this scanner
+// parses with must name the same methods.
+func TestRouteVerbListMatchesMethods(t *testing.T) {
+	listed := map[string]bool{}
+	for _, v := range strings.Split(graph.RouteVerbList, ", ") {
+		listed[v] = true
+	}
+	if len(listed) != len(methods) {
+		t.Fatalf("graph.RouteVerbList names %d verbs, methods has %d", len(listed), len(methods))
+	}
+	for v := range methods {
+		if !listed[v] {
+			t.Errorf("method %q is parsed but missing from graph.RouteVerbList", v)
+		}
+	}
+}

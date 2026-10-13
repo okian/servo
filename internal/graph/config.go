@@ -18,18 +18,26 @@ import (
 
 // ConfigDirective is the directive name that marks a struct type as a
 // generated configuration: `//servo:config prefix=POSTGRES` in the type's
-// doc comment. It is the one servo directive that lives in a comment
-// rather than a spec-file marker call, because it annotates a type the
-// generator must find wherever the type lives — a spec file cannot even
-// name an unexported type in another package, and keeping the prefix on
-// the struct keeps everything about one config in one place.
+// doc comment. Like the route directives, it lives in a comment rather
+// than a spec-file marker call, because it annotates a declaration the
+// generator must find wherever it lives — a spec file cannot even name an
+// unexported type in another package, and keeping the prefix on the struct
+// keeps everything about one config in one place.
 const ConfigDirective = "config"
 
 // directivePrefix is what every servo comment directive starts with. The
-// space of names after it is closed (only "config" today); servovet flags
-// anything else so a typo'd directive fails in the editor instead of
-// silently doing nothing.
+// space of names after it is closed: config, read here off type
+// declarations, and the route verbs, read by internal/route off function
+// declarations. The generator and servovet both flag anything else, so a
+// typo'd directive fails in the editor instead of silently doing nothing.
 const directivePrefix = "//servo:"
+
+// RouteVerbList spells the //servo: route verbs internal/route owns, for
+// the diagnostics that name them. It lives beside the config directive
+// rather than in internal/route because graph cannot import route, and a
+// directive on a type that is not config is reported from here; route's
+// own table is checked against it by TestRouteVerbListMatchesMethods.
+const RouteVerbList = "get, post, put, patch, delete, head, options"
 
 // ConfigTagKey is the struct tag key a //servo:config type's fields carry:
 // `config:"name,required,default=10,secret"`.
@@ -226,7 +234,7 @@ func configDirectiveIn(fset *token.FileSet, doc *ast.CommentGroup) (line string,
 		}
 		p := fset.Position(c.Pos())
 		if name != ConfigDirective {
-			return "", token.Position{}, false, fmt.Errorf("%s: unrecognized servo directive //servo:%s — the only comment directive is //servo:%s", p, name, ConfigDirective)
+			return "", token.Position{}, false, fmt.Errorf("%s: unrecognized servo directive //servo:%s on a type declaration — the directives are //servo:%s on a type and the route verbs (%s) on a function", p, name, ConfigDirective, RouteVerbList)
 		}
 		if found {
 			return "", token.Position{}, false, fmt.Errorf("%s: duplicate //servo:%s directive — first at %s", p, ConfigDirective, pos)

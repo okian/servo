@@ -818,6 +818,11 @@ func (s *httpServer) handleRecent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpServer) handleListOrders(w http.ResponseWriter, r *http.Request) {
+	claims, err := s.app.claimsExtractor.Extract(r)
+	if err != nil {
+		httpWriteFailure(w, "servoapi.ListOrders", "GET /orders", err)
+		return
+	}
 	req := &servoapi.ListOrdersReq{}
 	q := r.URL.Query()
 	if raw := q.Get("limit"); raw != "" {
@@ -836,11 +841,6 @@ func (s *httpServer) handleListOrders(w http.ResponseWriter, r *http.Request) {
 		}
 		req.Offset = int(v)
 	}
-	claims, err := s.app.claimsExtractor.Extract(r)
-	if err != nil {
-		httpWriteFailure(w, "servoapi.ListOrders", "GET /orders", err)
-		return
-	}
 	res, err := servoapi.ListOrders(r.Context(), req, claims, s.app.orderService)
 	if err != nil {
 		var hs servo.HTTPStatus
@@ -857,17 +857,17 @@ func (s *httpServer) handleListOrders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpServer) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
+	claims, err := s.app.claimsExtractor.Extract(r)
+	if err != nil {
+		httpWriteFailure(w, "servoapi.CreateOrder", "POST /orders", err)
+		return
+	}
 	req := &servoapi.CreateOrderReq{}
 	// The body decodes first, so the explicitly bound sources below
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
 		httpWriteError(w, http.StatusBadRequest, "malformed request body")
-		return
-	}
-	claims, err := s.app.claimsExtractor.Extract(r)
-	if err != nil {
-		httpWriteFailure(w, "servoapi.CreateOrder", "POST /orders", err)
 		return
 	}
 	res, err := servoapi.CreateOrder(r.Context(), req, claims, s.app.orderService)
@@ -886,13 +886,13 @@ func (s *httpServer) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *httpServer) handleGetOrder(w http.ResponseWriter, r *http.Request) {
-	req := &servoapi.GetOrderReq{}
-	req.ID = r.PathValue("id")
 	claims, err := s.app.claimsExtractor.Extract(r)
 	if err != nil {
 		httpWriteFailure(w, "servoapi.GetOrder", "GET /orders/{id}", err)
 		return
 	}
+	req := &servoapi.GetOrderReq{}
+	req.ID = r.PathValue("id")
 	res, err := servoapi.GetOrder(r.Context(), req, claims, s.app.orderService, s.app.sessions)
 	if err != nil {
 		var hs servo.HTTPStatus
@@ -1247,6 +1247,16 @@ func New(ctx context.Context) (*App, error) {
 	orderService := service.New(orderRepositoryTraced, orderCacheTraced, eventPublisherTraced, logger)
 	a.orderService = orderService
 
+	httpServer, err := newHttpServer(a)
+	if err != nil {
+		report := a.Shutdown(context.WithoutCancel(ctx))
+		if report.Clean() {
+			return nil, err
+		}
+		return nil, errors.Join(err, report)
+	}
+	a.httpServer = httpServer
+
 	{
 		var timingMu sync.Mutex
 		g, gctx := errgroup.WithContext(ctx)
@@ -1282,13 +1292,6 @@ func New(ctx context.Context) (*App, error) {
 			return nil, errors.Join(err, report)
 		}
 	}
-	httpServer, err := newHttpServer(a)
-	if err != nil {
-		report := a.Shutdown(ctx)
-		return nil, errors.Join(err, report)
-	}
-	a.httpServer = httpServer
-
 	return a, nil
 }
 
