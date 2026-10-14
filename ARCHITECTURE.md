@@ -39,7 +39,7 @@ scope), because a monorepo's `cmd/api`, `cmd/worker`, and `cmd/migrator` roots d
 resolved graph even though they share one type-checking session.
 
 `generate` and `check` process every injector `--dir` finds in one pass (`buildPipelines`),
-matching `wire ./...`'s discovery model. `explain`, `why`, `list`, and `graph` answer a question
+matching `wire ./...`'s discovery model. `explain`, `why`, `list`, `config` and `graph` answer a question
 about *one* graph, so they use `buildPipeline` (singular) and ask the caller to disambiguate with
 `--dir` when a module has more than one.
 
@@ -70,9 +70,9 @@ carried down each recursion, so a cycle is reported with the path that closed it
 recursing forever.
 
 Ordering is the one place the flattening is visible: markers are appended where the `Include` sits,
-so a `Bind`/`Override` written later in the spec file finds a prior declaration for the same
-interface and replaces it when that prior one came from an include (`BindDecl.Included`). Two local
-declarations for one interface remain the duplicate error they always were.
+so a declaration written later in the spec file finds a prior one for the same thing and replaces
+it when that prior one came from an include — every declaration kind carries an `Included` mark
+for exactly this. Two local declarations of one thing remain the duplicate error they always were.
 
 ## Selection precedence
 
@@ -345,14 +345,24 @@ place an unused `Value`, `Trace` or `ConfigFile` is tolerated rather than refuse
 the ordinary case, so the declaration is left out of the test variant's file — off `TestValues`, no
 wrapper, no file read — instead of failing an injector whose production graph is fine.
 
-## Writes are atomic, checks never write
+## Writes are atomic, checks never write, and what is written is compiled
 
 `servo generate` writes by creating a temp file in the target's own directory and renaming it into
 place (`writeFileAtomic`), never by truncating and rewriting the target directly — a process
 killed mid-write leaves the previous, complete file untouched instead of a truncated one. `check`
-never writes at all: it re-runs the same resolve-and-emit and diffs the result against what's
-already committed (`checkOne` in `cmd/servo/check.go`), so CI can catch drift without a mutating
-step.
+never writes at all: it re-runs the same resolve-and-emit — the override variant too — and diffs
+the result against what's already committed (`checkOne` and `checkTestVariant` in
+`cmd/servo/check.go`), so CI can catch drift without a mutating step.
+
+The emitter formats its output but does not type-check it, so a shadowed package identifier or an
+import of a `package main` used to leave `servo generate` reporting success on a file `go build`
+rejected. `load.Verify` closes that gap after the write: it loads the packages the files landed
+in once more, under the configuration the generated files are gated for (the user's tags without
+`servoinject`) with the fresh files overlaid, and reports every compile error positioned inside
+one of them. The write comes first on purpose — the broken output is what a bug report needs, and
+the `go mod tidy` a first import of `errgroup` or a config decoder calls for needs the import to
+exist — which is also why a package whose imports `go list` cannot resolve yet is skipped rather
+than judged.
 
 ## Everything else
 

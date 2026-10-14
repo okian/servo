@@ -33,6 +33,9 @@ type ScopeDecl struct {
 	MaxSet    bool
 
 	Pos token.Position
+	// Included marks a declaration spliced in by servo.Include; a local
+	// Scoped for the same type supersedes it, policy and all.
+	Included bool
 }
 
 // EffectiveLinger and EffectiveMax apply the package defaults for a

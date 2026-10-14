@@ -297,8 +297,9 @@ returns an empty report, which is `Clean()`. See
 [Lifecycle](lifecycle.md#health-and-ready).
 
 An emitted HTTP server adds one entry per group to `Ready` — named `"http"` for the default group,
-`"http:<group>"` for the rest — meaning exactly "that listener is bound". `Health` says nothing
-about them: a bound socket is not a health claim.
+`"http:<group>"` for the rest — meaning exactly "that listener is bound"; the entry drops back to
+failed the moment `Shutdown` starts draining that group. `Health` says nothing about them: a bound
+socket is not a health claim.
 
 ### `HTTPHandler`
 
@@ -445,8 +446,9 @@ func TestApp(t *testing.T) {
 The mock is reachable as a field because the test is in the same package as the generated file —
 the same boundary that keeps it unreachable from anywhere else.
 
-Two things to know: `servo check` compares `servo_gen.go` only, so a drifted override variant is not
-reported by it (a `go test` run is what catches that); and an override applies to the entire graph,
+Two things to know: `servo check` compares this file exactly as it compares `servo_gen.go`, and
+refuses one left behind by a spec that no longer declares an `Override` — `servo generate` removes
+such a leftover, since nothing would regenerate it; and an override applies to the entire graph,
 never to one consumer.
 
 ## What is stable

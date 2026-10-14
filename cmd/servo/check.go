@@ -41,11 +41,46 @@ func runCheck(cfg load.Config) error {
 		if err := checkOne(p, resolveds[i]); err != nil {
 			errs = append(errs, err)
 		}
+		if err := checkTestVariant(p); err != nil {
+			errs = append(errs, err)
+		}
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// checkTestVariant is checkOne for the override variant, resolved here
+// rather than handed in since no cross-injector check needs it. A spec
+// with no Override must have no servo-written test variant beside it:
+// generate removes one it finds, and check refuses one that lingered —
+// it still compiles under go test, and nothing regenerates it.
+func checkTestVariant(p *pipeline) error {
+	dir := filepath.Dir(p.spec.Pos.Filename)
+	path := filepath.Join(dir, variantFileName(p.spec.Variant, true))
+	if len(p.spec.Overrides) == 0 {
+		if _, ok := servoGeneratedConstraint(path); ok {
+			return fmt.Errorf("servo check: %s is left over from a spec that no longer declares servo.Override — run %s, which removes it", path, regenerateCommand(p.spec.Variant))
+		}
+		return nil
+	}
+	resolved, err := p.resolve(p.spec.Overrides)
+	if err != nil {
+		return err
+	}
+	fresh, err := emit.Emit(resolved, p.spec, true)
+	if err != nil {
+		return err
+	}
+	if err := compareGenerated(path, fresh, p.spec.Variant); err != nil {
+		return err
+	}
+	companions, err := companionFiles(resolved, p.spec.ConfigFile != nil)
+	if err != nil {
+		return err
+	}
+	return compareCompanions(companions, p.spec.Variant)
 }
 
 // checkPipeline is resolve + checkOne in one call, for callers (doctor)
@@ -73,17 +108,8 @@ func checkOne(p *pipeline, resolved *resolve.Resolved) error {
 		return err
 	}
 
-	outPath := filepath.Join(dir, name)
-	committed, err := os.ReadFile(outPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return fmt.Errorf("servo check: %s does not exist — run %s", outPath, regenerateCommand(p.spec.Variant))
-		}
+	if err := compareGenerated(filepath.Join(dir, name), fresh, p.spec.Variant); err != nil {
 		return err
-	}
-
-	if string(committed) != string(fresh) {
-		return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", outPath, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(fresh), outPath), versionSkewNote())
 	}
 
 	// Companion config loaders are as much this graph's output as the
@@ -93,21 +119,36 @@ func checkOne(p *pipeline, resolved *resolve.Resolved) error {
 	if err != nil {
 		return err
 	}
+	return compareCompanions(companions, p.spec.Variant)
+}
+
+// compareGenerated reports a generated file that is missing or differs
+// from fresh, naming the command that would produce it.
+func compareGenerated(path string, fresh []byte, tags []string) error {
+	committed, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("servo check: %s does not exist — run %s", path, regenerateCommand(tags))
+		}
+		return err
+	}
+	if string(committed) != string(fresh) {
+		return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", path, regenerateCommand(tags), unifiedDiff(string(committed), string(fresh), path), versionSkewNote())
+	}
+	return nil
+}
+
+// compareCompanions is compareGenerated over every companion loader, in
+// path order so a report is stable.
+func compareCompanions(companions map[string][]byte, tags []string) error {
 	paths := make([]string, 0, len(companions))
 	for path := range companions {
 		paths = append(paths, path)
 	}
 	sort.Strings(paths)
 	for _, path := range paths {
-		committed, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("servo check: %s does not exist — run %s", path, regenerateCommand(p.spec.Variant))
-			}
+		if err := compareGenerated(path, companions[path], tags); err != nil {
 			return err
-		}
-		if string(committed) != string(companions[path]) {
-			return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", path, regenerateCommand(p.spec.Variant), unifiedDiff(string(committed), string(companions[path]), path), versionSkewNote())
 		}
 	}
 	return nil

@@ -25,32 +25,100 @@ func runWhy(cfg load.Config, query string, jsonOut bool) error {
 	}
 
 	path, ok := shortestPathFromRoot(resolved, target)
+	// A node only the HTTP surface reaches — a handler's dependency, a
+	// middleware, an extractor, the server config — descends from no
+	// servo.Root. The declaration that pulled it in is the answer, and the
+	// resolver recorded it.
+	entry := ""
+	if !ok {
+		path, entry, ok = shortestPathFromHTTP(resolved, target)
+	}
 	if !ok {
 		return fmt.Errorf("servo why: %s is not reachable from any root", target.Key)
 	}
 
 	if jsonOut {
-		names := make([]string, len(path))
-		for i, n := range path {
-			names[i] = n.Key.String()
+		var names []string
+		if entry != "" {
+			names = append(names, entry)
+		}
+		for _, n := range path {
+			names = append(names, n.Key.String())
 		}
 		return printJSON(names)
 	}
 
 	for i, n := range path {
-		if i == 0 {
+		switch {
+		case i == 0 && entry != "":
+			fmt.Printf("root  %s\n  -> %s\n", entry, n.Key.String())
+		case i == 0:
 			fmt.Printf("root  %s\n", n.Key.String())
-			continue
+		default:
+			fmt.Printf("  -> %s\n", n.Key.String())
 		}
-		fmt.Printf("  -> %s\n", n.Key.String())
 	}
 	return nil
+}
+
+// httpEntry is one node the emitted HTTP servers pull into the graph
+// directly, with the declaration that did it, phrased the way the
+// resolver's needed-by chains phrase it.
+type httpEntry struct {
+	node  *resolve.Node
+	label string
+}
+
+// httpEntryPoints lists the servers' root-like requirements in plan order:
+// the config, every handler's dependencies, the middleware, the
+// extractors. `why` searches from them when no servo.Root reaches a node,
+// and `explain` lists them among a node's dependents.
+func httpEntryPoints(resolved *resolve.Resolved) []httpEntry {
+	plan := resolved.HTTP
+	if plan == nil {
+		return nil
+	}
+	var out []httpEntry
+	if plan.Config != nil {
+		out = append(out, httpEntry{plan.Config, "servo.HTTP(), the server config"})
+	}
+	for _, hr := range plan.Routes {
+		for _, arg := range hr.Args {
+			if arg.Node != nil {
+				out = append(out, httpEntry{arg.Node, fmt.Sprintf("handler %s, %s %s", hr.Route.Name, hr.Route.Method, hr.Route.Pattern)})
+			}
+		}
+	}
+	for _, u := range plan.Uses {
+		out = append(out, httpEntry{u.Node, fmt.Sprintf("servo.Use[%s], %s", u.Node.Key.String(), resolve.HTTPUseScope(u))})
+	}
+	for _, ex := range plan.Extractors {
+		out = append(out, httpEntry{ex.Node, fmt.Sprintf("servo.Extract[%s]", ex.Node.Key.String())})
+	}
+	return out
+}
+
+// shortestPathFromHTTP is shortestPathFromRoot with the HTTP entry points
+// as the sources, tried one at a time so the path comes back with the
+// declaration it starts from.
+func shortestPathFromHTTP(resolved *resolve.Resolved, target *resolve.Node) ([]*resolve.Node, string, bool) {
+	for _, entry := range httpEntryPoints(resolved) {
+		if path, ok := shortestPath([]*resolve.Node{entry.node}, target); ok {
+			return path, entry.label, true
+		}
+	}
+	return nil, "", false
 }
 
 // shortestPathFromRoot runs multi-source BFS from every root simultaneously
 // — the graph is acyclic (cycles are a build-time diagnostic, never
 // reached here), so the first time BFS reaches target is a shortest path.
 func shortestPathFromRoot(resolved *resolve.Resolved, target *resolve.Node) ([]*resolve.Node, bool) {
+	return shortestPath(resolved.Roots, target)
+}
+
+// shortestPath is the BFS itself, from any set of start nodes.
+func shortestPath(starts []*resolve.Node, target *resolve.Node) ([]*resolve.Node, bool) {
 	type queued struct {
 		node *resolve.Node
 		path []*resolve.Node
@@ -58,7 +126,7 @@ func shortestPathFromRoot(resolved *resolve.Resolved, target *resolve.Node) ([]*
 
 	visited := map[graph.Key]bool{}
 	var queue []queued
-	for _, r := range resolved.Roots {
+	for _, r := range starts {
 		if visited[r.Key] {
 			continue
 		}

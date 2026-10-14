@@ -25,10 +25,15 @@ type HTTPConfig struct {
 	// Zero or negative uses the generated default of 1 MiB.
 	MaxBodyBytes int64
 
-	// Zero values mean no timeout, matching net/http.Server.
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	// Zero values mean no timeout, matching net/http.Server. Set
+	// ReadHeaderTimeout on anything reachable from the internet: with no
+	// header deadline a client can hold a connection open indefinitely by
+	// never finishing its headers (the slowloris shape), and ReadTimeout
+	// alone does not cover a connection that sends nothing.
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
 
 	// Groups holds the listener for each group declared with
 	// servo.Group("name") inside servo.HTTP(...) — one extra port per
@@ -56,8 +61,10 @@ type HTTPListener struct {
 	// <= 0 uses the generated default (1 MiB).
 	MaxBodyBytes int64
 
-	// Zero values mean no timeout, matching net/http.Server.
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	// Zero values mean no timeout, matching net/http.Server; see
+	// HTTPConfig.ReadHeaderTimeout.
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
 }

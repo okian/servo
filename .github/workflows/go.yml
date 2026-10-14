@@ -156,6 +156,27 @@ jobs:
           go run ./cmd/servo check --dir examples/variants
           go run ./cmd/servo check --dir examples/variants --tags=prod
 
+      # doctor and servo-vet are the two commands a consumer runs outside
+      # go generate, and until this step nothing here ran either against
+      # real code: the analyzer was exercised by its unit tests alone, and
+      # the tagged invocation the docs recommend for servo-vet turned out to
+      # be refused by servo-vet itself. Every example module, the variants
+      # one under both configurations.
+      - name: servo doctor and servo-vet (every example)
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/servo-vet" ./cmd/servo-vet
+          for dir in examples/basic examples/scoped examples/mocking examples/http examples/tutorial examples/variants; do
+            echo "--- doctor $dir ---"
+            go run ./cmd/servo doctor --dir "$dir"
+          done
+          go run ./cmd/servo doctor --dir examples/variants --tags=prod
+          for dir in examples/basic examples/scoped examples/mocking examples/http examples/diagnostics examples/tutorial examples/variants; do
+            echo "--- servo-vet $dir ---"
+            (cd "$dir" && go vet -vettool="$RUNNER_TEMP/servo-vet" ./...)
+          done
+          (cd examples/variants && go vet -tags=prod -vettool="$RUNNER_TEMP/servo-vet" ./...)
+
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest

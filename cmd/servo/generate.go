@@ -3,8 +3,10 @@ package main
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/okian/servo/v3/internal/emit"
 	"github.com/okian/servo/v3/internal/load"
@@ -52,75 +54,134 @@ func runGenerate(cfg load.Config) error {
 		return errors.Join(append(errs, agreementErr)...)
 	}
 
+	written := map[string][]byte{}
+	var pkgPaths []string
 	for i, p := range pipelines {
 		if resolveds[i] == nil {
 			continue // resolution already failed and is already in errs
 		}
-		if err := generateOne(p, resolveds[i]); err != nil {
+		files, pkgs, err := generateOne(p, resolveds[i])
+		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", p.spec.InjectorPkg.PkgPath, err))
+			continue
 		}
+		maps.Copy(written, files)
+		pkgPaths = append(pkgPaths, pkgs...)
 	}
 	if len(errs) > 0 {
 		return errors.Join(errs...)
 	}
-	return nil
+	return verifyWritten(cfg, written, pkgPaths)
 }
 
-func generateOne(p *pipeline, resolved *resolve.Resolved) error {
+// verifyWritten type-checks what generate just wrote, so a generated file
+// the compiler would reject fails `servo generate` itself instead of the
+// next `go build`. It runs after the write, deliberately: the broken
+// output is what a bug report needs, and the `go mod tidy` a first import
+// of errgroup or a config decoder calls for needs the import to be on
+// disk — which is also why a package go list cannot describe is skipped
+// rather than failed (see load.Verify).
+func verifyWritten(cfg load.Config, files map[string][]byte, pkgPaths []string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	problems, err := load.Verify(cfg, files, pkgPaths)
+	if err != nil {
+		return fmt.Errorf("servo: verifying the generated code: %w", err)
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	return fmt.Errorf("servo: the generated code does not compile. It was written so it can be inspected, but this is a bug in servo rather than in your code — please report it at https://github.com/okian/servo/issues with these lines:\n  %s", strings.Join(problems, "\n  "))
+}
+
+// generateOne writes one injector's files and returns them, keyed by
+// path, with the import paths of every package they landed in, for the
+// verification that follows.
+func generateOne(p *pipeline, resolved *resolve.Resolved) (map[string][]byte, []string, error) {
 	out, err := emit.Emit(resolved, p.spec, false)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	dir := filepath.Dir(p.spec.Pos.Filename)
 	name := variantFileName(p.spec.Variant, false)
 	if err := checkVariantOverlap(dir, name, p.spec.GeneratedConstraint); err != nil {
-		return err
+		return nil, nil, err
 	}
+	files := map[string][]byte{}
+	pkgs := []string{p.spec.InjectorPkg.PkgPath}
 	outPath := filepath.Join(dir, name)
 	if err := writeFileAtomic(outPath, out, 0o644); err != nil {
-		return err
+		return nil, nil, err
 	}
+	files[outPath] = out
 	// Companion loaders land beside their config types, not the injector.
 	// Two injectors sharing a config write identical bytes (agreement was
 	// checked before any write), so the second write is a harmless no-op.
 	companions, err := companionFiles(resolved, p.spec.ConfigFile != nil)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	for path, content := range companions {
 		if err := writeFileAtomic(path, content, 0o644); err != nil {
-			return err
+			return nil, nil, err
 		}
+		files[path] = content
+	}
+	for _, n := range resolved.Configs {
+		pkgs = append(pkgs, n.Config.PkgPath)
 	}
 
+	testOutPath := filepath.Join(dir, variantFileName(p.spec.Variant, true))
 	if len(p.spec.Overrides) == 0 {
-		return nil
+		return files, pkgs, removeLeftoverTestVariant(testOutPath)
 	}
 	testResolved, err := p.resolve(p.spec.Overrides)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	testOut, err := emit.Emit(testResolved, p.spec, true)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	testOutPath := filepath.Join(dir, variantFileName(p.spec.Variant, true))
 	if err := writeFileAtomic(testOutPath, testOut, 0o644); err != nil {
-		return err
+		return nil, nil, err
 	}
+	files[testOutPath] = testOut
 	// An Override can swap in a constructor that consumes a config the
 	// production graph never touches — NewTestApp still calls its loader,
 	// so its companion has to exist. Ones both graphs use rewrite
 	// identically.
 	testCompanions, err := companionFiles(testResolved, p.spec.ConfigFile != nil)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	for path, content := range testCompanions {
 		if err := writeFileAtomic(path, content, 0o644); err != nil {
-			return err
+			return nil, nil, err
 		}
+		files[path] = content
 	}
+	for _, n := range testResolved.Configs {
+		pkgs = append(pkgs, n.Config.PkgPath)
+	}
+	return files, pkgs, nil
+}
+
+// removeLeftoverTestVariant deletes the override variant an earlier
+// generation wrote, once the spec declares no servo.Override any more.
+// Nothing would ever regenerate it, it still compiles under go test, and
+// so it drifts from the moment the last Override went — the same orphan
+// doctor reports for a tagged variant whose spec was deleted. Only a file
+// servo itself wrote is touched, which its header is the evidence of.
+func removeLeftoverTestVariant(path string) error {
+	if _, ok := servoGeneratedConstraint(path); !ok {
+		return nil
+	}
+	if err := os.Remove(path); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "servo generate: removed %s — the spec no longer declares servo.Override\n", path)
 	return nil
 }
 

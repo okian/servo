@@ -2,8 +2,6 @@
 
 package main
 
-//go:generate go run github.com/okian/servo/v3/cmd/servo generate
-
 import (
 	"example.com/servovariants/api"
 	"example.com/servovariants/memory"

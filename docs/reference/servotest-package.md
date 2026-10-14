@@ -83,7 +83,9 @@ func TestApp(t *testing.T) {
 **The call shape is what makes it correct.** The baseline has to be taken *before* the test body
 runs and the check *after*, so `NoNewLeaks` is called at the top and the function it returns is what
 gets deferred. `defer servotest.NoNewLeaks(t)` — no trailing parentheses — compiles and checks
-nothing; `go vet` reports it as an `unusedresult`, and so does the test that would otherwise leak.
+nothing, and nothing catches it: `go vet`'s `unusedresult` analyzer inspects a fixed list of
+standard-library functions only, so the discarded closure is silent. The symptom is a leak check
+that always passes.
 
 Reach for it in any package where another test parks a goroutine deliberately. Prefer
 [`NoLeaks`](#noleaks) where nothing does: a baseline hides an inherited leak, and an inherited leak

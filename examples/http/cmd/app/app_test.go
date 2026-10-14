@@ -181,11 +181,11 @@ func TestHTTPEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("body over the configured limit is a 400", func(t *testing.T) {
+	t.Run("body over the configured limit is a 413", func(t *testing.T) {
 		big := `{"item":"` + strings.Repeat("x", 2048) + `","quantity":1}`
-		code, _, _ := call(t, post(t, base+"/order/espresso/", "application/json", big))
-		if code != http.StatusBadRequest {
-			t.Fatalf("status = %d, want 400", code)
+		code, body, _ := call(t, post(t, base+"/order/espresso/", "application/json", big))
+		if code != http.StatusRequestEntityTooLarge || body["error"] != "request body too large" {
+			t.Fatalf("status=%d body=%v, want 413", code, body)
 		}
 	})
 

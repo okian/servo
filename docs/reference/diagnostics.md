@@ -13,7 +13,7 @@ rather than a finding about your code.
 
 ## Reproducing them yourself
 
-[`examples/diagnostics`](https://github.com/okian/servo/tree/master/examples/diagnostics) is seven
+[`examples/diagnostics`](https://github.com/okian/servo/tree/master/examples/diagnostics) is eight
 small, permanently broken fixtures — one per failure mode — each runnable on its own:
 
 ```
@@ -24,6 +24,7 @@ go run ./cmd/servo generate --dir examples/diagnostics/widening
 go run ./cmd/servo generate --dir examples/diagnostics/crossscope
 go run ./cmd/servo generate --dir examples/diagnostics/extractor
 go run ./cmd/servo generate --dir examples/diagnostics/undeclared
+go run ./cmd/servo generate --dir examples/diagnostics/noscopekey
 ```
 
 Every example below is that command's real output, with two consistent abbreviations for width:
@@ -208,7 +209,7 @@ Full explanations on [Spec file and markers](spec.md#errors-from-this-stage). In
 | `servo.ConfigFile takes exactly one argument, a string literal path` | `ConfigFile("config.yaml")` |
 | `servo.ConfigFile's argument must be a string literal` | The path is read as syntax; a variable or a call can't be |
 | `servo.ConfigFile(…): the extension must be .json, .yaml, .yml, or .toml` | It picks the decoder the generated code carries |
-| `servo.ConfigFile(...) declared twice` | One file per injector |
+| `servo.ConfigFile(...) declared twice` | One file per injector; a local declaration may still replace an included one |
 
 ## Configuration
 
@@ -448,7 +449,7 @@ The directive itself:
 | `//servo:post takes exactly one pattern` | Trailing text after the pattern |
 | `route GET /a/{x}suffix cannot be registered on net/http.ServeMux: …` | net/http's own words, for a malformed pattern — the same registration that would panic at startup, run at generate time |
 | `//servo: directive must be the doc comment of a top-level function` | A floating directive registers nothing |
-| `//servo: directives need a servo version that exports servo.Json` | The CLI is newer than the module's `servo/v3` |
+| `//servo: directives need a servo version that exports the servo.Response family` | The CLI is newer than the module's `servo/v3` |
 
 The handler it documents:
 
@@ -458,7 +459,9 @@ The handler it documents:
 | `handler app.order must be exported` | The generated server has to call it from the injector package |
 | `handler app.Order must not be generic` / `must not be variadic` | Same rules as providers |
 | `first parameter must be context.Context` | The request's context is the contract |
-| `must return exactly (servo.Json[T], error)` | Any other result shape, including a concrete error type |
+| `must return (R, error) where R is a servo response type (servo.Json[T], servo.Xml[T] or servo.Response)` | Any other result shape, including a concrete error type |
+| `route GET /ping is declared in package main (…), which no other package can import, and that package has no servo.Build(...) to serve it` | A handler beside a `main.go` with no injector: only an injector in that same package can call it, and every other injector skips it |
+| `… and that package's injector declares no servo.HTTP()` | The same, with an injector there that serves nothing |
 
 The request struct and its pattern:
 
@@ -541,6 +544,30 @@ in your code. The full unformatted output is included so it can go straight into
 
 ## Commands
 
+### `generate`
+
+```
+servo: the generated code does not compile. It was written so it can be inspected, but this is a
+bug in servo rather than in your code — please report it at https://github.com/okian/servo/issues
+with these lines:
+  cmd/app/servo_gen.go:93:19: user.Me undefined (type *user.User has no field or method Me)
+```
+
+After writing, `generate` type-checks every file it wrote under the build configuration the
+generated files are gated for. A compile error inside one of them is reported with its position
+and fails the run; the file stays on disk, because the broken output is what a bug report needs.
+Errors elsewhere — a `main.go` the generator has nothing to do with — are not reported here, and a
+package whose imports `go list` cannot resolve yet (the first generated file to import
+`errgroup` or a config decoder, before `go mod tidy`) is skipped rather than judged.
+
+```
+servo generate: removed cmd/app/servo_gen_test.go — the spec no longer declares servo.Override
+```
+
+Not an error. The override variant is written only while the spec declares a `servo.Override`;
+once the last one goes, nothing would ever regenerate the file, so `generate` removes it and says
+so on stderr. Only a file carrying servo's own generated-code header is ever touched.
+
 ### `check`
 
 ```
@@ -570,6 +597,14 @@ servo check: cmd/api/servo_gen.go does not exist — run `servo generate`
 
 The file was never generated, or was deleted. Same fix, plus commit it — see
 [`doctor`](cli.md#doctor).
+
+Both messages cover `servo_gen_test.go` too, when the spec declares a `servo.Override`: the
+override variant is compared the same way. And in the other direction:
+
+```
+servo check: cmd/api/servo_gen_test.go is left over from a spec that no longer declares
+servo.Override — run `servo generate`, which removes it
+```
 
 For a [variant](cli.md#build-variants), both messages name the flags that would actually produce
 that file — ``run `servo generate --tags=prod` `` — since a bare `servo generate` would regenerate
@@ -601,7 +636,7 @@ from the moment the spec went away.
 | --- | --- |
 | `servo: no node matches "X"` | No exact match and no type string *ending* with `X`. A leading `*` never suffix-matches: write `api.Server`, not `*api.Server` |
 | `servo: "X" matches multiple nodes, be more specific: …` | Ambiguous suffix. The candidates are listed; pick one |
-| `servo why: X is not reachable from any root` | The node resolved but no root depends on it |
+| `servo why: X is not reachable from any root` | The node resolved but no root — and no `servo.HTTP()` handler, middleware or extractor, which `why` searches from next — depends on it |
 | `usage: servo explain [--json] <type>` | Zero or several positional arguments. Flags must come *before* the type |
 | `usage: servo why [--json] <type>` | The same, for `why` |
 
@@ -629,12 +664,15 @@ so a receiver the body can reach is a nil dereference in production; write
 `func (*T) ScopeKey(...)`
 ```
 
-The two things [`servo-vet`](cli.md#servo-vet) reports, and the two mistakes the compiler cannot
-catch on its own. The generator makes both checks too; the analyzer catches them anywhere, in your
-editor, before generation runs at all — including in packages no injector has reached yet.
+Two of the three things [`servo-vet`](cli.md#servo-vet) reports, and two of the mistakes the
+compiler cannot catch on its own; the third is a malformed `//servo:` comment directive, reported
+with the same message `generate` prints for it. The generator makes all three checks too; the
+analyzer catches them anywhere, in your editor, before generation runs at all — including in
+packages no injector has reached yet.
 
-The first fires for any marker: `Build`, `Root`, `Bind`, `Override`, `Scoped`, `Value`, `Include`,
-`Linger` or `Max`. `Include` is the one it earns its keep on, since a shared marker set lives in its
+The first fires for any marker — `Build`, or any `servo` function returning `Marker`, `HTTPOption`,
+`ScopeOption` or `TraceOption`, which is how a marker added later is covered without a change to
+the analyzer. `Include` is the one it earns its keep on, since a shared marker set lives in its
 own package, away from any spec file, which is where the tag is easiest to forget.
 
 ### `-tags` is refused

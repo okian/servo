@@ -366,3 +366,148 @@ func TestListShowsRoutes(t *testing.T) {
 		}
 	}
 }
+
+// TestGenerateHTTPHandlerInAnotherPackageMain: a directive on a function in
+// a sibling binary's main package used to be served by every HTTP injector
+// in the module, which meant importing a main package — `servo generate`
+// exited 0 and `go build` failed with "is a program, not an importable
+// package". Now the owning package has to serve it: with no injector there
+// (or one without servo.HTTP()) generate says so at the directive, and once
+// that package declares servo.HTTP() each injector serves exactly its own.
+func TestGenerateHTTPHandlerInAnotherPackageMain(t *testing.T) {
+	dir := writeHTTPModule(t)
+	mustWriteFile(t, dir, "cmd/other/main.go", `package main
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type PingResp struct {
+	OK bool `+"`json:\"ok\"`"+`
+}
+
+//servo:get /ping-from-main
+func PingFromMain(ctx context.Context) (servo.Json[*PingResp], error) {
+	return servo.JSON(&PingResp{OK: true}), nil
+}
+
+func main() {}
+`)
+
+	err := runGenerate(cfg(dir))
+	if err == nil || !strings.Contains(err.Error(), "declared in package main (example.com/httpfix/cmd/other)") || !strings.Contains(err.Error(), "has no servo.Build(...)") {
+		t.Fatalf("got err=%v, want the package-main diagnostic naming the owning package", err)
+	}
+	if !strings.Contains(err.Error(), "cmd/other/main.go") {
+		t.Fatalf("diagnostic does not carry the directive's position: %v", err)
+	}
+
+	// An injector in that package without servo.HTTP() is the other half
+	// of the same mistake.
+	mustWriteFile(t, dir, "cmd/other/spec.go", `//go:build servoinject
+
+package main
+
+import "github.com/okian/servo/v3/servo"
+
+var _ = servo.Build()
+`)
+	err = runGenerate(cfg(dir))
+	if err == nil || !strings.Contains(err.Error(), "injector declares no servo.HTTP()") {
+		t.Fatalf("got err=%v, want the no-servo.HTTP() diagnostic", err)
+	}
+
+	// With servo.HTTP() declared there, each injector serves its own
+	// main-package handlers and skips the other's — and both compile.
+	mustWriteFile(t, dir, "cmd/other/spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/httpfix/mw"
+	"github.com/okian/servo/v3/servo"
+)
+
+// Every module route lands here too, so the extractor api.Who needs is
+// declared; the telemetry group is not, so api.Healthz is skipped.
+var _ = servo.Build(
+	servo.HTTP(),
+	servo.Extract[*mw.UserExtractor](),
+)
+`)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate with both injectors serving: %v", err)
+	}
+	appGen := mustRead(t, filepath.Join(dir, "cmd", "app", "servo_gen.go"))
+	if strings.Contains(appGen, "ping-from-main") || strings.Contains(appGen, "example.com/httpfix/cmd/other") {
+		t.Fatalf("cmd/app's server still reaches into cmd/other's main package:\n%s", appGen)
+	}
+	otherGen := mustRead(t, filepath.Join(dir, "cmd", "other", "servo_gen.go"))
+	if !strings.Contains(otherGen, `mux.HandleFunc("GET /ping-from-main", s.handlePingFromMain)`) || !strings.Contains(otherGen, "PingFromMain(r.Context())") {
+		t.Fatalf("cmd/other's own injector does not serve its handler:\n%s", otherGen)
+	}
+	runGoModTidy(t, dir)
+	cmd := exec.Command("go", "build", "./...")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("generated code does not compile: %v\n%s", err, out)
+	}
+}
+
+// TestWhyAndExplainAttributeHTTPDependencies: a node only a handler,
+// middleware attachment or extractor pulls in descends from no
+// servo.Root, and `why` used to call it unreachable while `explain`
+// showed no dependents. The resolver knows exactly which declaration
+// asked for it, and now both commands say so.
+func TestWhyAndExplainAttributeHTTPDependencies(t *testing.T) {
+	dir := writeHTTPModule(t)
+
+	out := captureStdout(t, func() {
+		if err := runWhy(cfg(dir), "repo.Repository", false); err != nil {
+			t.Fatalf("runWhy: %v", err)
+		}
+	})
+	if !strings.Contains(out, "root  handler api.Order, POST /order/{category}/") || !strings.Contains(out, "-> *example.com/httpfix/repo.Repository") {
+		t.Errorf("why does not name the handler as the entry point:\n%s", out)
+	}
+
+	out = captureStdout(t, func() {
+		if err := runWhy(cfg(dir), "repo.Repository", true); err != nil {
+			t.Fatalf("runWhy --json: %v", err)
+		}
+	})
+	if !strings.Contains(out, `"handler api.Order, POST /order/{category}/"`) {
+		t.Errorf("why --json does not carry the entry point:\n%s", out)
+	}
+
+	out = captureStdout(t, func() {
+		if err := runExplain(cfg(dir), "repo.Repository", false); err != nil {
+			t.Fatalf("runExplain: %v", err)
+		}
+	})
+	for _, want := range []string{"(handler api.Order, POST /order/{category}/)", "(handler api.Ping, GET /ping)"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("explain output missing %q:\n%s", want, out)
+		}
+	}
+
+	// A middleware and an extractor are named by their declarations.
+	out = captureStdout(t, func() {
+		if err := runExplain(cfg(dir), "mw.Auth", false); err != nil {
+			t.Fatalf("runExplain: %v", err)
+		}
+	})
+	if !strings.Contains(out, "(servo.Use[*example.com/httpfix/mw.Auth], group telemetry)") {
+		t.Errorf("explain output does not name the Use attachment:\n%s", out)
+	}
+	out = captureStdout(t, func() {
+		if err := runWhy(cfg(dir), "mw.UserExtractor", false); err != nil {
+			t.Fatalf("runWhy: %v", err)
+		}
+	})
+	if !strings.Contains(out, "root  servo.Extract[*example.com/httpfix/mw.UserExtractor]") {
+		t.Errorf("why does not name the Extract declaration:\n%s", out)
+	}
+}

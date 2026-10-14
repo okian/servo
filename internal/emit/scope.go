@@ -77,7 +77,23 @@ func (e *emitter) planScopes() {
 		for _, reserved := range entryReservedFields {
 			entryNames.AllocateName(reserved)
 		}
+		// build() hard-codes the standard-library packages its rollback,
+		// Init and Run phases call into, in the same flat scope the member
+		// locals are declared in — the same claim New's allocator makes.
+		for _, p := range lateStdlibIdents {
+			entryNames.AllocateName(p.Ident)
+		}
+		for _, ident := range eagerStdlibIdents {
+			entryNames.AllocateName(ident)
+		}
+		// A member's local shadows a package a later member's constructor is
+		// still qualified with, exactly as a node's local does in New, so the
+		// same guard qualifies it by package: `roomRoom := room.NewRoom(e.key)`
+		// leaves `room.NewSub(...)` reachable two lines down.
 		memberBase := baseNamesFor(s.Order)
+		for n := range shadowingBaseNames(s.Order, memberBase) {
+			memberBase[n] = nodeQualifiedBaseName(n)
+		}
 		for _, n := range s.Order {
 			se.Members = append(se.Members, &memberEmit{N: n, Field: allocateEntryField(entryNames, memberBase[n])})
 		}

@@ -355,8 +355,9 @@ The distinction between the two is yours to define, and the conventional one is 
 traffic" (take me out of the load balancer if it fails).
 
 Emitted HTTP servers follow that convention rather than you defining it: `Ready` gets one entry
-per group (`"http"`, `"http:<group>"`) meaning exactly "that listener is bound", and `Health` says
-nothing about them — a bound socket is not a health claim.
+per group (`"http"`, `"http:<group>"`) meaning exactly "that listener is bound" — and no longer
+bound once `Shutdown` has begun draining it, so a probe during the drain is told so — and `Health`
+says nothing about them: a bound socket is not a health claim.
 
 ## The cleanup func
 

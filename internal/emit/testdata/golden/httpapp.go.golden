@@ -10,6 +10,9 @@
 //	[L1] *example.com/httpapp.UserExtractor
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:47:6
+//	[L1] *example.com/httpapp.HttpappExtractor
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:74:6
 //	[L1] *example.com/httpapp.Guard
 //	      deps: none
 //	      capabilities: none | binding: sole candidate | example.com/httpapp/fixture.go:57:6
@@ -31,6 +34,7 @@
 //	use: *example.com/httpapp.Auth -> group telemetry
 //	use: *example.com/httpapp.Audit -> POST /order/{category}/
 //	extract: *example.com/httpapp.UserExtractor -> *example.com/httpapp.User
+//	extract: *example.com/httpapp.HttpappExtractor -> *example.com/httpapp.Httpapp
 //	GET /health -> httpapp.Health (example.com/httpapp/fixture.go:38:1)
 //	      args: none
 //	GET /me -> httpapp.Me (example.com/httpapp/fixture.go:50:1)
@@ -41,6 +45,8 @@
 //	      args: none
 //	POST /order/{category}/ -> httpapp.Order (example.com/httpapp/fixture.go:24:1)
 //	      args: *example.com/httpapp.Repo
+//	GET /shadow -> httpapp.Shadow (example.com/httpapp/fixture.go:77:1)
+//	      args: *example.com/httpapp.Httpapp (extracted)
 //	GET /healthz [telemetry] -> httpapp.Healthz (example.com/httpapp/fixture.go:41:1)
 //	      args: none
 package main
@@ -69,6 +75,7 @@ import (
 type App struct {
 	hTTPConfig                    *servo.HTTPConfig
 	userExtractor                 *httpapp.UserExtractor
+	httpappExtractor              *httpapp.HttpappExtractor
 	guard                         *httpapp.Guard
 	auth                          *httpapp.Auth
 	audit                         *httpapp.Audit
@@ -102,14 +109,15 @@ type httpServer struct {
 func newHttpServer(a *App) (*httpServer, error) {
 	cfg := a.hTTPConfig
 	lc := servo.HTTPListener{
-		IP:           cfg.IP,
-		Port:         cfg.Port,
-		CertFile:     cfg.CertFile,
-		KeyFile:      cfg.KeyFile,
-		MaxBodyBytes: cfg.MaxBodyBytes,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+		IP:                cfg.IP,
+		Port:              cfg.Port,
+		CertFile:          cfg.CertFile,
+		KeyFile:           cfg.KeyFile,
+		MaxBodyBytes:      cfg.MaxBodyBytes,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 	s := &httpServer{app: a, lc: lc}
 	s.maxBody = lc.MaxBodyBytes
@@ -126,14 +134,16 @@ func newHttpServer(a *App) (*httpServer, error) {
 		h = a.audit.Middleware(h)
 		mux.Handle("POST /order/{category}/", h)
 	}
+	mux.HandleFunc("GET /shadow", s.handleShadow)
 	var handler http.Handler = mux
 	handler = a.guard.Middleware(handler)
 	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:      handler,
-		ReadTimeout:  lc.ReadTimeout,
-		WriteTimeout: lc.WriteTimeout,
-		IdleTimeout:  lc.IdleTimeout,
+		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:           handler,
+		ReadHeaderTimeout: lc.ReadHeaderTimeout,
+		ReadTimeout:       lc.ReadTimeout,
+		WriteTimeout:      lc.WriteTimeout,
+		IdleTimeout:       lc.IdleTimeout,
 	}
 	return s, nil
 }
@@ -186,7 +196,7 @@ func (s *httpServer) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		httpWriteError(w, http.StatusBadRequest, "malformed request body")
+		httpBodyError(w, err, "malformed request body")
 		return
 	}
 	res, err := httpapp.UpdateMe(r.Context(), req, user)
@@ -210,7 +220,7 @@ func (s *httpServer) handleCreateNote(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		httpWriteError(w, http.StatusBadRequest, "malformed request body")
+		httpBodyError(w, err, "malformed request body")
 		return
 	}
 	res, err := httpapp.CreateNote(r.Context(), req)
@@ -250,6 +260,27 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		httpWriteFailure(w, "httpapp.Order", "POST /order/{category}/", err)
+		return
+	}
+	httpRespond(w, http.StatusOK, res)
+}
+
+func (s *httpServer) handleShadow(w http.ResponseWriter, r *http.Request) {
+	httpapp2, err := s.app.httpappExtractor.Extract(r)
+	if err != nil {
+		httpWriteFailure(w, "httpapp.Shadow", "GET /shadow", err)
+		return
+	}
+	res, err := httpapp.Shadow(r.Context(), httpapp2)
+	if err != nil {
+		var hs servo.HTTPStatus
+		if errors.As(err, &hs) && hs.Code() < 400 {
+			// A 2xx or 3xx status in the error position is the contract's
+			// way of picking a success or redirect code.
+			httpRespond(w, hs.Code(), res)
+			return
+		}
+		httpWriteFailure(w, "httpapp.Shadow", "GET /shadow", err)
 		return
 	}
 	httpRespond(w, http.StatusOK, res)
@@ -308,11 +339,12 @@ func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error) {
 	handler = a.auth.Middleware(handler)
 	handler = a.guard.Middleware(handler)
 	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:      handler,
-		ReadTimeout:  lc.ReadTimeout,
-		WriteTimeout: lc.WriteTimeout,
-		IdleTimeout:  lc.IdleTimeout,
+		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:           handler,
+		ReadHeaderTimeout: lc.ReadHeaderTimeout,
+		ReadTimeout:       lc.ReadTimeout,
+		WriteTimeout:      lc.WriteTimeout,
+		IdleTimeout:       lc.IdleTimeout,
 	}
 	return s, nil
 }
@@ -385,6 +417,12 @@ func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
 		return
 	}
 	code := hs.Code()
+	if code < 400 {
+		// A success or redirect status with no response to carry it — an
+		// extractor returns a value or an error, never a body — is the code alone.
+		w.WriteHeader(code)
+		return
+	}
 	if code >= 500 {
 		slog.Error("servo: handler "+handler+" failed", "route", route, "status", code, "error", err)
 		httpWriteError(w, code, hs.Error())
@@ -401,6 +439,17 @@ func httpWriteError(w http.ResponseWriter, code int, msg string) {
 	}{Error: msg})
 }
 
+// httpBodyError maps a body decoding failure onto the response: a body over the
+// configured limit is a 413, anything else is the 400 the caller describes.
+func httpBodyError(w http.ResponseWriter, err error, msg string) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		httpWriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	httpWriteError(w, http.StatusBadRequest, msg)
+}
+
 func New(ctx context.Context) (*App, error) {
 	a := &App{}
 
@@ -409,6 +458,9 @@ func New(ctx context.Context) (*App, error) {
 
 	userExtractor := httpapp.NewUserExtractor()
 	a.userExtractor = userExtractor
+
+	httpappExtractor := httpapp.NewHttpappExtractor()
+	a.httpappExtractor = httpappExtractor
 
 	guard := httpapp.NewGuard()
 	a.guard = guard
@@ -472,6 +524,9 @@ func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {
 			a.httpServerStopResult = servo.NodeResult{Name: "http", Status: servo.StatusOK}
 			return
 		}
+		// Readiness drops first: a probe that lands during the drain must not
+		// be told the listener is open when Shutdown has already closed it.
+		a.httpServer.ready.Store(false)
 		a.httpServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http", a.httpServer.srv.Shutdown)
 	})
 	return a.httpServerStopResult
@@ -483,6 +538,9 @@ func (a *App) stopHttpTelemetryServer(ctx context.Context) servo.NodeResult {
 			a.httpTelemetryServerStopResult = servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK}
 			return
 		}
+		// Readiness drops first: a probe that lands during the drain must not
+		// be told the listener is open when Shutdown has already closed it.
+		a.httpTelemetryServer.ready.Store(false)
 		a.httpTelemetryServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)
 	})
 	return a.httpTelemetryServerStopResult
@@ -553,6 +611,7 @@ func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
 		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:16:6"},
 		{Type: "*example.com/httpapp.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:47:6"},
+		{Type: "*example.com/httpapp.HttpappExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:74:6"},
 		{Type: "*example.com/httpapp.Guard", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:57:6"},
 		{Type: "*example.com/httpapp.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:61:6"},
 		{Type: "*example.com/httpapp.Audit", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "example.com/httpapp/fixture.go:65:6"},
@@ -565,6 +624,7 @@ func (a *App) Graph() servo.Graph {
 			{Method: "POST", Pattern: "/me/notes", Handler: "httpapp.UpdateMe", Args: []string{"*example.com/httpapp.User (extracted)"}, Pos: "example.com/httpapp/fixture.go:53:1"},
 			{Method: "POST", Pattern: "/notes", Handler: "httpapp.CreateNote", Pos: "example.com/httpapp/fixture.go:33:1"},
 			{Method: "POST", Pattern: "/order/{category}/", Handler: "httpapp.Order", Args: []string{"*example.com/httpapp.Repo"}, Pos: "example.com/httpapp/fixture.go:24:1"},
+			{Method: "GET", Pattern: "/shadow", Handler: "httpapp.Shadow", Args: []string{"*example.com/httpapp.Httpapp (extracted)"}, Pos: "example.com/httpapp/fixture.go:77:1"},
 			{Method: "GET", Pattern: "/healthz", Group: "telemetry", Handler: "httpapp.Healthz", Pos: "example.com/httpapp/fixture.go:41:1"},
 		},
 		Uses: []servo.GraphUse{
@@ -574,6 +634,7 @@ func (a *App) Graph() servo.Graph {
 		},
 		Extractors: []servo.GraphExtractor{
 			{Type: "*example.com/httpapp.UserExtractor", Produces: "*example.com/httpapp.User"},
+			{Type: "*example.com/httpapp.HttpappExtractor", Produces: "*example.com/httpapp.Httpapp"},
 		},
 	}}
 }

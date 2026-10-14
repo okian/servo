@@ -92,6 +92,18 @@ func (m *Auth) Middleware(next http.Handler) http.Handler { return next }
 type Audit struct{}
 func NewAudit() *Audit { return &Audit{} }
 func (m *Audit) Middleware(next http.Handler) http.Handler { return next }
+
+// Httpapp is an extracted type named after the package its handler lives
+// in: the adapter's local for it must not hide the package the very next
+// line calls the handler through.
+type Httpapp struct{}
+
+type HttpappExtractor struct{}
+func NewHttpappExtractor() *HttpappExtractor { return &HttpappExtractor{} }
+func (e *HttpappExtractor) Extract(r *http.Request) (*Httpapp, error) { return &Httpapp{}, nil }
+
+//servo:get /shadow
+func Shadow(ctx context.Context, h *Httpapp) (servo.Json[*OrderResp], error) { return nil, nil }
 `
 
 const httpMainSrc = `
@@ -185,7 +197,10 @@ func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 				{Type: key("Auth"), TypeT: ptr("Auth"), Groups: []string{"telemetry"}, Pos: token.Position{Filename: "spec.go", Line: 14}},
 				{Type: key("Audit"), TypeT: ptr("Audit"), Routes: []load.RouteSel{{Pattern: "POST /order/{category}/", Pos: token.Position{Filename: "spec.go", Line: 15}}}, Pos: token.Position{Filename: "spec.go", Line: 15}},
 			},
-			Extracts:   []load.ExtractDecl{{Type: key("UserExtractor"), TypeT: ptr("UserExtractor"), Pos: token.Position{Filename: "spec.go", Line: 16}}},
+			Extracts: []load.ExtractDecl{
+				{Type: key("UserExtractor"), TypeT: ptr("UserExtractor"), Pos: token.Position{Filename: "spec.go", Line: 16}},
+				{Type: key("HttpappExtractor"), TypeT: ptr("HttpappExtractor"), Pos: token.Position{Filename: "spec.go", Line: 17}},
+			},
 			ConfigKey:  ck,
 			ConfigType: ct,
 		},
@@ -238,8 +253,24 @@ func TestEmitHTTPServer(t *testing.T) {
 		`httpWriteError(w, http.StatusInternalServerError, "Internal Server Error")`,
 		"func httpRespond(w http.ResponseWriter, code int, res servo.Response)",
 		"servo.WriteResponse(w, code, res)",
+		// An extracted local never takes the name of a package the body
+		// still has to call into — here the handlers' own package.
+		"httpapp2, err := s.app.httpappExtractor.Extract(r)",
+		"httpapp.Shadow(r.Context(), httpapp2)",
 		// Redirect statuses flow through the success path.
 		"errors.As(err, &hs) && hs.Code() < 400",
+		// A body over the limit is a 413, decoded through one helper.
+		"func httpBodyError(w http.ResponseWriter, err error, msg string)",
+		"var tooLarge *http.MaxBytesError",
+		`httpWriteError(w, http.StatusRequestEntityTooLarge, "request body too large")`,
+		`httpBodyError(w, err, "malformed request body")`,
+		// An extractor's sub-400 status is the code alone: nothing carries a body.
+		"if code < 400 {",
+		// Readiness drops before the drain starts, and the header deadline
+		// reaches net/http.
+		"a.httpServer.ready.Store(false)",
+		"ReadHeaderTimeout: lc.ReadHeaderTimeout,",
+		"ReadHeaderTimeout: cfg.ReadHeaderTimeout,",
 		// Typed decode and the handler call are unchanged in spirit.
 		`req.Category = r.PathValue("category")`,
 		"strconv.ParseInt(raw, 10, 0)",

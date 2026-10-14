@@ -263,3 +263,48 @@ func NewThing() *Thing { return nil }
 		t.Errorf("first accepted provider = %s, want zzz.NewThing (aaa_first.go sorts before store.go)", accepted[0].Name)
 	}
 }
+
+// TestScanRejectsAFunctionInAnotherPackageMain: a sibling binary's main
+// package is as much a part of the main module as any other package, and
+// its exported constructors used to enter the index like everyone else's.
+// Nothing can import a main package, so a graph that selected one — by
+// exact type, or by structural search over an interface a sibling's
+// main.go happened to implement — produced a generated file that `go
+// build` refused ("is a program, not an importable package") after
+// `servo generate` had reported success.
+func TestScanRejectsAFunctionInAnotherPackageMain(t *testing.T) {
+	const otherMainSrc = `
+package main
+
+type Thing struct{}
+
+func NewThing() *Thing { return &Thing{} }
+
+func main() {}
+`
+	other := mustCheck(t, "example.com/app/cmd/other", "main.go", otherMainSrc)
+
+	accepted, rejected := ScanCandidates([]*packages.Package{other}, "example.com/app/cmd/app")
+	if len(accepted) != 0 {
+		t.Fatalf("a constructor in another package main was accepted: %v", accepted[0].Name)
+	}
+	var found bool
+	for _, r := range rejected {
+		if r.Name == "main.NewThing" {
+			found = true
+			if r.Reason != "declared in another package main, which nothing can import" {
+				t.Errorf("reason = %q", r.Reason)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("main.NewThing is missing from the rejected list: %v", rejected)
+	}
+
+	// The injector's own main package is the one main package it can
+	// name, and its constructors stay candidates exactly as before.
+	accepted, _ = ScanCandidates([]*packages.Package{other}, "example.com/app/cmd/other")
+	if len(accepted) != 1 || accepted[0].Name != "main.NewThing" {
+		t.Fatalf("the injector's own main package lost its constructor: %v", accepted)
+	}
+}

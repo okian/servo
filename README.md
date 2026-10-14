@@ -324,14 +324,14 @@ servo.Build(
 )
 ```
 
-[`examples/tutorial`](examples/tutorial) is the worked case: three binaries wiring one service layer
-behind `net/http`, Gin, and gRPC. Each spec used to be 53 lines and eleven marker calls, ten of
-them identical in all three, so adding a fifth `Bind` or changing a `Max` was a three-file edit
-nothing checked. Those ten now live in one
-[`internal/wiring/wiring.go`](examples/tutorial/internal/wiring/wiring.go) and each spec is 19
-lines — the `Include`, and the one thing that actually differs: its own transport's `Root`.
-(`Linger` and `Max` are `ScopeOption`s inside the `Scoped` call, not `Build` arguments, so they
-are not among the eleven.)
+[`examples/tutorial`](examples/tutorial) is the worked case: four binaries wiring one service layer
+behind `net/http`, Gin, gRPC and the generated `//servo:` transport. Each spec used to be 53 lines
+and eleven marker calls, ten of them identical in every binary, so adding a fifth `Bind` or
+changing a `Max` was a multi-file edit nothing checked. Those ten now live in one
+[`internal/wiring/wiring.go`](examples/tutorial/internal/wiring/wiring.go) and each spec carries
+the `Include` plus the one thing that actually differs: its own transport's `Root`, or for the
+generated transport the `servo.HTTP()` that emits it. (`Linger` and `Max` are `ScopeOption`s
+inside the `Scoped` call, not `Build` arguments, so they are not among the eleven.)
 
 The named function is read, never called — the same rule the spec file lives by, which is why the
 shape it may have is narrow. Its body has to be exactly `return []servo.Marker{...}`; a variable, a
@@ -341,10 +341,11 @@ tag for the same reason a spec file does: every marker in it panics if it ever e
 included set may itself `Include`; a cycle is a diagnostic naming the path that closed it, not a
 hang.
 
-Markers arrive where the `Include` sits, so a `Bind` written after it in the spec file overrides the
-shared one — the local file has the last word, which is the only ordering that makes a shared set
-worth having. (Two `Bind`s for the same interface written in the *same* file is still the duplicate
-error it always was.) Full contract, including every refusal:
+Markers arrive where the `Include` sits, so a declaration written after it in the spec file — a
+`Bind`, a `Scoped` with its own policy, a `ConfigFile`, any of them — overrides the shared one: the
+local file has the last word, which is the only ordering that makes a shared set worth having.
+(Two `Bind`s for the same interface written in the *same* file is still the duplicate error it
+always was.) Full contract, including every refusal:
 [`Include`](https://okian.github.io/servo/reference/spec.html#include).
 
 ## Capabilities
@@ -675,8 +676,8 @@ isolation.
 
 | Command | Purpose |
 | --- | --- |
-| `servo generate [--dir]` | Resolve and emit `servo_gen.go` for **every** injector found under `--dir` (and `servo_gen_test.go` per injector that declares `servo.Override`). Scans `//servo:` route directives module-wide and emits the servers for specs declaring `servo.HTTP`. Default command. |
-| `servo check [--dir]` | Verify every injector found under `--dir` matches a fresh generation; prints a diff and reports every stale one, not just the first. |
+| `servo generate [--dir]` | Resolve and emit `servo_gen.go` for **every** injector found under `--dir` (and `servo_gen_test.go` per injector that declares `servo.Override`), then type-check what it wrote so a file `go build` would reject fails here. Scans `//servo:` route directives module-wide and emits the servers for specs declaring `servo.HTTP`. Default command. |
+| `servo check [--dir]` | Verify every injector found under `--dir` — the override variant included — matches a fresh generation; prints a diff and reports every stale one, not just the first. |
 | `servo graph [--dir] [--format=text\|json\|dot\|mermaid]` | Export one injector's resolved graph. |
 | `servo explain <type> [--dir]` | Which provider was selected and why, its dependencies, dependents, level, and capabilities. |
 | `servo why <type> [--dir]` | Shortest path from a root to that node. |
@@ -695,7 +696,7 @@ isolation.
 each wiring their own graph gets all three generated/checked/diagnosed in one pass, the same way
 `wire ./...` does, and a CI job doesn't need updating when a new service is added (see
 [`examples/basic`](./examples/basic), whose `cmd/basic` and `cmd/migrator` are exactly this).
-Commands that answer a question about *one* graph (`graph`, `explain`, `why`, `list`) instead ask
+Commands that answer a question about *one* graph (`graph`, `explain`, `why`, `list`, `config`) instead ask
 you to disambiguate with `--dir` when more than one injector is in scope — pointing it at a
 specific injector's own directory (e.g. `--dir cmd/api`) scopes the scan to just that one, since a
 `package main` can never import another `package main`, so sibling injectors are structurally

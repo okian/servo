@@ -44,11 +44,12 @@ Optionally wire the reference pre-commit hook, which runs `servo check` before e
 git config core.hooksPath githooks
 ```
 
-The hook runs `go tool servo check`, the same form the `go:generate` directive scaffolded by
-`servo init` uses — in a *consumer* module `go run github.com/okian/servo/v3/cmd/servo` fails on a
-missing `go.sum` entry, because requiring servo for the marker package alone doesn't put the
-generator's own dependencies in their build list. Inside this repository `go run ./cmd/servo` is
-fine, and is what CI uses.
+In a *consumer* module the hook runs `go tool servo check`, the same form the `go:generate`
+directive scaffolded by `servo init` uses — `go run github.com/okian/servo/v3/cmd/servo` fails
+there on a missing `go.sum` entry, because requiring servo for the marker package alone doesn't put
+the generator's own dependencies in their build list. Inside this repository there is no `tool`
+directive and no injector at the root, so the same hook detects where it is and runs the example
+checks above through `go run ./cmd/servo`, exactly as CI does.
 
 ## What CI checks
 
@@ -57,9 +58,11 @@ Four jobs, in [.github/workflows/go.yml](.github/workflows/go.yml), plus a separ
 
 - **build** — `go build`, `go vet`, `go test -race` at the root; then build and test each example
   module (`examples/scoped` at `-count=5`, and `examples/variants` under both build
-  configurations), build `examples/diagnostics`, and `servo check` basic, scoped, mocking, http,
+  configurations), build `examples/diagnostics`, `servo check` basic, scoped, mocking, http,
   variants and the tutorial — the tutorial check needs no services, and the tutorial workflow
-  runs it again for tutorial-only changes.
+  runs it again for tutorial-only changes — and finally `servo doctor` and `servo-vet` (through
+  `go vet -vettool`) over every example module, so the two commands a consumer runs outside
+  `go generate` are exercised against real code and not only by their unit tests.
 - **lint** — `golangci-lint` over *every* module, including `examples/tutorial`, and
   `examples/variants` a second time with `--build-tags=prod`, since files behind a build constraint
   are invisible to the default run.

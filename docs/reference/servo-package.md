@@ -529,9 +529,10 @@ type HTTPConfig struct {
 
 	MaxBodyBytes int64 // <= 0 = the generated 1 MiB default
 
-	ReadTimeout  time.Duration // zero = none, matching net/http.Server
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
+	ReadHeaderTimeout time.Duration // zero = none, matching net/http.Server
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
 
 	Groups map[string]HTTPListener // one listener per declared group
 }
@@ -541,7 +542,7 @@ type HTTPListener struct {
 	Port uint16
 	CertFile, KeyFile string
 	MaxBodyBytes int64
-	ReadTimeout, WriteTimeout, IdleTimeout time.Duration
+	ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout time.Duration
 }
 ```
 

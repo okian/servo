@@ -76,6 +76,11 @@ ordinary file — see the README's
 **It is exported**, unless it lives in the injector's own package — where unexported functions are
 candidates too, so a small private provider can sit next to your `main.go`.
 
+**It is not in some other `package main`.** Nothing can import a main package, so a constructor
+beside a sibling binary's `main.go` is reachable only from that package's own injector; for every
+other injector it is rejected rather than selected into a generated file `go build` would then
+refuse. The same rule applies to a [`//servo:` handler](http.md) declared in a main package.
+
 **It is neither generic nor variadic.** A generic function has no single result type to key on. A
 variadic parameter's static type is a slice, and a slice can never be provided, so such a function
 could never resolve anyway; both are rejected up front with a specific reason rather than
@@ -116,6 +121,7 @@ Every reason string `servo list --rejected` can print, with what to do about it:
 | Reason | What happened | Fix |
 | --- | --- | --- |
 | `unexported, outside injector package` | Lowercase function in a package other than the injector's | Export it, or move it into the injector package |
+| `declared in another package main, which nothing can import` | A constructor in a sibling binary's main package | Move it to an importable package; only that package's own injector can use it where it is |
 | `generic function — unsupported` | The function has type parameters | Write a concrete wrapper that instantiates it |
 | `variadic parameter — unsupported` | A `...T` parameter, e.g. an options pattern | Wrap: `func New() *Client { return newClient(opts...) }` |
 | `does not match a supported result shape` | Results aren't one of the four shapes above | Reduce to one value, plus optionally a cleanup func and `error` |
@@ -255,8 +261,9 @@ concurrent — it's cheap, and sequential construction keeps the generated code 
 [Lifecycle](lifecycle.md#init).
 
 Emitted [HTTP servers](http.md) sit outside the level scheme entirely: they are machinery, not
-nodes, constructed at the **end** of `New` after every level has run — every singleton they hand a
-handler already exists by then, and no node's level accounts for them.
+nodes, wired after the last constructor and **before** the Init phase — every singleton they hand a
+handler already exists by then, nothing has been initialised yet, and no node's level accounts for
+them.
 
 **Reachability.** The graph is the transitive closure of the declared roots — plus, when the spec
 declares [`servo.HTTP()`](http.md), the emitted servers' own requirements, resolved as root-like

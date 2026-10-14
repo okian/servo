@@ -118,14 +118,15 @@ type httpServer struct {
 func newHttpServer(a *App) (*httpServer, error) {
 	cfg := a.hTTPConfig
 	lc := servo.HTTPListener{
-		IP:           cfg.IP,
-		Port:         cfg.Port,
-		CertFile:     cfg.CertFile,
-		KeyFile:      cfg.KeyFile,
-		MaxBodyBytes: cfg.MaxBodyBytes,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+		IP:                cfg.IP,
+		Port:              cfg.Port,
+		CertFile:          cfg.CertFile,
+		KeyFile:           cfg.KeyFile,
+		MaxBodyBytes:      cfg.MaxBodyBytes,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 	s := &httpServer{app: a, lc: lc}
 	s.maxBody = lc.MaxBodyBytes
@@ -144,11 +145,12 @@ func newHttpServer(a *App) (*httpServer, error) {
 	handler = a.requestID.Middleware(handler)
 	handler = a.recover2.Middleware(handler)
 	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:      handler,
-		ReadTimeout:  lc.ReadTimeout,
-		WriteTimeout: lc.WriteTimeout,
-		IdleTimeout:  lc.IdleTimeout,
+		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:           handler,
+		ReadHeaderTimeout: lc.ReadHeaderTimeout,
+		ReadTimeout:       lc.ReadTimeout,
+		WriteTimeout:      lc.WriteTimeout,
+		IdleTimeout:       lc.IdleTimeout,
 	}
 	return s, nil
 }
@@ -159,7 +161,7 @@ func (s *httpServer) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	// ParseMultipartForm falls through to ParseForm on urlencoded
 	// bodies, reporting ErrNotMultipart after already parsing them.
 	if err := r.ParseMultipartForm(s.maxBody); err != nil && !errors.Is(err, http.ErrNotMultipart) {
-		httpWriteError(w, http.StatusBadRequest, "malformed form body")
+		httpBodyError(w, err, "malformed form body")
 		return
 	}
 	req.Subject = r.PostForm.Get("subject")
@@ -208,7 +210,7 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		httpWriteError(w, http.StatusBadRequest, "malformed request body")
+		httpBodyError(w, err, "malformed request body")
 		return
 	}
 	q := r.URL.Query()
@@ -370,11 +372,12 @@ func newHttpInternalServer(a *App) (*httpInternalServer, error) {
 	handler = a.requestID.Middleware(handler)
 	handler = a.recover2.Middleware(handler)
 	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:      handler,
-		ReadTimeout:  lc.ReadTimeout,
-		WriteTimeout: lc.WriteTimeout,
-		IdleTimeout:  lc.IdleTimeout,
+		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:           handler,
+		ReadHeaderTimeout: lc.ReadHeaderTimeout,
+		ReadTimeout:       lc.ReadTimeout,
+		WriteTimeout:      lc.WriteTimeout,
+		IdleTimeout:       lc.IdleTimeout,
 	}
 	return s, nil
 }
@@ -455,11 +458,12 @@ func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error) {
 	handler = a.requestID.Middleware(handler)
 	handler = a.recover2.Middleware(handler)
 	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:      handler,
-		ReadTimeout:  lc.ReadTimeout,
-		WriteTimeout: lc.WriteTimeout,
-		IdleTimeout:  lc.IdleTimeout,
+		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:           handler,
+		ReadHeaderTimeout: lc.ReadHeaderTimeout,
+		ReadTimeout:       lc.ReadTimeout,
+		WriteTimeout:      lc.WriteTimeout,
+		IdleTimeout:       lc.IdleTimeout,
 	}
 	return s, nil
 }
@@ -532,6 +536,12 @@ func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
 		return
 	}
 	code := hs.Code()
+	if code < 400 {
+		// A success or redirect status with no response to carry it — an
+		// extractor returns a value or an error, never a body — is the code alone.
+		w.WriteHeader(code)
+		return
+	}
 	if code >= 500 {
 		slog.Error("servo: handler "+handler+" failed", "route", route, "status", code, "error", err)
 		httpWriteError(w, code, hs.Error())
@@ -546,6 +556,17 @@ func httpWriteError(w http.ResponseWriter, code int, msg string) {
 	_ = json.NewEncoder(w).Encode(struct {
 		Error string `json:"error"`
 	}{Error: msg})
+}
+
+// httpBodyError maps a body decoding failure onto the response: a body over the
+// configured limit is a 413, anything else is the 400 the caller describes.
+func httpBodyError(w http.ResponseWriter, err error, msg string) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		httpWriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	httpWriteError(w, http.StatusBadRequest, msg)
 }
 
 func New(ctx context.Context) (*App, error) {
@@ -620,6 +641,9 @@ func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {
 			a.httpServerStopResult = servo.NodeResult{Name: "http", Status: servo.StatusOK}
 			return
 		}
+		// Readiness drops first: a probe that lands during the drain must not
+		// be told the listener is open when Shutdown has already closed it.
+		a.httpServer.ready.Store(false)
 		a.httpServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http", a.httpServer.srv.Shutdown)
 	})
 	return a.httpServerStopResult
@@ -631,6 +655,9 @@ func (a *App) stopHttpInternalServer(ctx context.Context) servo.NodeResult {
 			a.httpInternalServerStopResult = servo.NodeResult{Name: "http:internal", Status: servo.StatusOK}
 			return
 		}
+		// Readiness drops first: a probe that lands during the drain must not
+		// be told the listener is open when Shutdown has already closed it.
+		a.httpInternalServer.ready.Store(false)
 		a.httpInternalServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:internal", a.httpInternalServer.srv.Shutdown)
 	})
 	return a.httpInternalServerStopResult
@@ -642,6 +669,9 @@ func (a *App) stopHttpTelemetryServer(ctx context.Context) servo.NodeResult {
 			a.httpTelemetryServerStopResult = servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK}
 			return
 		}
+		// Readiness drops first: a probe that lands during the drain must not
+		// be told the listener is open when Shutdown has already closed it.
+		a.httpTelemetryServer.ready.Store(false)
 		a.httpTelemetryServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)
 	})
 	return a.httpTelemetryServerStopResult

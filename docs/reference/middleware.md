@@ -65,7 +65,8 @@ in-process state, swept when idle; two replicas mean two buckets per key.
 
 A declared `Content-Length` over `MaxBytes` is refused with 413 before the handler runs; chunked
 bodies read through `http.MaxBytesReader`, so the cap holds on the read path too. Complements
-`HTTPConfig.MaxBodyBytes`, which guards only routes that decode bodies.
+`HTTPConfig.MaxBodyBytes`, which guards only routes that decode bodies (and answers 413 there as
+well).
 
 ## `AccessLog`
 

@@ -81,6 +81,9 @@ type HTTPDecl struct {
 	Pos    token.Position
 	Groups []GroupDecl
 	Uses   []UseDecl
+	// Included marks a declaration spliced in by servo.Include; a local
+	// one supersedes it, as a local Bind supersedes an included one.
+	Included bool
 }
 
 // GroupDecl is one servo.Group("name") declaration inside servo.HTTP(...).
@@ -110,6 +113,8 @@ type ExtractDecl struct {
 	Type  graph.Key
 	TypeT types.Type
 	Pos   token.Position
+	// Included marks a declaration spliced in by servo.Include.
+	Included bool
 }
 
 // TraceDecl is one servo.Trace[I](...) declaration. The interface is
@@ -144,6 +149,8 @@ type ValueDecl struct {
 	Key  graph.Key
 	Type types.Type
 	Pos  token.Position
+	// Included marks a declaration spliced in by servo.Include.
+	Included bool
 }
 
 // ConfigFileDecl is one servo.ConfigFile("path") — the config file this
@@ -153,6 +160,8 @@ type ValueDecl struct {
 type ConfigFileDecl struct {
 	Path string
 	Pos  token.Position
+	// Included marks a declaration spliced in by servo.Include.
+	Included bool
 }
 
 type BindDecl struct {
@@ -318,6 +327,13 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 		if err != nil {
 			return err
 		}
+		// Every declaration an Include can carry follows one rule: markers
+		// are spliced in where the Include sits, so a declaration written
+		// after it in the spec file finds the included one and replaces it
+		// — the local file has the last word, which is the only ordering
+		// that makes a shared set worth having. Two local declarations of
+		// the same thing are still the duplicate they always were.
+		included := len(including) > 0
 		switch name {
 		case "Root":
 			if len(typeArgs) != 1 {
@@ -328,8 +344,12 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 			if len(typeArgs) != 1 {
 				return fmt.Errorf("%s: servo.Value expects exactly one type argument", pos)
 			}
-			decl := ValueDecl{Key: graph.NewKey(typeArgs[0], ""), Type: typeArgs[0], Pos: pos}
+			decl := ValueDecl{Key: graph.NewKey(typeArgs[0], ""), Type: typeArgs[0], Pos: pos, Included: included}
 			if prior, dup := findValue(spec.Values, decl.Key); dup {
+				if prior.Included {
+					replaceValue(spec.Values, decl)
+					continue
+				}
 				return fmt.Errorf("%s: servo.Value[%s]() declared twice — first at %s", pos, decl.Key.String(), prior.Pos)
 			}
 			spec.Values = append(spec.Values, decl)
@@ -342,7 +362,8 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 			if err != nil {
 				return err
 			}
-			if spec.ConfigFile != nil {
+			decl.Included = included
+			if spec.ConfigFile != nil && !spec.ConfigFile.Included {
 				return fmt.Errorf("%s: servo.ConfigFile(...) declared twice — first at %s", pos, spec.ConfigFile.Pos)
 			}
 			spec.ConfigFile = decl
@@ -356,15 +377,9 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 			decl := BindDecl{
 				Iface: graph.NewKey(typeArgs[0], ""), IfaceType: typeArgs[0],
 				Concrete: graph.NewKey(typeArgs[1], ""), ConcreteType: typeArgs[1],
-				Pos: pos,
+				Pos: pos, Included: included,
 			}
 			if name == "Bind" {
-				// An Include's markers are spliced in where the Include
-				// sits, so a Bind written after it in the spec file is a
-				// duplicate of a shared one — and the local file wins,
-				// which is the only ordering that makes a shared set worth
-				// having. A duplicate between two *local* Binds is still
-				// the ambiguity it always was.
 				if prior, dup := findByIface(spec.Binds, decl.Iface); dup {
 					if prior.Included {
 						replaceByIface(spec.Binds, decl)
@@ -372,7 +387,6 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 					}
 					return fmt.Errorf("%s: servo.Bind[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
 				}
-				decl.Included = len(including) > 0
 				spec.Binds = append(spec.Binds, decl)
 			} else {
 				if prior, dup := findByIface(spec.Overrides, decl.Iface); dup {
@@ -382,7 +396,6 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 					}
 					return fmt.Errorf("%s: servo.Override[%s, ...] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
 				}
-				decl.Included = len(including) > 0
 				spec.Overrides = append(spec.Overrides, decl)
 			}
 		case "Scoped":
@@ -390,25 +403,37 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 			if err != nil {
 				return err
 			}
+			decl.Included = included
+			// A shared set can declare the scope and one injector can still
+			// set its own Linger or Max. A duplicate that is not an
+			// included-then-local pair is left for checkScopeDecls, which
+			// names both positions.
+			if prior, dup := findScoped(spec.Scopes, decl.Impl); dup && prior.Included {
+				replaceScoped(spec.Scopes, decl)
+				continue
+			}
 			spec.Scopes = append(spec.Scopes, decl)
 		case "HTTP":
-			if spec.HTTP != nil {
+			if spec.HTTP != nil && !spec.HTTP.Included {
 				return fmt.Errorf("%s: servo.HTTP() declared twice — first at %s", pos, spec.HTTP.Pos)
 			}
 			decl, err := parseHTTPCall(pkg, argCall, pos)
 			if err != nil {
 				return err
 			}
+			decl.Included = included
 			spec.HTTP = decl
 		case "Extract":
 			if len(typeArgs) != 1 {
 				return fmt.Errorf("%s: servo.Extract expects exactly one type argument", pos)
 			}
-			decl := ExtractDecl{Type: graph.NewKey(typeArgs[0], ""), TypeT: typeArgs[0], Pos: pos}
-			for _, prior := range spec.Extracts {
-				if prior.Type == decl.Type {
-					return fmt.Errorf("%s: servo.Extract[%s] declared twice — first at %s", pos, decl.Type, prior.Pos)
+			decl := ExtractDecl{Type: graph.NewKey(typeArgs[0], ""), TypeT: typeArgs[0], Pos: pos, Included: included}
+			if prior, dup := findExtract(spec.Extracts, decl.Type); dup {
+				if prior.Included {
+					replaceExtract(spec.Extracts, decl)
+					continue
 				}
+				return fmt.Errorf("%s: servo.Extract[%s] declared twice — first at %s", pos, decl.Type, prior.Pos)
 			}
 			spec.Extracts = append(spec.Extracts, decl)
 		case "Trace":
@@ -416,9 +441,7 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 			if err != nil {
 				return err
 			}
-			// Same rule as Bind: a local declaration supersedes an
-			// included one, so a shared marker set can trace an interface
-			// and one injector can still add its own Expected list.
+			decl.Included = included
 			if prior, dup := findTrace(spec.Traces, decl.Iface); dup {
 				if prior.Included {
 					replaceTrace(spec.Traces, decl)
@@ -426,7 +449,6 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 				}
 				return fmt.Errorf("%s: servo.Trace[%s] declared twice — first at %s", pos, decl.Iface.String(), prior.Pos)
 			}
-			decl.Included = len(including) > 0
 			spec.Traces = append(spec.Traces, decl)
 		case "Expected":
 			return fmt.Errorf("%s: servo.Expected belongs inside servo.Trace[I](...)", pos)
@@ -476,6 +498,56 @@ func findValue(decls []ValueDecl, k graph.Key) (ValueDecl, bool) {
 		}
 	}
 	return ValueDecl{}, false
+}
+
+// replaceValue is replaceByIface for Value declarations.
+func replaceValue(decls []ValueDecl, decl ValueDecl) {
+	for i, d := range decls {
+		if d.Key == decl.Key {
+			decls[i] = decl
+			return
+		}
+	}
+}
+
+// findExtract and replaceExtract are findByIface and replaceByIface for
+// Extract declarations.
+func findExtract(decls []ExtractDecl, t graph.Key) (ExtractDecl, bool) {
+	for _, d := range decls {
+		if d.Type == t {
+			return d, true
+		}
+	}
+	return ExtractDecl{}, false
+}
+
+func replaceExtract(decls []ExtractDecl, decl ExtractDecl) {
+	for i, d := range decls {
+		if d.Type == decl.Type {
+			decls[i] = decl
+			return
+		}
+	}
+}
+
+// findScoped and replaceScoped are the same pair for Scoped declarations,
+// keyed by the scoped type.
+func findScoped(decls []ScopeDecl, impl graph.Key) (ScopeDecl, bool) {
+	for _, d := range decls {
+		if d.Impl == impl {
+			return d, true
+		}
+	}
+	return ScopeDecl{}, false
+}
+
+func replaceScoped(decls []ScopeDecl, decl ScopeDecl) {
+	for i, d := range decls {
+		if d.Impl == decl.Impl {
+			decls[i] = decl
+			return
+		}
+	}
 }
 
 // findTrace is findByIface for Trace declarations.

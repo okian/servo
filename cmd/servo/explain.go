@@ -50,6 +50,14 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 			}
 		}
 	}
+	// A node the emitted HTTP servers pull in directly has no consumer
+	// node either: the handler, middleware attachment, extractor or server
+	// config that asked for it is named instead.
+	for _, entry := range httpEntryPoints(resolved) {
+		if entry.node == node {
+			dependents = append(dependents, "("+entry.label+")")
+		}
+	}
 	// A scoped node's consumers are usually not other nodes at all: they
 	// hold the accessor interface and acquire per call, so name that
 	// instead of reporting "none" for something plainly in use.

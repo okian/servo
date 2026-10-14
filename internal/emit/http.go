@@ -31,6 +31,7 @@ type httpEmit struct {
 	RespondFunc  string // httpRespond
 	WriteError   string // httpWriteError
 	WriteFailure string // httpWriteFailure
+	BodyError    string // httpBodyError, allocated only when needed
 	MaxBodyConst string // defaultMaxBodyBytes, allocated only when needed
 	needsBody    bool
 }
@@ -173,6 +174,7 @@ func (e *emitter) planHTTP() {
 	}
 	if h.needsBody {
 		h.MaxBodyConst = e.types.AllocateName(e.testPrefixed("defaultMaxBodyBytes"))
+		h.BodyError = e.types.AllocateName(e.testPrefixed("httpBodyError"))
 	}
 	e.http = h
 }
@@ -318,6 +320,10 @@ func (e *emitter) httpDecls() string {
 	b.WriteString("\t\tslog.Error(\"servo: handler \"+handler+\" failed\", \"route\", route, \"error\", err)\n")
 	fmt.Fprintf(&b, "\t\t%s(w, http.StatusInternalServerError, \"Internal Server Error\")\n\t\treturn\n\t}\n", h.WriteError)
 	b.WriteString("\tcode := hs.Code()\n")
+	b.WriteString("\tif code < 400 {\n")
+	b.WriteString("\t\t// A success or redirect status with no response to carry it — an\n")
+	b.WriteString("\t\t// extractor returns a value or an error, never a body — is the code alone.\n")
+	b.WriteString("\t\tw.WriteHeader(code)\n\t\treturn\n\t}\n")
 	b.WriteString("\tif code >= 500 {\n")
 	b.WriteString("\t\tslog.Error(\"servo: handler \"+handler+\" failed\", \"route\", route, \"status\", code, \"error\", err)\n")
 	fmt.Fprintf(&b, "\t\t%s(w, code, hs.Error())\n\t\treturn\n\t}\n", h.WriteError)
@@ -327,6 +333,16 @@ func (e *emitter) httpDecls() string {
 	b.WriteString("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")
 	b.WriteString("\tw.WriteHeader(code)\n")
 	b.WriteString("\t_ = json.NewEncoder(w).Encode(struct {\n\t\tError string `json:\"error\"`\n\t}{Error: msg})\n}\n\n")
+
+	if h.needsBody {
+		fmt.Fprintf(&b, "// %s maps a body decoding failure onto the response: a body over the\n", h.BodyError)
+		b.WriteString("// configured limit is a 413, anything else is the 400 the caller describes.\n")
+		fmt.Fprintf(&b, "func %s(w http.ResponseWriter, err error, msg string) {\n", h.BodyError)
+		b.WriteString("\tvar tooLarge *http.MaxBytesError\n")
+		b.WriteString("\tif errors.As(err, &tooLarge) {\n")
+		fmt.Fprintf(&b, "\t\t%s(w, http.StatusRequestEntityTooLarge, \"request body too large\")\n\t\treturn\n\t}\n", h.WriteError)
+		fmt.Fprintf(&b, "\t%s(w, http.StatusBadRequest, msg)\n}\n\n", h.WriteError)
+	}
 
 	return b.String()
 }
@@ -365,6 +381,7 @@ func (e *emitter) writeHTTPGroup(b *strings.Builder, g *httpGroupEmit) {
 		b.WriteString("\t\tCertFile:     cfg.CertFile,\n")
 		b.WriteString("\t\tKeyFile:      cfg.KeyFile,\n")
 		b.WriteString("\t\tMaxBodyBytes: cfg.MaxBodyBytes,\n")
+		b.WriteString("\t\tReadHeaderTimeout: cfg.ReadHeaderTimeout,\n")
 		b.WriteString("\t\tReadTimeout:  cfg.ReadTimeout,\n")
 		b.WriteString("\t\tWriteTimeout: cfg.WriteTimeout,\n")
 		b.WriteString("\t\tIdleTimeout:  cfg.IdleTimeout,\n")
@@ -410,6 +427,7 @@ func (e *emitter) writeHTTPGroup(b *strings.Builder, g *httpGroupEmit) {
 	b.WriteString("\ts.srv = &http.Server{\n")
 	b.WriteString("\t\tAddr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),\n")
 	fmt.Fprintf(b, "\t\tHandler:      %s,\n", handlerExpr)
+	b.WriteString("\t\tReadHeaderTimeout: lc.ReadHeaderTimeout,\n")
 	b.WriteString("\t\tReadTimeout:  lc.ReadTimeout,\n")
 	b.WriteString("\t\tWriteTimeout: lc.WriteTimeout,\n")
 	b.WriteString("\t\tIdleTimeout:  lc.IdleTimeout,\n")
@@ -485,6 +503,9 @@ func (e *emitter) httpStopMethod() string {
 		fmt.Fprintf(&b, "\t\tif a.%s == nil {\n", g.Field)
 		fmt.Fprintf(&b, "\t\t\ta.%sStopResult = %s.NodeResult{Name: %q, Status: %s.StatusOK}\n", g.Field, e.servoAlias, name, e.servoAlias)
 		b.WriteString("\t\t\treturn\n\t\t}\n")
+		b.WriteString("\t\t// Readiness drops first: a probe that lands during the drain must not\n")
+		b.WriteString("\t\t// be told the listener is open when Shutdown has already closed it.\n")
+		fmt.Fprintf(&b, "\t\ta.%s.ready.Store(false)\n", g.Field)
 		fmt.Fprintf(&b, "\t\ta.%sStopResult = %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.srv.Shutdown)\n", g.Field, e.servoAlias, e.servoAlias, name, g.Field)
 		b.WriteString("\t})\n")
 		fmt.Fprintf(&b, "\treturn a.%sStopResult\n", g.Field)
@@ -503,15 +524,33 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 
 	fmt.Fprintf(b, "func (s *%s) %s(w http.ResponseWriter, r *http.Request) {\n", g.ServerType, re.Adapter)
 
+	// The qualifiers this adapter's body writes — the handler's package,
+	// the request struct's — are registered before any local is named, so
+	// the allocator below can see every identifier the body depends on.
+	funcRef := e.httpFuncRef(rt.Func)
+	reqType := ""
+	if rt.Req != nil {
+		reqType = e.qualifiedTypeString(rt.Req.Named)
+	}
+
 	// Extracted parameters come first, before a byte of the request is
 	// decoded: an extractor is usually the credential check, so a rejected
 	// request should cost nothing — the body is never read — and a
 	// malformed body must not turn its 401 into a 400. Each failure goes
 	// through the shared status mapping. The handler's arguments are still
 	// assembled in parameter order, below.
+	//
+	// A local is named after the type it holds, and the body also names
+	// packages: an extractor producing *user.User for a handler in package
+	// user used to emit `user, err := ...Extract(r)` followed by
+	// `user.Me(r.Context(), user)`, which the compiler reads as a method on
+	// the local. Every import identifier is claimed ahead of the locals.
 	extractedNames := NewNameAllocator()
 	for _, reserved := range []string{"w", "r", "req", "q", "raw", "v", "res", "err", "hs", "s"} {
 		extractedNames.AllocateName(reserved)
+	}
+	for _, ident := range e.imports.Idents() {
+		extractedNames.AllocateName(ident)
 	}
 	depArgs := make([]string, 0, len(re.R.Args))
 	for _, arg := range re.R.Args {
@@ -528,20 +567,20 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 
 	args := []string{"r.Context()"}
 	if rt.Req != nil {
-		fmt.Fprintf(b, "\treq := &%s{}\n", e.qualifiedTypeString(rt.Req.Named))
+		fmt.Fprintf(b, "\treq := &%s{}\n", reqType)
 		if rt.Req.HasBody {
 			b.WriteString("\t// The body decodes first, so the explicitly bound sources below\n")
 			b.WriteString("\t// overwrite anything it could smuggle into a same-named field.\n")
 			b.WriteString("\tr.Body = http.MaxBytesReader(w, r.Body, s.maxBody)\n")
 			b.WriteString("\tif err := json.NewDecoder(r.Body).Decode(req); err != nil {\n")
-			fmt.Fprintf(b, "\t\t%s(w, http.StatusBadRequest, \"malformed request body\")\n\t\treturn\n\t}\n", h.WriteError)
+			fmt.Fprintf(b, "\t\t%s(w, err, \"malformed request body\")\n\t\treturn\n\t}\n", h.BodyError)
 		}
 		if rt.Req.HasForm {
 			b.WriteString("\tr.Body = http.MaxBytesReader(w, r.Body, s.maxBody)\n")
 			b.WriteString("\t// ParseMultipartForm falls through to ParseForm on urlencoded\n")
 			b.WriteString("\t// bodies, reporting ErrNotMultipart after already parsing them.\n")
 			b.WriteString("\tif err := r.ParseMultipartForm(s.maxBody); err != nil && !errors.Is(err, http.ErrNotMultipart) {\n")
-			fmt.Fprintf(b, "\t\t%s(w, http.StatusBadRequest, \"malformed form body\")\n\t\treturn\n\t}\n", h.WriteError)
+			fmt.Fprintf(b, "\t\t%s(w, err, \"malformed form body\")\n\t\treturn\n\t}\n", h.BodyError)
 		}
 		if httpNeedsQuery(rt) {
 			b.WriteString("\tq := r.URL.Query()\n")
@@ -553,7 +592,7 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 	}
 	args = append(args, depArgs...)
 
-	fmt.Fprintf(b, "\tres, err := %s(%s)\n", e.httpFuncRef(rt.Func), strings.Join(args, ", "))
+	fmt.Fprintf(b, "\tres, err := %s(%s)\n", funcRef, strings.Join(args, ", "))
 	b.WriteString("\tif err != nil {\n")
 	fmt.Fprintf(b, "\t\tvar hs %s.HTTPStatus\n", e.servoAlias)
 	b.WriteString("\t\tif errors.As(err, &hs) && hs.Code() < 400 {\n")

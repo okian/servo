@@ -103,6 +103,26 @@ func (b BuildFlags) Args() []string {
 	return args
 }
 
+// GeneratedArgs is Args for the configuration a generated file compiles
+// in: the user's tags alone, BuildTag left out, so a load under it sees
+// the generated file and not the spec file — the configuration go build
+// is in. Verify loads under it.
+func (b BuildFlags) GeneratedArgs() []string {
+	var args []string
+	if tags := b.TagList(); len(tags) > 0 {
+		args = append(args, "-tags="+strings.Join(tags, ","))
+	}
+	for _, f := range []struct{ name, value string }{
+		{"mod", b.Mod},
+		{"modfile", b.ModFile},
+	} {
+		if f.value != "" {
+			args = append(args, "-"+f.name+"="+f.value)
+		}
+	}
+	return args
+}
+
 // String renders b as the flags a user would have typed, omitting
 // BuildTag, or "" for the zero value — for diagnostics that need to name
 // the configuration a file was generated under.

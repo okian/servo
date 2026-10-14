@@ -51,6 +51,20 @@ func (m *ImportManager) Claim(path, ident string) {
 	}
 }
 
+// Idents is every identifier the manager has handed out, claimed or
+// reserved so far, sorted. Emitters that declare locals in a scope where
+// package qualifiers are also written — an HTTP adapter's extracted
+// parameters — seed their allocators with it, so a local can never take
+// the name of a package the same body still has to call into.
+func (m *ImportManager) Idents() []string {
+	out := make([]string, 0, len(m.byName))
+	for name := range m.byName {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Add registers path (whose default package identifier is pkgName) and
 // returns the identifier to use at call sites.
 func (m *ImportManager) Add(path, pkgName string) string {

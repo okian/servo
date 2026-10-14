@@ -84,7 +84,7 @@ split into two groups on how they handle that:
 | Behaviour | Commands |
 | --- | --- |
 | Processes **every** injector in scope, reporting all of them | `generate`, `check`, `doctor` |
-| Answers a question about **one** graph, so it asks you to disambiguate | `graph`, `explain`, `why`, `list` |
+| Answers a question about **one** graph, so it asks you to disambiguate | `graph`, `explain`, `why`, `list`, `config` |
 | Doesn't scan a module at all | `init`, `migrate`, `new`, `version`, `help` |
 
 The second group errors out when more than one injector is in scope, listing the positions it
@@ -121,8 +121,8 @@ Same names, same syntax, same meaning as `go build`. `--tags` takes a comma-sepa
 deprecated space-separated form the go command still accepts works here too), and repeating the flag
 takes the last one, exactly as the go command does.
 
-They are accepted by the seven commands that load packages — `generate`, `check`, `graph`,
-`explain`, `why`, `list`, `doctor` — and by no others. `init` and `new` write files without loading
+They are accepted by the eight commands that load packages — `generate`, `check`, `graph`,
+`explain`, `why`, `list`, `config`, `doctor` — and by no others. `init` and `new` write files without loading
 anything, and `version` and `help` read nothing at all. (`init` does take `--tags`, but only to
 choose the constraint it scaffolds; it never loads a package with them.)
 `migrate` walks the tree with `go/parser` and never evaluates a build constraint at all,
@@ -332,6 +332,20 @@ ambiguous/store.go:23:6: servo: no provider for ambiguous.Store
 Resolution has exactly two outcomes: a complete plan, or a set of diagnostics. A failed generation
 never writes a partial file. See [Diagnostics](diagnostics.md) for every message it can produce.
 
+**What it writes, it then compiles.** After the files are on disk, `generate` type-checks the
+packages they landed in under the configuration the generated files are gated for — the user's
+tags without `servoinject` — and fails with the compiler's own positioned errors if any of its own
+files does not compile. That is a servo bug by definition, and the message says to report it; the
+file is left in place because the broken output is what the report needs. A `main.go` error, or a
+package `go list` cannot resolve yet because the first generated import of `errgroup` or a config
+decoder has no `go.sum` line until `go mod tidy` runs, is not servo's to report and does not fail
+the run.
+
+**A spec that stops declaring `servo.Override` stops having a test variant.** Nothing would ever
+regenerate `servo_gen_test.go` once the last `Override` is gone, yet `go test` keeps compiling it,
+so `generate` removes a leftover it finds — only a file with servo's own generated-code header —
+and says so on stderr.
+
 ## `check`
 
 ```
@@ -375,9 +389,11 @@ A missing generated file is reported distinctly from a stale one:
 servo check: cmd/basic/servo_gen.go does not exist — run `servo generate`
 ```
 
-Two things `check` does not do. It does not compare `servo_gen_test.go`, so an override variant
-that has drifted is not reported here (it will still be compiled and run by `go test`). And it
-does not verify that the generated file is committed to VCS — that is `doctor`'s job.
+The override variant is compared the same way: with a `servo.Override` declared, a stale or
+missing `servo_gen_test.go` is reported exactly as the production file is, and with none declared
+a `servo_gen_test.go` servo once wrote is refused as left over — `generate` removes it. One thing
+`check` does not do is verify that the generated files are committed to VCS; that is `doctor`'s
+job.
 
 ## `graph`
 
@@ -609,10 +625,20 @@ A node that resolved but isn't reachable from any root is reported as such:
 [`explain`](#explain). `--json` prints the path as an array of type strings.
 
 [Routes, middleware and extractors](http.md) are declaration-driven, not reached through another
-node's constructor — a route is not a graph node at all — so a dependency only the HTTP surface
-pulls in falls under that same line, and `explain` shows no dependents for it. The attribution
-lives in the diagnostics instead: a failure in such a chain carries a
-`needed by handler app.Order (POST /order/…)` frame, exactly as a root carries its `root` frame.
+node's constructor — a route is not a graph node at all. A dependency only the HTTP surface pulls
+in therefore descends from no `servo.Root`, and `why` answers with the declaration that asked for
+it instead: the handler, the `servo.Use` attachment, the `servo.Extract`, or `servo.HTTP()` itself
+for the server config.
+
+```
+$ servo why --dir examples/http store.Store
+root  handler api.Order, POST /order/{category}/
+  -> *example.com/servohttp/store.Store
+```
+
+With `--json` that entry point is the array's first element, ahead of the type strings. `explain`
+lists the same declarations among a node's dependents, in parentheses, the way it lists the
+accessor a scoped node is acquired through.
 
 ## `list`
 
@@ -829,6 +855,7 @@ What each check means:
 | Injector visible in this configuration | A package holds a spec file these flags exclude, so nothing generates its `New`. Reported here and nowhere else — see [Checking variants](#checking-variants) |
 | Generated file present | The generated file — `servo_gen.go`, or the [variant](#build-variants) matching `--tags` — is missing next to the spec |
 | Generated file fresh | Same comparison [`check`](#check) makes |
+| Override variant | With a `servo.Override` declared, `servo_gen_test.go` is missing or stale; with none declared, one servo once wrote is still there — `generate` removes it |
 | Tracked by git | A `[WARN]`, never a `FAIL` — best-effort, so no git, no repo, or a different VCS just means "can't tell" |
 | Route groups declared | A [`//servo:` directive](http.md)'s trailing token names a group no spec declares: ``group "x" is not declared by any injector`` |
 | Routes have a server | An `[INFO]`, never a `FAIL` — routes exist but no injector in this configuration declares `servo.HTTP()`, so nothing serves them. Legitimate when a variant spec declares it under flags this run wasn't given, which is exactly why it informs rather than fails |
@@ -1005,9 +1032,6 @@ Run `servo help` for flags and usage.
 
 That path exits 1. An unknown *topic* (`servo help geneate`) is the same error, again with the list.
 
-**Write it without dashes.** `servo -h` and `servo --help` are not this command — they start with a
-dash, so they are `generate --help`, which prints `generate`'s four flags and exits 1.
-
 ## `servo-vet`
 
 > **Build tags and `servo-vet`.** Run standalone, it analyses only the default configuration, and
@@ -1031,7 +1055,9 @@ dash, so they are `generate --help`, which prints `generate`'s four flags and ex
 >
 > The refusal is by inspection of `os.Args`, so it catches `-tags`, `--tags`, `-tags=prod` and
 > `-tags prod`, wherever they sit in the argument list. `-tags` with no value is left to
-> `go/analysis`'s own parser.
+> `go/analysis`'s own parser, and an invocation driven by the go command — which forwards the flag
+> to the tool along with the `.cfg` file describing packages it has already loaded under those
+> tags — is recognised and let through, since that is the invocation that works.
 
 ```
 go get -tool github.com/okian/servo/v3/cmd/servo-vet

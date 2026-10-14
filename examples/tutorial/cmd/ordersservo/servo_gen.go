@@ -26,6 +26,9 @@
 //	[L1] *example.com/servoorders/internal/observability.Logger
 //	      deps: example.com/servoorders/internal/observability.Config
 //	      capabilities: none | binding: sole candidate | internal/observability/logging.go:34:6
+//	[L2] *example.com/servoorders/internal/broker/notifier.Notifier
+//	      deps: example.com/servoorders/internal/broker/natsbroker.Config, *example.com/servoorders/internal/observability.Logger
+//	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | internal/broker/notifier/notifier.go:42:6
 //	[L1] *github.com/okian/servo/v3/servo.HTTPConfig
 //	      deps: example.com/servoorders/internal/transport/servoapi.ListenConfig
 //	      capabilities: none | binding: sole candidate | internal/transport/servoapi/middleware.go:91:6
@@ -58,13 +61,13 @@
 //	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | internal/repository/postgres/postgres.go:48:6
 //	[L2] example.com/servoorders/internal/repository.UserRepository#traced
 //	      deps: *example.com/servoorders/internal/repository/postgres.Store, *example.com/servoorders/internal/observability.Tracer
-//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:70:3
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:57:3
 //	[L3] *example.com/servoorders/internal/service.AuthService
 //	      deps: example.com/servoorders/internal/repository.UserRepository#traced, *example.com/servoorders/internal/auth.Issuer
 //	      capabilities: none | binding: sole candidate | internal/service/auth_service.go:18:6
 //	[L2] example.com/servoorders/internal/repository.OrderRepository#traced
 //	      deps: *example.com/servoorders/internal/repository/postgres.Store, *example.com/servoorders/internal/observability.Tracer
-//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:69:3
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:56:3
 //	[L1] *example.com/servoorders/internal/cache/redis.Cache
 //	      deps: example.com/servoorders/internal/cache/redis.config
 //	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | internal/cache/redis/redis.go:40:6
@@ -73,13 +76,13 @@
 //	      capabilities: none | binding: explicit bind | internal/resilience/breaker.go:38:6
 //	[L3] example.com/servoorders/internal/cache.OrderCache#traced
 //	      deps: *example.com/servoorders/internal/resilience.CircuitBreakerCache, *example.com/servoorders/internal/observability.Tracer
-//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:71:3
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:58:3
 //	[L1] *example.com/servoorders/internal/broker/natsbroker.Publisher
 //	      deps: example.com/servoorders/internal/broker/natsbroker.Config
 //	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | internal/broker/natsbroker/natsbroker.go:40:6
 //	[L2] example.com/servoorders/internal/broker.EventPublisher#traced
 //	      deps: *example.com/servoorders/internal/broker/natsbroker.Publisher, *example.com/servoorders/internal/observability.Tracer
-//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:72:3
+//	      capabilities: none | binding: traced | cmd/ordersservo/spec.go:59:3
 //	[L4] *example.com/servoorders/internal/service.OrderService
 //	      deps: example.com/servoorders/internal/repository.OrderRepository#traced, example.com/servoorders/internal/cache.OrderCache#traced, example.com/servoorders/internal/broker.EventPublisher#traced, *example.com/servoorders/internal/observability.Logger
 //	      capabilities: none | binding: sole candidate | internal/service/service.go:28:6
@@ -92,7 +95,7 @@
 //	      capabilities: Initializer, Flusher, Finalizer
 //	borrows: *example.com/servoorders/internal/session.Settings, *example.com/servoorders/internal/observability.Logger
 //
-// http (servo.HTTP() at cmd/ordersservo/spec.go:32:3):
+// http (servo.HTTP() at cmd/ordersservo/spec.go:34:3):
 //
 //	config: *github.com/okian/servo/v3/servo.HTTPConfig
 //	use: *github.com/okian/servo/v3/middleware.Recover -> every group
@@ -134,6 +137,7 @@ import (
 	"example.com/servoorders/internal/auth"
 	"example.com/servoorders/internal/broker"
 	"example.com/servoorders/internal/broker/natsbroker"
+	"example.com/servoorders/internal/broker/notifier"
 	"example.com/servoorders/internal/cache"
 	"example.com/servoorders/internal/cache/redis"
 	"example.com/servoorders/internal/domain"
@@ -154,6 +158,9 @@ import (
 type App struct {
 	settings              *session.Settings
 	logger                *observability.Logger
+	notifier              *notifier.Notifier
+	notifierStopOnce      sync.Once
+	notifierStopResult    servo.NodeResult
 	hTTPConfig            *servo.HTTPConfig
 	claimsExtractor       *servoapi.ClaimsExtractor
 	recover2              *middleware.Recover
@@ -720,14 +727,15 @@ type httpServer struct {
 func newHttpServer(a *App) (*httpServer, error) {
 	cfg := a.hTTPConfig
 	lc := servo.HTTPListener{
-		IP:           cfg.IP,
-		Port:         cfg.Port,
-		CertFile:     cfg.CertFile,
-		KeyFile:      cfg.KeyFile,
-		MaxBodyBytes: cfg.MaxBodyBytes,
-		ReadTimeout:  cfg.ReadTimeout,
-		WriteTimeout: cfg.WriteTimeout,
-		IdleTimeout:  cfg.IdleTimeout,
+		IP:                cfg.IP,
+		Port:              cfg.Port,
+		CertFile:          cfg.CertFile,
+		KeyFile:           cfg.KeyFile,
+		MaxBodyBytes:      cfg.MaxBodyBytes,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 	s := &httpServer{app: a, lc: lc}
 	s.maxBody = lc.MaxBodyBytes
@@ -763,11 +771,12 @@ func newHttpServer(a *App) (*httpServer, error) {
 	handler = a.rateLimiter.Middleware(handler)
 	handler = a.recover2.Middleware(handler)
 	s.srv = &http.Server{
-		Addr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:      handler,
-		ReadTimeout:  lc.ReadTimeout,
-		WriteTimeout: lc.WriteTimeout,
-		IdleTimeout:  lc.IdleTimeout,
+		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
+		Handler:           handler,
+		ReadHeaderTimeout: lc.ReadHeaderTimeout,
+		ReadTimeout:       lc.ReadTimeout,
+		WriteTimeout:      lc.WriteTimeout,
+		IdleTimeout:       lc.IdleTimeout,
 	}
 	return s, nil
 }
@@ -778,7 +787,7 @@ func (s *httpServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		httpWriteError(w, http.StatusBadRequest, "malformed request body")
+		httpBodyError(w, err, "malformed request body")
 		return
 	}
 	res, err := servoapi.Login(r.Context(), req, s.app.authService)
@@ -867,7 +876,7 @@ func (s *httpServer) handleCreateOrder(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		httpWriteError(w, http.StatusBadRequest, "malformed request body")
+		httpBodyError(w, err, "malformed request body")
 		return
 	}
 	res, err := servoapi.CreateOrder(r.Context(), req, claims, s.app.orderService)
@@ -960,6 +969,12 @@ func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
 		return
 	}
 	code := hs.Code()
+	if code < 400 {
+		// A success or redirect status with no response to carry it — an
+		// extractor returns a value or an error, never a body — is the code alone.
+		w.WriteHeader(code)
+		return
+	}
 	if code >= 500 {
 		slog.Error("servo: handler "+handler+" failed", "route", route, "status", code, "error", err)
 		httpWriteError(w, code, hs.Error())
@@ -976,8 +991,19 @@ func httpWriteError(w http.ResponseWriter, code int, msg string) {
 	}{Error: msg})
 }
 
+// httpBodyError maps a body decoding failure onto the response: a body over the
+// configured limit is a 413, anything else is the 400 the caller describes.
+func httpBodyError(w http.ResponseWriter, err error, msg string) {
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		httpWriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	httpWriteError(w, http.StatusBadRequest, msg)
+}
+
 // tracedOrderRepository is the OpenTelemetry wrapper servo.Trace[repository.OrderRepository] declares
-// (cmd/ordersservo/spec.go:69:3): every method whose first parameter is a
+// (cmd/ordersservo/spec.go:56:3): every method whose first parameter is a
 // context.Context runs inside a span named "repository.OrderRepository/<Method>", the span's
 // context is what the implementation receives, and a non-nil error marks the
 // span — except domain.ErrNotFound, declared expected. Methods without a
@@ -1026,7 +1052,7 @@ func (t *tracedOrderRepository) ListByUser(ctx context.Context, userID uuid.UUID
 }
 
 // tracedUserRepository is the OpenTelemetry wrapper servo.Trace[repository.UserRepository] declares
-// (cmd/ordersservo/spec.go:70:3): every method whose first parameter is a
+// (cmd/ordersservo/spec.go:57:3): every method whose first parameter is a
 // context.Context runs inside a span named "repository.UserRepository/<Method>", the span's
 // context is what the implementation receives, and a non-nil error marks the
 // span — except domain.ErrNotFound, declared expected. Methods without a
@@ -1053,7 +1079,7 @@ func (t *tracedUserRepository) GetByUsername(ctx context.Context, username strin
 }
 
 // tracedOrderCache is the OpenTelemetry wrapper servo.Trace[cache.OrderCache] declares
-// (cmd/ordersservo/spec.go:71:3): every method whose first parameter is a
+// (cmd/ordersservo/spec.go:58:3): every method whose first parameter is a
 // context.Context runs inside a span named "cache.OrderCache/<Method>", the span's
 // context is what the implementation receives, and a non-nil error marks the
 // span — except cache.ErrMiss, declared expected. Methods without a
@@ -1102,7 +1128,7 @@ func (t *tracedOrderCache) Set(ctx context.Context, o *domain.Order) error {
 }
 
 // tracedEventPublisher is the OpenTelemetry wrapper servo.Trace[broker.EventPublisher] declares
-// (cmd/ordersservo/spec.go:72:3): every method whose first parameter is a
+// (cmd/ordersservo/spec.go:59:3): every method whose first parameter is a
 // context.Context runs inside a span named "broker.EventPublisher/<Method>", the span's
 // context is what the implementation receives, and a non-nil error marks the
 // span. Methods without a
@@ -1180,8 +1206,12 @@ func New(ctx context.Context) (*App, error) {
 	logger := observability.NewLogger(observabilityConfig)
 	a.logger = logger
 
+	notifier := notifier.New(natsbrokerConfig, logger)
+	a.notifier = notifier
+
 	hTTPConfig, err := servoapi.NewHTTPConfig(listenConfig)
 	if err != nil {
+		_ = a.stopNotifier(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.hTTPConfig = hTTPConfig
@@ -1200,6 +1230,7 @@ func New(ctx context.Context) (*App, error) {
 
 	tracer, err := observability.NewTracer(observabilityConfig)
 	if err != nil {
+		_ = a.stopNotifier(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.tracer = tracer
@@ -1216,6 +1247,7 @@ func New(ctx context.Context) (*App, error) {
 	store, err := postgres.New(postgresConfig)
 	if err != nil {
 		_ = a.stopTracer(context.WithoutCancel(ctx))
+		_ = a.stopNotifier(context.WithoutCancel(ctx))
 		return nil, err
 	}
 	a.store = store
@@ -1293,6 +1325,16 @@ func New(ctx context.Context) (*App, error) {
 		}
 	}
 	return a, nil
+}
+
+func (a *App) stopNotifier(ctx context.Context) servo.NodeResult {
+	a.notifierStopOnce.Do(func() {
+		var results []servo.NodeResult
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Drain))
+		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoorders/internal/broker/notifier.Notifier", a.notifier.Stop))
+		a.notifierStopResult = servo.MergeNodeResults("*example.com/servoorders/internal/broker/notifier.Notifier", results...)
+	})
+	return a.notifierStopResult
 }
 
 func (a *App) stopTracer(ctx context.Context) servo.NodeResult {
@@ -1377,13 +1419,19 @@ func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {
 			a.httpServerStopResult = servo.NodeResult{Name: "http", Status: servo.StatusOK}
 			return
 		}
+		// Readiness drops first: a probe that lands during the drain must not
+		// be told the listener is open when Shutdown has already closed it.
+		a.httpServer.ready.Store(false)
 		a.httpServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http", a.httpServer.srv.Shutdown)
 	})
 	return a.httpServerStopResult
 }
 
 func (a *App) Run(ctx context.Context) error {
-	return a.httpServer.run(ctx)
+	g, gctx := errgroup.WithContext(ctx)
+	g.Go(func() error { return a.notifier.Run(gctx) })
+	g.Go(func() error { return a.httpServer.run(gctx) })
+	return g.Wait()
 }
 
 func (a *App) Shutdown(ctx context.Context) servo.Report {
@@ -1407,6 +1455,7 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	nodes = append(nodes, a.stopCache(ctx))
 	nodes = append(nodes, a.stopStore(ctx))
 	nodes = append(nodes, a.stopTracer(ctx))
+	nodes = append(nodes, a.stopNotifier(ctx))
 	return servo.Report{Nodes: nodes}
 }
 
@@ -1463,6 +1512,7 @@ func (a *App) Graph() servo.Graph {
 		{Type: "example.com/servoorders/internal/transport/servoapi.ListenConfig", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Pos: "internal/transport/servoapi/middleware.go:84:6"},
 		{Type: "*example.com/servoorders/internal/session.Settings", Level: 1, Deps: []string{"example.com/servoorders/internal/session.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/session/session.go:74:6"},
 		{Type: "*example.com/servoorders/internal/observability.Logger", Level: 1, Deps: []string{"example.com/servoorders/internal/observability.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/observability/logging.go:34:6"},
+		{Type: "*example.com/servoorders/internal/broker/notifier.Notifier", Level: 2, Deps: []string{"example.com/servoorders/internal/broker/natsbroker.Config", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Pos: "internal/broker/notifier/notifier.go:42:6"},
 		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: []string{"example.com/servoorders/internal/transport/servoapi.ListenConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:91:6"},
 		{Type: "*example.com/servoorders/internal/transport/servoapi.ClaimsExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:68:6"},
 		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/recover.go:17:6"},
@@ -1473,14 +1523,14 @@ func (a *App) Graph() servo.Graph {
 		{Type: "*example.com/servoorders/internal/auth.Issuer", Level: 1, Deps: []string{"example.com/servoorders/internal/auth.Config"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/auth/auth.go:39:6"},
 		{Type: "*example.com/servoorders/internal/transport/servoapi.Auth", Level: 2, Deps: []string{"*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/transport/servoapi/middleware.go:31:6"},
 		{Type: "*example.com/servoorders/internal/repository/postgres.Store", Level: 1, Deps: []string{"example.com/servoorders/internal/repository/postgres.config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "internal/repository/postgres/postgres.go:48:6"},
-		{Type: "example.com/servoorders/internal/repository.UserRepository#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/repository/postgres.Store", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:70:3", Wraps: "*example.com/servoorders/internal/repository/postgres.Store"},
+		{Type: "example.com/servoorders/internal/repository.UserRepository#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/repository/postgres.Store", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:57:3", Wraps: "*example.com/servoorders/internal/repository/postgres.Store"},
 		{Type: "*example.com/servoorders/internal/service.AuthService", Level: 3, Deps: []string{"example.com/servoorders/internal/repository.UserRepository#traced", "*example.com/servoorders/internal/auth.Issuer"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/auth_service.go:18:6"},
-		{Type: "example.com/servoorders/internal/repository.OrderRepository#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/repository/postgres.Store", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:69:3", Wraps: "*example.com/servoorders/internal/repository/postgres.Store"},
+		{Type: "example.com/servoorders/internal/repository.OrderRepository#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/repository/postgres.Store", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:56:3", Wraps: "*example.com/servoorders/internal/repository/postgres.Store"},
 		{Type: "*example.com/servoorders/internal/cache/redis.Cache", Level: 1, Deps: []string{"example.com/servoorders/internal/cache/redis.config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "sole candidate", Pos: "internal/cache/redis/redis.go:40:6"},
 		{Type: "*example.com/servoorders/internal/resilience.CircuitBreakerCache", Level: 2, Deps: []string{"*example.com/servoorders/internal/cache/redis.Cache"}, Capabilities: nil, Binding: "explicit bind", Pos: "internal/resilience/breaker.go:38:6"},
-		{Type: "example.com/servoorders/internal/cache.OrderCache#traced", Level: 3, Deps: []string{"*example.com/servoorders/internal/resilience.CircuitBreakerCache", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:71:3", Wraps: "*example.com/servoorders/internal/resilience.CircuitBreakerCache"},
+		{Type: "example.com/servoorders/internal/cache.OrderCache#traced", Level: 3, Deps: []string{"*example.com/servoorders/internal/resilience.CircuitBreakerCache", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:58:3", Wraps: "*example.com/servoorders/internal/resilience.CircuitBreakerCache"},
 		{Type: "*example.com/servoorders/internal/broker/natsbroker.Publisher", Level: 1, Deps: []string{"example.com/servoorders/internal/broker/natsbroker.Config"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "internal/broker/natsbroker/natsbroker.go:40:6"},
-		{Type: "example.com/servoorders/internal/broker.EventPublisher#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/broker/natsbroker.Publisher", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:72:3", Wraps: "*example.com/servoorders/internal/broker/natsbroker.Publisher"},
+		{Type: "example.com/servoorders/internal/broker.EventPublisher#traced", Level: 2, Deps: []string{"*example.com/servoorders/internal/broker/natsbroker.Publisher", "*example.com/servoorders/internal/observability.Tracer"}, Capabilities: nil, Binding: "traced", Pos: "cmd/ordersservo/spec.go:59:3", Wraps: "*example.com/servoorders/internal/broker/natsbroker.Publisher"},
 		{Type: "*example.com/servoorders/internal/service.OrderService", Level: 4, Deps: []string{"example.com/servoorders/internal/repository.OrderRepository#traced", "example.com/servoorders/internal/cache.OrderCache#traced", "example.com/servoorders/internal/broker.EventPublisher#traced", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: nil, Binding: "sole candidate", Pos: "internal/service/service.go:28:6"},
 		{Type: "*example.com/servoorders/internal/session.Session", Level: 1, Deps: []string{"example.com/servoorders/internal/session.UserID", "*example.com/servoorders/internal/session.Settings", "*example.com/servoorders/internal/observability.Logger"}, Capabilities: []string{"Initializer", "Flusher", "Finalizer"}, Binding: "sole candidate", Pos: "internal/session/session.go:82:6", Scope: "example.com/servoorders/internal/session.UserID"},
 	}, Scopes: []servo.GraphScope{

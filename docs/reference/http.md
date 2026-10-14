@@ -61,6 +61,10 @@ a real listener — is [`examples/http`](https://github.com/okian/servo/tree/mas
 - The optional trailing token names the route's **group** (grammar `[A-Za-z0-9_-]+`); no token —
   or the literal `default` — means the default group. See Groups below.
 - Several directives above one function register the same handler on several routes.
+- A handler in a **`package main`** is served only by that package's own injector, because no
+  other package can import it; every other injector skips it, and a main package whose injector
+  declares no `servo.HTTP()` (or that has no injector at all) is a generate-time error at the
+  directive, since nothing would ever serve the route.
 - The whole `//servo:` comment prefix is **reserved**: anything under it that doesn't parse as a
   valid directive is a generate-time error. A typo'd method must never silently leave a route
   unserved.
@@ -228,7 +232,8 @@ Rules, each enforced at generate time:
 
 The JSON body decodes first and the explicitly bound sources overwrite after, so a body cannot
 smuggle a value into a path- or query-bound field. Bodies are read through `http.MaxBytesReader`,
-capped by `HTTPConfig.MaxBodyBytes` (default 1 MiB).
+capped by `HTTPConfig.MaxBodyBytes` (default 1 MiB); a body over the cap is a `413` with
+`request body too large`, distinct from the `400` a malformed one earns.
 
 ## Status and errors
 
@@ -251,6 +256,10 @@ wire. `errors.Is` and `errors.As` both see through the wrapping: `errors.Is(err,
 servo.Status.NOT_FOUND)` holds, and so does `errors.Is(err, yourSentinel)` when the message used
 `%w`.
 
+An [extractor](#extractors--servoextract) fails through the same table, with one difference: it
+returns a value or an error, never a response, so a status under 400 from an extractor is written
+as the code alone — there is nothing to carry a body or a `Location` with it.
+
 ## The config
 
 The emitted server reads a `*servo.HTTPConfig` node. servo never constructs one — you write an
@@ -268,7 +277,7 @@ func NewHTTPConfig() (*servo.HTTPConfig, error) {
 | `Port` | TCP port |
 | `CertFile`, `KeyFile` | both set → the server serves TLS |
 | `MaxBodyBytes` | request-body cap; `<= 0` means the generated 1 MiB default |
-| `ReadTimeout`, `WriteTimeout`, `IdleTimeout` | passed to `net/http.Server`; zero means none |
+| `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout` | passed to `net/http.Server`; zero means none. Set `ReadHeaderTimeout` on anything internet-facing: without it a client that never finishes its headers holds the connection open indefinitely |
 | `Groups` | one `servo.HTTPListener` (the same knobs, per group) for each declared group, keyed by name |
 
 Declaring `servo.HTTP()` with no provider for `*servo.HTTPConfig` is a resolution diagnostic with
@@ -282,12 +291,13 @@ is not bound yet — though a declared group missing its `Groups` entry fails ri
 same rollback an `Init` failure gets, before any `Init` has run), and in `Run`
 every server binds explicitly, flips its readiness flag, and serves until the context ends.
 `Ready` reports one entry per group (`"http"`, `"http:telemetry"`) meaning exactly "that listener
-is bound". In `Shutdown` the servers stop **first**, before every singleton: they are the inbound
-edges, and draining them (`net/http.Server.Shutdown`, under `servo.DefaultStopBudget`) is what
-lets everything beneath quiesce. `Health` says nothing about them — a bound socket is not a health
-claim. For tests, the App gains one method: `HTTPHandler(group)` returns a group's routed,
-middleware-wrapped handler for `httptest`, with no listener bound — see
-[Generated API](generated-api.md#httphandler).
+is bound", and drops back to failed the moment `Shutdown` starts draining the group, so a probe
+that lands during the drain is told the truth. In `Shutdown` the servers stop **first**, before
+every singleton: they are the inbound edges, and draining them (`net/http.Server.Shutdown`, under
+`servo.DefaultStopBudget`) is what lets everything beneath quiesce. `Health` says nothing about
+them — a bound socket is not a health claim. For tests, the App gains one method:
+`HTTPHandler(group)` returns a group's routed, middleware-wrapped handler for `httptest`, with no
+listener bound — see [Generated API](generated-api.md#httphandler).
 
 ## What this does not do
 

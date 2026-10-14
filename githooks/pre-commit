@@ -16,6 +16,18 @@ if ! command -v go >/dev/null 2>&1; then
 	exit 0
 fi
 
+# Inside servo's own repository the injectors live in the example modules
+# and the generator is ./cmd/servo, so the hook runs the same checks CI
+# does. Everywhere else it is the one line a consumer module needs.
+if [ -f cmd/servo/main.go ] && grep -q '^module github.com/okian/servo/v3$' go.mod 2>/dev/null; then
+	echo "pre-commit: servo check (every example module)"
+	for dir in examples/basic examples/scoped examples/mocking examples/http examples/tutorial examples/variants; do
+		go run ./cmd/servo check --dir "$dir"
+	done
+	go run ./cmd/servo check --dir examples/variants --tags=prod
+	exit 0
+fi
+
 # A project with build variants needs one check per configuration, since
 # each variant has its own generated file and `check` only inspects the one
 # its flags select:

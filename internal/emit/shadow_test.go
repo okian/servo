@@ -223,3 +223,114 @@ func TestQualifiesWithIgnoresAnEmptyIdentifier(t *testing.T) {
 		t.Error("a type with no package was reported as shadowing store")
 	}
 }
+
+const roomScopeSrc = `
+package room
+
+import "context"
+
+type Key string
+
+// Room is the scope's entrance and is constructed first; Sub and Lobby
+// are built after it, both through the room package.
+type Room struct{}
+func NewRoom(k Key) *Room { return &Room{} }
+func (*Room) ScopeKey(ctx context.Context) (Key, error) { return "", nil }
+
+type Sub struct{}
+func NewSub(k Key, r *Room) *Sub { return &Sub{} }
+
+type Lobby struct{}
+func NewLobby(k Key, s *Sub) *Lobby { return &Lobby{} }
+func (*Lobby) ScopeKey(ctx context.Context) (Key, error) { return "", nil }
+
+type Rooms interface {
+	Acquire(ctx context.Context) (*Room, func(), error)
+}
+
+type Lobbies interface {
+	Acquire(ctx context.Context) (*Lobby, func(), error)
+}
+
+type Server struct{}
+func NewServer(r Rooms, l Lobbies) *Server { return &Server{} }
+`
+
+// TestEmitQualifiesAScopeMemberNamedAfterItsOwnPackage is the entry
+// build's half of the shadow guard. A scope's members are declared as
+// locals in one flat build() exactly as New declares its nodes, so a
+// member named after its package hid that package from every later
+// member: `room := room.NewRoom(e.key)` followed by `room.NewSub(e.key,
+// room)`, which the compiler reads as a method on the local.
+func TestEmitQualifiesAScopeMemberNamedAfterItsOwnPackage(t *testing.T) {
+	fset := token.NewFileSet()
+	imp := newPkgImporter(loadServoPackage(t))
+	roomPkg := checkFixturePackageWithInfo(t, imp, fset, "example.com/shadow/room", roomScopeSrc)
+	injector := checkFixturePackage(t, imp, fset, "example.com/shadow/app", injectorSrc)
+
+	servoPkg := loadServoPackage(t)
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	pkgs := []*packages.Package{roomPkg, injector}
+	candidates, _ := graph.ScanCandidates(pkgs, injector.PkgPath)
+	lookup := func(name string) types.Type { return roomPkg.Types.Scope().Lookup(name).Type() }
+	ptr := func(name string) types.Type { return types.NewPointer(lookup(name)) }
+	spec := &load.Spec{
+		InjectorPkg: injector,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(ptr("Server"), ""), Type: ptr("Server"), Pos: token.Position{Filename: "spec.go", Line: 5}}},
+		Scopes: []load.ScopeDecl{
+			{Impl: graph.NewKey(ptr("Room"), ""), ImplType: ptr("Room"), Iface: graph.NewKey(lookup("Rooms"), ""), IfaceType: lookup("Rooms"), Pos: token.Position{Filename: "spec.go", Line: 6}},
+			{Impl: graph.NewKey(ptr("Lobby"), ""), ImplType: ptr("Lobby"), Iface: graph.NewKey(lookup("Lobbies"), ""), IfaceType: lookup("Lobbies"), Pos: token.Position{Filename: "spec.go", Line: 7}},
+		},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{
+		Spec: spec, Candidates: candidates, Caps: caps,
+		Scope: map[string]bool{roomPkg.PkgPath: true, injector.PkgPath: true},
+		Fset:  fset, Pkgs: pkgs,
+	})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+
+	if !strings.Contains(src, "roomRoom := room.NewRoom(e.key)") {
+		t.Errorf("the member was not qualified out of the way of its own package:\n%s", src)
+	}
+	if !strings.Contains(src, "sub := room.NewSub(e.key, e.roomRoom)") {
+		t.Errorf("the later member's constructor does not reach the package:\n%s", src)
+	}
+	// The exact line the compiler rejects.
+	if strings.Contains(src, "room := room.NewRoom(e.key)") {
+		t.Errorf("a member local still hides the package it was built from:\n%s", src)
+	}
+	// The last member constructed through the package keeps its short
+	// name: nothing after it is qualified with lobby.
+	if !strings.Contains(src, "lobby := room.NewLobby(e.key, e.sub)") {
+		t.Errorf("lobby was renamed for a shadow no later line can suffer:\n%s", src)
+	}
+}
+
+// checkFixturePackageWithInfo is checkFixturePackage with the syntax and
+// type info a scoped fixture needs: the resolver reads a ScopeKey method's
+// declaration to confirm its receiver is blank.
+func checkFixturePackageWithInfo(t *testing.T, imp *pkgImporter, fset *token.FileSet, pkgPath, src string) *packages.Package {
+	t.Helper()
+	f, err := parser.ParseFile(fset, path.Base(pkgPath)+".go", src, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", pkgPath, err)
+	}
+	info := &types.Info{Defs: map[*ast.Ident]types.Object{}}
+	conf := types.Config{Importer: imp}
+	pkg, err := conf.Check(pkgPath, fset, []*ast.File{f}, info)
+	if err != nil {
+		t.Fatalf("typecheck %s: %v", pkgPath, err)
+	}
+	imp.byPath[pkgPath] = pkg
+	return &packages.Package{Name: pkg.Name(), PkgPath: pkgPath, Types: pkg, Fset: fset, Syntax: []*ast.File{f}, TypesInfo: info}
+}

@@ -472,9 +472,9 @@ func wire() {
 ```
 
 [`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) is the worked
-case: three injectors sharing one `internal/wiring/wiring.go`, and three spec files of nineteen
-lines each where each used to be fifty-three — eleven marker calls per spec, ten of them
-identical in all three.
+case: four injectors sharing one `internal/wiring/wiring.go` — three hand-written transports and
+the generated one — where each spec used to be fifty-three lines carrying eleven marker calls,
+ten of them identical in every binary.
 
 **The argument names the function; it is never called.** It has to be a plain identifier or a
 package selector resolving to a declared function — not a function literal, not a method value, not
@@ -518,11 +518,14 @@ wiring/wiring.go:19:3: servo.Include cycle — Shared includes itself, through:
   example.com/app/wiring.More
 ```
 
-**Local declarations win.** Included markers are spliced in where the `Include` sits, so a `Bind` or
-`Override` written after it in the spec file supersedes an included one for the same interface. That
-is deliberate and is the only ordering that makes a shared set worth having: a shared default you
-cannot deviate from in one binary is a shared default you stop using. Two *local* declarations for
-the same interface are still the duplicate they always were —
+**Local declarations win.** Included markers are spliced in where the `Include` sits, so a
+declaration written after it in the spec file supersedes an included one for the same thing: a
+`Bind` or `Override` for the same interface, a `Trace` for the same interface (with its own
+`Expected` list), a `Scoped` for the same type (with its own `Linger` and `Max`), a `Value` for the
+same type, an `Extract` for the same extractor, and the one `ConfigFile` or `HTTP` a spec may
+declare. That is deliberate and is the only ordering that makes a shared set worth having: a
+shared default you cannot deviate from in one binary is a shared default you stop using. Two
+*local* declarations of the same thing are still the duplicate they always were —
 `servo.Bind[…, ...] declared twice`.
 
 ## `ConfigFile`
@@ -648,7 +651,7 @@ Everything the spec parser can reject, in one place:
 | `servo.Build argument is not a marker call` | Something other than a call in the argument list |
 | `servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments` | A marker without inline type arguments |
 | `unrecognized servo marker "X" inside Build(...)` | A `servo` function that isn't a marker |
-| `servo.HTTP() declared twice` | Two `HTTP()` markers in one `Build` |
+| `servo.HTTP() declared twice` | Two `HTTP()` markers in one `Build`, both written locally |
 | `servo.Group belongs inside servo.HTTP(...)` | A `Group`/`Use` at `Build`'s top level |
 | `servo.Route belongs inside servo.Use(...)` | A `Route` anywhere but a `Use` selector list |
 | `"default" is the implicit group` | Declaring `servo.Group("default")` |
@@ -656,13 +659,13 @@ Everything the spec parser can reject, in one place:
 | `servo.Group("x") declared twice` | Duplicate group declaration in one `HTTP` |
 | `servo.Use[T] selects groups or routes, not both` | Mixed selector kinds in one `Use` |
 | `servo.Group's argument must be a constant string` | The spec is read, never run |
-| `servo.Extract[T] declared twice` | Duplicate extractor declaration |
+| `servo.Extract[T] declared twice` | Duplicate extractor declaration, both written locally |
 | `servo.Root expects exactly one type argument` | `Root` with the wrong arity |
 | `servo.Bind/Override expects exactly two type arguments` | `Bind`/`Override` with the wrong arity |
 | `second type argument must be a concrete type, not an interface` | Binding an interface to an interface |
 | `servo.Bind[…] declared twice` | Duplicate bind (or duplicate override) for one interface, both written locally |
 | `servo.Value expects exactly one type argument` | `Value` with the wrong arity |
-| `servo.Value[…]() declared twice` | One `Value` per type |
+| `servo.Value[…]() declared twice` | One `Value` per type, unless the first came from an `Include` |
 | `servo.Include takes exactly one argument, the name of a func() []servo.Marker` | `Include` with the wrong arity |
 | `servo.Include's argument must name a declared func() []servo.Marker` | A literal, a method value, or a call where the function name belongs |
 | `servo.Include names …, whose declaration is not in this build` | The included function is not reachable in this configuration |
@@ -688,7 +691,7 @@ Everything the spec parser can reject, in one place:
 | `servo.Scoped's first type argument must be a pointer, not X` | `Acquire` has to be able to return a zero alongside an error |
 | `servo.Scoped's second type argument must be an interface` | A concrete type where the accessor interface belongs |
 | `servo.Scoped's accessor interface … declares no methods` | `any` is satisfied by everything, which makes the accessor unusable |
-| `servo.Scoped[T, …] declared twice` | One scoped type, one declaration |
+| `servo.Scoped[T, …] declared twice` | One scoped type, one declaration — a local one may replace an included one, policy and all |
 | `servo.Scoped[…, I] declared twice` | One accessor interface cannot stand for two scoped types |
 | `servo.Scoped's arguments must be servo.Linger(...) or servo.Max(...) calls` | Something else in the option list |
 | `servo.X is not a scope option` | A `servo` marker that isn't `Linger` or `Max` |

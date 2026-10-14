@@ -1,13 +1,15 @@
 //go:build servoinject
 
-// Package wiring holds the marker set all three injectors share.
+// Package wiring holds the marker set all four injectors share.
 //
-// cmd/orders, cmd/ordersgin and cmd/ordersgrpc wire the same service layer
-// behind three transports, so everything below the transport is identical
-// in all three — ten of each spec's eleven marker calls, copy-pasted three
-// times, where adding a fifth Bind or changing Max was a three-file edit
-// nothing checked. servo.Include splices this list into each spec, which
-// then carries only what actually differs: its own transport's Root.
+// cmd/orders, cmd/ordersgin, cmd/ordersgrpc and cmd/ordersservo wire the
+// same service layer behind four transports, so everything below the
+// transport is identical in all four — ten of each spec's eleven marker
+// calls, once copy-pasted per binary, where adding a fifth Bind or
+// changing Max was a multi-file edit nothing checked. servo.Include
+// splices this list into each spec, which then carries only what actually
+// differs: its own transport's Root, or for cmd/ordersservo the
+// servo.HTTP() that emits the transport instead.
 //
 // The build tag is required, and for the same reason a spec file needs
 // one: every marker below panics if it is ever executed, so this file must

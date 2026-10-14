@@ -138,7 +138,7 @@ func (r *resolver) resolveHTTP(in *HTTPInput) *HTTPPlan {
 
 	var servedRoutes []*route.Route
 	for _, rt := range in.Routes {
-		if served[rt.Group] {
+		if served[rt.Group] && r.servableHandler(rt) {
 			servedRoutes = append(servedRoutes, rt)
 		}
 	}
@@ -173,6 +173,19 @@ func (r *resolver) resolveHTTP(in *HTTPInput) *HTTPPlan {
 		plan.Routes = append(plan.Routes, hr)
 	}
 	return plan
+}
+
+// servableHandler reports whether this injector can call rt's handler. A
+// handler declared in a package main is reachable only from that package's
+// own injector — nothing can import a main package — so for every other
+// injector the route is simply not one of its to serve, the way a route
+// in an undeclared group is not. Whether some injector serves such a
+// handler at all is a module-wide question, answered by the pipeline's
+// checkMainPackageRoutes; refusing it here would make a module with two
+// HTTP binaries, each keeping its handlers beside its own spec, impossible.
+func (r *resolver) servableHandler(rt *route.Route) bool {
+	pkg := rt.Func.Pkg()
+	return pkg == nil || pkg.Name() != "main" || pkg.Path() == r.injectorPath
 }
 
 // resolveExtractors resolves each servo.Extract declaration, validates its

@@ -48,6 +48,18 @@ func scanFuncs(pkg *packages.Package, injectorPkgPath string, accepted *[]*Provi
 		pos := pkg.Fset.Position(fn.Pos())
 		qualifiedName := pkg.Types.Name() + "." + name
 
+		// A function declared in some other package main can never be
+		// called from the injector: a main package is not importable, so a
+		// generated file that named it would not compile. Left in the index
+		// it would be selected — by exact type when the injector's own main
+		// package shares a type with it, by structural search whenever a
+		// sibling binary's main.go declares a type implementing an interface
+		// this graph asks for — and `servo generate` would exit 0 on a file
+		// `go build` then rejects.
+		if pkg.Types.Name() == "main" && pkg.PkgPath != injectorPkgPath {
+			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "declared in another package main, which nothing can import"})
+			continue
+		}
 		if !fn.Exported() && pkg.PkgPath != injectorPkgPath {
 			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "unexported, outside injector package"})
 			continue

@@ -109,10 +109,10 @@ real unit of composition.
 
 For the reuse half of that, servo has `servo.Include(fn)` — a function returning `[]servo.Marker`,
 spliced into a `Build` call as syntax and never called, shared by as many injectors as you like,
-with a locally-written marker overriding an included one for the same interface. Three binaries in
+with a locally-written marker overriding an included one. Four binaries in
 [`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) use it to share
-the twelve markers below their transports that used to be copy-pasted into three 53-line spec
-files; each spec is now nineteen lines.
+the markers below their transports that used to be copy-pasted into each 53-line spec file; a spec
+is now the `Include` plus the one thing that differs.
 
 It is not a provider set, and the difference is worth being exact about rather than blurring. A
 wire set bundles *constructors*: it decides what is available to build from, so composing two sets

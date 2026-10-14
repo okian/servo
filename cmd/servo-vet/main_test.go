@@ -26,6 +26,10 @@ func TestInheritedTagsRefusal(t *testing.T) {
 		{"empty value", []string{"-tags=", "./..."}, false},
 		{"trailing with no value", []string{"./...", "-tags"}, false},
 		{"absent", []string{"./..."}, false},
+		// go vet forwards -tags to the tool along with the .cfg file it
+		// has already loaded the packages for — the exact invocation the
+		// refusal recommends, so it must pass.
+		{"driven by go vet", []string{"-tags=prod", "/tmp/go-build123/b001/vet.cfg"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			msg, reject := inheritedTagsRefusal(tc.args)

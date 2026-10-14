@@ -3,6 +3,7 @@ package main
 import (
 	"go/ast"
 	"go/parser"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -226,5 +227,68 @@ func TestPrintJSON(t *testing.T) {
 	}
 	if err := printJSON(make(chan int)); err == nil {
 		t.Error("printJSON(chan) = nil error, want a marshal error (channels are not JSON-serializable)")
+	}
+}
+
+// TestFindNodeSuffixMatchesAtASegmentBoundary: a bare suffix test called
+// `api.Server` ambiguous between api.Server and otherapi.Server, which
+// made the short form useless in exactly the modules with enough packages
+// to want it.
+func TestFindNodeSuffixMatchesAtASegmentBoundary(t *testing.T) {
+	api := node(key("*example.com/app/api.Server"))
+	other := node(key("*example.com/app/otherapi.Server"))
+	resolved := &resolve.Resolved{Order: []*resolve.Node{api, other}}
+
+	got, err := findNode(resolved, "api.Server")
+	if err != nil {
+		t.Fatalf("findNode: %v", err)
+	}
+	if got != api {
+		t.Errorf("got %v, want api.Server", got.Key)
+	}
+	// Without a boundary the query is still ambiguous, as it should be.
+	if _, err := findNode(resolved, "Server"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
+		t.Fatalf("got err=%v, want an ambiguity for a bare type name", err)
+	}
+	// Generic instantiations keep their arguments addressable.
+	cache := node(key("*example.com/app/cache.Cache[example.com/app/order.Order]"))
+	resolved = &resolve.Resolved{Order: []*resolve.Node{cache}}
+	if got, err := findNode(resolved, "order.Order]"); err != nil || got != cache {
+		t.Errorf("findNode(order.Order]) = %v, %v", got, err)
+	}
+}
+
+// TestDiffLinesTrimsTheCommonEnds pins that trimming changes nothing a
+// caller can see — the ops still cover every line — while keeping the
+// quadratic core off the thousands of identical lines around a one-line
+// change in a generated file.
+func TestDiffLinesTrimsTheCommonEnds(t *testing.T) {
+	a := make([]string, 0, 20000)
+	for i := 0; i < 20000; i++ {
+		a = append(a, strconv.Itoa(i))
+	}
+	b := append([]string(nil), a...)
+	b[10000] = "changed"
+	ops := diffLines(a, b)
+	if len(ops) != 20001 {
+		t.Fatalf("got %d ops, want 20001 (one delete and one insert among 19999 equals)", len(ops))
+	}
+	var deletes, inserts int
+	for _, op := range ops {
+		switch op.kind {
+		case diffDelete:
+			deletes++
+			if op.line != "10000" {
+				t.Errorf("deleted %q, want 10000", op.line)
+			}
+		case diffInsert:
+			inserts++
+			if op.line != "changed" {
+				t.Errorf("inserted %q, want changed", op.line)
+			}
+		}
+	}
+	if deletes != 1 || inserts != 1 {
+		t.Errorf("deletes=%d inserts=%d, want one each", deletes, inserts)
 	}
 }

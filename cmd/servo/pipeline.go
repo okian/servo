@@ -94,6 +94,9 @@ func buildPipeline(cfg load.Config) (*pipeline, error) {
 	if err := checkRouteGroups([]*load.Spec{spec}, routes); err != nil {
 		return nil, err
 	}
+	if err := checkMainPackageRoutes([]*load.Spec{spec}, routes); err != nil {
+		return nil, err
+	}
 	return pipelineFor(loaded, caps, routes, configs, spec), nil
 }
 
@@ -125,6 +128,9 @@ func buildPipelines(cfg load.Config) ([]*pipeline, error) {
 	if err := checkRouteGroups(specs, routes); err != nil {
 		return nil, err
 	}
+	if err := checkMainPackageRoutes(specs, routes); err != nil {
+		return nil, err
+	}
 
 	pipelines := make([]*pipeline, len(specs))
 	for i, spec := range specs {
@@ -153,6 +159,39 @@ func checkRouteGroups(specs []*load.Spec, routes []*route.Route) error {
 			continue
 		}
 		msgs = append(msgs, fmt.Sprintf("%s: servo: group %q is not declared by any injector — declare it with servo.Group(%q) inside servo.HTTP(...)", rt.Pos, rt.Group, rt.Group))
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("servo: %d diagnostic(s):\n\n%s", len(msgs), strings.Join(msgs, "\n"))
+}
+
+// checkMainPackageRoutes errors when a route's handler lives in a package
+// main that no injector serves. Nothing can import a main package, so such
+// a handler is reachable only from an injector in that same package —
+// every other injector skips it (resolve.servableHandler) — and a main
+// package whose own spec declares no servo.HTTP(), or that has no spec at
+// all, leaves the route silently unserved, which is the failure mode the
+// reserved prefix exists to prevent. Module-wide like checkRouteGroups,
+// and for the same reason.
+func checkMainPackageRoutes(specs []*load.Spec, routes []*route.Route) error {
+	byPkg := map[string]*load.Spec{}
+	for _, s := range specs {
+		byPkg[s.InjectorPkg.PkgPath] = s
+	}
+	var msgs []string
+	for _, rt := range routes {
+		pkg := rt.Func.Pkg()
+		if pkg == nil || pkg.Name() != "main" {
+			continue
+		}
+		spec, ok := byPkg[pkg.Path()]
+		switch {
+		case !ok:
+			msgs = append(msgs, fmt.Sprintf("%s: servo: route %s %s is declared in package main (%s), which no other package can import, and that package has no servo.Build(...) to serve it — move the handler to an importable package, or give %s an injector that declares servo.HTTP()", rt.Pos, rt.Method, rt.Pattern, pkg.Path(), pkg.Path()))
+		case spec.HTTP == nil:
+			msgs = append(msgs, fmt.Sprintf("%s: servo: route %s %s is declared in package main (%s), which no other package can import, and that package's injector declares no servo.HTTP() — add servo.HTTP() to its spec, or move the handler to an importable package", rt.Pos, rt.Method, rt.Pattern, pkg.Path()))
+		}
 	}
 	if len(msgs) == 0 {
 		return nil
@@ -279,7 +318,7 @@ func findNode(resolved *resolve.Resolved, query string) (*resolve.Node, error) {
 	}
 	var matches []*resolve.Node
 	for _, n := range all {
-		if strings.HasSuffix(n.Key.Type, query) {
+		if matchesSuffix(n.Key.Type, query) {
 			matches = append(matches, n)
 		}
 	}
@@ -295,6 +334,26 @@ func findNode(resolved *resolve.Resolved, query string) (*resolve.Node, error) {
 		}
 		return nil, fmt.Errorf("servo: %q matches multiple nodes, be more specific: %s", query, strings.Join(names, ", "))
 	}
+}
+
+// matchesSuffix reports whether query names typ by its tail, with the
+// match starting at a boundary: `api.Server` is `*example.com/app/api.Server`
+// but not `*example.com/app/otherapi.Server`, which a bare suffix test
+// would call ambiguous. The characters that can precede a name segment in
+// a type string are a path separator, a dot, a pointer star, and the
+// bracket, comma and space of a type-argument list.
+func matchesSuffix(typ, query string) bool {
+	if !strings.HasSuffix(typ, query) {
+		return false
+	}
+	if len(typ) == len(query) {
+		return true
+	}
+	switch typ[len(typ)-len(query)-1] {
+	case '/', '.', '*', '[', ',', ' ':
+		return true
+	}
+	return false
 }
 
 // allNodes is every resolved node the user could ask about: the app's

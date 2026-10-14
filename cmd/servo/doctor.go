@@ -63,6 +63,9 @@ func runDoctor(cfg load.Config) error {
 	if err := checkRouteGroups(specs, routes); err != nil {
 		report(false, "route groups: %v", err)
 	}
+	if err := checkMainPackageRoutes(specs, routes); err != nil {
+		report(false, "routes in package main: %v", err)
+	}
 
 	// Routes with no server are not an error — a variant spec may declare
 	// servo.HTTP() under flags this run wasn't given — but silently unserved
@@ -95,10 +98,20 @@ func runDoctor(cfg load.Config) error {
 		}
 		report(true, "generated file present: %s", outPath)
 
-		if err := checkPipeline(pipelineFor(loaded, caps, routes, configs, spec)); err != nil {
+		pl := pipelineFor(loaded, caps, routes, configs, spec)
+		if err := checkPipeline(pl); err != nil {
 			report(false, "generated file is stale (run %s): %v", regenerateCommand(spec.Variant), err)
 		} else {
 			report(true, "generated file matches a fresh generation")
+		}
+		// The override variant is checked the same way, and a leftover one
+		// — written when the spec still declared an Override — is a FAIL:
+		// nothing regenerates it, so it drifts from the moment it is
+		// orphaned, like a tagged variant whose spec was deleted.
+		if err := checkTestVariant(pl); err != nil {
+			report(false, "override variant: %v", err)
+		} else if len(spec.Overrides) > 0 {
+			report(true, "override variant present: %s, matches a fresh generation", filepath.Join(filepath.Dir(spec.Pos.Filename), variantFileName(spec.Variant, true)))
 		}
 		if trackedByGit(cfg.Dir, outPath) {
 			report(true, "generated file is tracked by git")

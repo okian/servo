@@ -171,10 +171,14 @@ type resolver struct {
 	configByKey    map[graph.Key]*graph.ConfigDecl
 	configNodes    []*Node
 	activeScope    *Scope
-	traceIn        *TraceInput
-	traceByKey     map[graph.Key]*load.TraceDecl
-	traceUsed      map[graph.Key]bool
-	traceNodes     []*Node
+	// injectorPath is the injector package's import path, read off the
+	// spec, or "" for a Spec built by hand. The HTTP pass needs it to tell
+	// which package-main handlers are this injector's own.
+	injectorPath string
+	traceIn      *TraceInput
+	traceByKey   map[graph.Key]*load.TraceDecl
+	traceUsed    map[graph.Key]bool
+	traceNodes   []*Node
 	// overrideVariant is Input.OverrideVariant: the unused-declaration
 	// checks step aside, and Resolved.Supplied carries only the used values.
 	overrideVariant bool
@@ -218,6 +222,9 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		traceByKey:      make(map[graph.Key]*load.TraceDecl),
 		traceUsed:       make(map[graph.Key]bool),
 		overrideVariant: in.OverrideVariant,
+	}
+	if in.Spec.InjectorPkg != nil {
+		r.injectorPath = in.Spec.InjectorPkg.PkgPath
 	}
 	for _, c := range in.Candidates {
 		r.byResult[c.Result] = append(r.byResult[c.Result], c)

@@ -37,6 +37,15 @@ func main() {
 // second one panics. It returns the message rather than printing and
 // exiting so the decision can be tested without a subprocess.
 func inheritedTagsRefusal(args []string) (string, bool) {
+	// Driven by the go command — `go vet -vettool=servo-vet` hands the
+	// tool one .cfg file describing packages it has already loaded under
+	// the right tags, and forwards the -tags flag along with it. That is
+	// the invocation the refusal below points at, so it must pass.
+	for _, arg := range args {
+		if strings.HasSuffix(arg, ".cfg") {
+			return "", false
+		}
+	}
 	for i, arg := range args {
 		name, value, hasValue := strings.Cut(arg, "=")
 		if name != "-tags" && name != "--tags" {

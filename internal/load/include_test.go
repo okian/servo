@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // includeModulePath is the module path every fixture in this file uses. It
@@ -883,5 +884,137 @@ func Wire() {
 	_, err := findSpecIn(t, dir)
 	if err == nil || !strings.Contains(err.Error(), "declared twice") {
 		t.Fatalf("got err=%v, want a 'declared twice' error: a local Bind above the Include is ambiguous, not an override", err)
+	}
+}
+
+// TestLocalDeclarationSupersedesEveryIncludedKind extends the rule above
+// to the declarations that used to collide instead: a Value, a
+// ConfigFile, a Scoped (policy included), an HTTP and an Extract written
+// after the Include replace the shared one, so a set can carry a module's
+// defaults and one injector can still set its own linger window or read
+// its own config file.
+func TestLocalDeclarationSupersedesEveryIncludedKind(t *testing.T) {
+	spec, err := findSpecIn(t, writeIncludeModule(t, map[string]string{
+		"wiring/wiring.go": `//go:build servoinject
+
+package wiring
+
+import (
+	"time"
+
+	"example.com/inc/conf"
+	"example.com/inc/memory"
+	"example.com/inc/store"
+	"github.com/okian/servo/v3/servo"
+)
+
+func Shared() []servo.Marker {
+	return []servo.Marker{
+		servo.Value[conf.Flags](),
+		servo.ConfigFile("shared.yaml"),
+		servo.Scoped[*memory.Mem, store.Store](servo.Linger(time.Minute)),
+		servo.HTTP(servo.Group("telemetry")),
+		servo.Extract[*memory.Mem](),
+	}
+}
+`,
+		"spec/spec.go": `//go:build servoinject
+
+package spec
+
+import (
+	"time"
+
+	"example.com/inc/api"
+	"example.com/inc/conf"
+	"example.com/inc/memory"
+	"example.com/inc/store"
+	"example.com/inc/wiring"
+	"github.com/okian/servo/v3/servo"
+)
+
+func Wire() {
+	servo.Build(
+		servo.Include(wiring.Shared),
+		servo.Root[*api.Server](),
+		servo.Value[conf.Flags](),
+		servo.ConfigFile("local.json"),
+		servo.Scoped[*memory.Mem, store.Store](servo.Linger(time.Hour)),
+		servo.HTTP(),
+		servo.Extract[*memory.Mem](),
+	)
+}
+`,
+	}))
+	if err != nil {
+		t.Fatalf("FindSpec: %v", err)
+	}
+	if len(spec.Values) != 1 || spec.Values[0].Included {
+		t.Errorf("Values = %+v, want the local declaration alone", spec.Values)
+	}
+	if spec.ConfigFile == nil || spec.ConfigFile.Path != "local.json" || spec.ConfigFile.Included {
+		t.Errorf("ConfigFile = %+v, want the local local.json", spec.ConfigFile)
+	}
+	if len(spec.Scopes) != 1 || spec.Scopes[0].Linger != time.Hour || spec.Scopes[0].Included {
+		t.Errorf("Scopes = %+v, want the local declaration with its own linger window", spec.Scopes)
+	}
+	if spec.HTTP == nil || len(spec.HTTP.Groups) != 0 || spec.HTTP.Included {
+		t.Errorf("HTTP = %+v, want the local declaration, which declares no group", spec.HTTP)
+	}
+	if len(spec.Extracts) != 1 || spec.Extracts[0].Included {
+		t.Errorf("Extracts = %+v, want the local declaration alone", spec.Extracts)
+	}
+}
+
+// TestIncludedDeclarationsStayMarkedIncluded pins the half the rule
+// depends on: a declaration that arrived through an Include has to carry
+// the mark, or the local one that follows is refused as a duplicate.
+func TestIncludedDeclarationsStayMarkedIncluded(t *testing.T) {
+	spec, err := findSpecIn(t, writeIncludeModule(t, map[string]string{
+		"wiring/wiring.go": `//go:build servoinject
+
+package wiring
+
+import (
+	"example.com/inc/conf"
+	"example.com/inc/memory"
+	"example.com/inc/store"
+	"github.com/okian/servo/v3/servo"
+)
+
+func Shared() []servo.Marker {
+	return []servo.Marker{
+		servo.Value[conf.Flags](),
+		servo.ConfigFile("shared.yaml"),
+		servo.Scoped[*memory.Mem, store.Store](),
+		servo.HTTP(),
+		servo.Extract[*memory.Mem](),
+	}
+}
+`,
+		"spec/spec.go": `//go:build servoinject
+
+package spec
+
+import (
+	"example.com/inc/api"
+	"example.com/inc/wiring"
+	"github.com/okian/servo/v3/servo"
+)
+
+func Wire() {
+	servo.Build(
+		servo.Include(wiring.Shared),
+		servo.Root[*api.Server](),
+	)
+}
+`,
+	}))
+	if err != nil {
+		t.Fatalf("FindSpec: %v", err)
+	}
+	if !spec.Values[0].Included || !spec.ConfigFile.Included || !spec.Scopes[0].Included || !spec.HTTP.Included || !spec.Extracts[0].Included {
+		t.Errorf("an included declaration lost its mark: values=%v configfile=%v scopes=%v http=%v extracts=%v",
+			spec.Values[0].Included, spec.ConfigFile.Included, spec.Scopes[0].Included, spec.HTTP.Included, spec.Extracts[0].Included)
 	}
 }

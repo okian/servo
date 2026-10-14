@@ -3,27 +3,29 @@
 package main
 
 import (
-	"time"
-
 	"example.com/servoorders/internal/broker"
-	"example.com/servoorders/internal/broker/natsbroker"
 	"example.com/servoorders/internal/cache"
 	"example.com/servoorders/internal/domain"
-	"example.com/servoorders/internal/mocks"
 	"example.com/servoorders/internal/observability"
 	"example.com/servoorders/internal/repository"
-	"example.com/servoorders/internal/repository/postgres"
 	"example.com/servoorders/internal/resilience"
-	"example.com/servoorders/internal/session"
 	"example.com/servoorders/internal/transport/servoapi"
+	"example.com/servoorders/internal/wiring"
 	"github.com/okian/servo/v3/middleware"
 	"github.com/okian/servo/v3/servo"
 )
 
+// Everything below the transport — the notifier root, the session scope,
+// the four bindings and the four test overrides — is the same marker set
+// the other three injectors share, so it comes from internal/wiring like
+// theirs does. What is left here is what actually differs: no Root for a
+// transport, because servo.HTTP() emits the server and the handlers' own
+// parameters pull the services into the graph; the middleware chain; the
+// claims extractor; and the traced interfaces.
 func wire() {
 	servo.Build(
-		// No Root for the transport: servo.HTTP() emits the server, and
-		// the handlers' own parameters pull the services into the graph.
+		servo.Include(wiring.Shared),
+
 		// The middleware chain is the api transport's, in the same
 		// outermost-first order its server.go builds by hand — Tracer,
 		// Metrics and RateLimiter already had the wrap method, so they
@@ -43,21 +45,6 @@ func wire() {
 			),
 		),
 		servo.Extract[*servoapi.ClaimsExtractor](),
-
-		servo.Scoped[*session.Session, session.Sessions](
-			servo.Linger(5*time.Minute),
-			servo.Max(50_000),
-		),
-
-		servo.Bind[repository.OrderRepository, *postgres.Store](),
-		servo.Bind[repository.UserRepository, *postgres.Store](),
-		servo.Bind[broker.EventPublisher, *natsbroker.Publisher](),
-		servo.Bind[cache.OrderCache, *resilience.CircuitBreakerCache](),
-
-		servo.Override[repository.OrderRepository, *mocks.OrderRepositoryForServo](),
-		servo.Override[repository.UserRepository, *mocks.UserRepositoryForServo](),
-		servo.Override[cache.OrderCache, *mocks.OrderCacheForServo](),
-		servo.Override[broker.EventPublisher, *mocks.EventPublisherForServo](),
 
 		// Every consumer of these four interfaces gets a generated
 		// OpenTelemetry wrapper: one span per method call, a child of the

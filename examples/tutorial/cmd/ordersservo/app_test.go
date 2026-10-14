@@ -22,8 +22,11 @@ import (
 // middleware planting claims and the session key, the ClaimsExtractor, the
 // generated decoding, and the handlers.
 func TestFullAPIFlowThroughGeneratedTransport(t *testing.T) {
-	t.Setenv("POSTGRES_DSN", "unused-in-this-test")
-	t.Setenv("REDIS_ADDR", "unused-in-this-test")
+	// The same two settings cmd/orders's test needs, for the same reasons:
+	// the overrides removed the postgres and redis consumers, NATS_URL is
+	// still read by the notifier the shared wiring brings in (it is not
+	// behind an overridden interface, and this test never calls Run), and
+	// JWT_SECRET matters for real because auth.Issuer is unmocked.
 	t.Setenv("NATS_URL", "unused-in-this-test")
 	t.Setenv("JWT_SECRET", "test-secret")
 

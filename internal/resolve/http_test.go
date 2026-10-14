@@ -574,3 +574,97 @@ func TestResolveHTTPRejectsUnknownUseSelectors(t *testing.T) {
 		t.Fatalf("diagnostics:\n%s", text)
 	}
 }
+
+// TestResolveHTTPSkipsHandlersInAnotherPackageMain: a handler declared in
+// some other binary's main package is not this injector's to serve —
+// nothing can import a main package, so the adapter could not even name
+// it — and used to be emitted anyway, leaving `go build` to refuse the
+// generated file after `servo generate` had exited 0. Whether anything
+// serves such a route is the pipeline's module-wide question; here it is
+// simply filtered out, the way a route in an undeclared group is.
+func TestResolveHTTPSkipsHandlersInAnotherPackageMain(t *testing.T) {
+	_, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+
+	const otherMainSrc = `
+package main
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type PingResp struct{ OK bool }
+
+//servo:get /ping-from-main
+func PingFromMain(ctx context.Context) (servo.Json[*PingResp], error) { return nil, nil }
+
+func main() {}
+`
+	ctxPkg := loadPkg(t, "context")
+	httpPkg := loadPkg(t, "net/http")
+	servoPkg := loadPkg(t, graph.ServoPackagePath)
+	f, err := parser.ParseFile(fset, "cmd/other/main.go", otherMainSrc, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	conf := types.Config{Importer: importerFor(ctxPkg, httpPkg, servoPkg)}
+	info := &types.Info{Defs: map[*ast.Ident]types.Object{}, Uses: map[*ast.Ident]types.Object{}}
+	otherPkg, err := conf.Check("example.com/cmd/other", fset, []*ast.File{f}, info)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	other := &packages.Package{
+		Name: "main", PkgPath: "example.com/cmd/other",
+		Types: otherPkg, Fset: fset, Syntax: []*ast.File{f}, TypesInfo: info,
+		Module: &packages.Module{Path: "example.com", Main: true},
+	}
+	allRoutes, rdiags := route.Scan(append(pkgs, other), servoTypes)
+	if len(rdiags) != 0 {
+		t.Fatalf("scan diagnostics: %v", rdiags)
+	}
+	if len(allRoutes) != len(routes)+1 {
+		t.Fatalf("the main-package route was not scanned: %d routes", len(allRoutes))
+	}
+
+	candidates := []*graph.Provider{
+		findHTTPProvider(t, all, "NewRepo"),
+		findHTTPProvider(t, all, "NewHTTPConfig"),
+	}
+	in := Input{
+		Spec:       &load.Spec{InjectorPkg: &packages.Package{PkgPath: "example.com/httpapp"}},
+		Candidates: candidates,
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true, "example.com/cmd/other": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, allRoutes, "httpapp.Order", "main.PingFromMain")),
+	}
+	resolved, diags := Resolve(in)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics:\n%s", diagText(diags))
+	}
+	for _, hr := range resolved.HTTP.Routes {
+		if hr.Route.Name == "main.PingFromMain" {
+			t.Fatalf("a handler in another package main was planned for this injector: %+v", hr.Route)
+		}
+	}
+	if len(resolved.HTTP.Routes) != 1 || resolved.HTTP.Routes[0].Route.Name != "httpapp.Order" {
+		t.Fatalf("plan routes = %+v, want only httpapp.Order", resolved.HTTP.Routes)
+	}
+
+	// The injector living in that main package is the one that can call
+	// the handler, and does.
+	in.Spec = &load.Spec{InjectorPkg: &packages.Package{PkgPath: "example.com/cmd/other"}}
+	resolved, diags = Resolve(in)
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics for the owning injector:\n%s", diagText(diags))
+	}
+	var served bool
+	for _, hr := range resolved.HTTP.Routes {
+		served = served || hr.Route.Name == "main.PingFromMain"
+	}
+	if !served {
+		t.Fatalf("the owning injector does not serve its own main-package handler: %+v", resolved.HTTP.Routes)
+	}
+}

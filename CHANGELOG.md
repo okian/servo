@@ -31,6 +31,31 @@ companion files; nothing it changes is breaking under the rules above. A graph d
 `//servo:config`, `servo.HTTP()` or `servo.Trace` emits a byte-identical file.
 
 ### Added
+- **`servo generate` compiles what it writes.** After the files are on disk, the injector
+  packages — and the config packages that gained a companion — are loaded once more under the
+  configuration the generated files are gated for, with the fresh files overlaid, and a compile
+  error positioned inside one of them fails the run with the compiler's own message. The
+  emitter formats its output but never type-checked it, which is how two of the defects fixed
+  below reached `go build` with `servo generate` reporting success. The file stays on disk, since
+  the broken output is what a bug report needs; a package whose imports `go list` cannot resolve
+  yet (the first generated `errgroup` or decoder import, before `go mod tidy`) is skipped rather
+  than judged.
+- **`servo check` compares the override variant.** `servo_gen_test.go` was the one generated file
+  `check` never looked at. It is now diffed exactly as `servo_gen.go` is, and a test variant left
+  behind by a spec that no longer declares `servo.Override` is refused — `generate` removes such
+  a leftover, with a note on stderr, since nothing would ever regenerate it. `doctor` reports the
+  same three states.
+- **`why` and `explain` attribute HTTP-only dependencies.** A node only a handler, a `servo.Use`
+  attachment, a `servo.Extract` or `servo.HTTP()` itself pulls in descends from no `servo.Root`;
+  `why` used to call it unreachable and `explain` listed no dependents. Both now name the
+  declaration — `root  handler api.Order, POST /order/{category}/` — and `why --json` carries it
+  as the array's first element.
+- **`HTTPConfig.ReadHeaderTimeout`**, on the listener type too, passed through to
+  `net/http.Server`. Zero means none, like the other timeouts; set it on anything internet-facing.
+- **Every declaration kind can be superseded locally.** A `Value`, `ConfigFile`, `Scoped` (policy
+  included), `HTTP` or `Extract` written after a `servo.Include` now replaces the included one,
+  the rule `Bind`, `Override` and `Trace` already followed; before, each of those was "declared
+  twice", so a shared set could not carry a scope policy one injector needed to change.
 - **`servo.Trace[I]()`: a generated OpenTelemetry wrapper around an interface.** Declared in
   the spec, per injector, the marker makes every consumer of `I` receive an emitted decorator in
   place of whatever `I` resolves to — a `Bind`, a structural match, a `Value`, or in the test
@@ -178,6 +203,29 @@ companion files; nothing it changes is breaking under the rules above. A graph d
   `servo.ConfigFile` joins the markers flagged outside `servoinject`-tagged files.
 
 ### Changed
+- **A request body over the limit is a 413.** The emitted adapters answered `400 malformed
+  request body` for a JSON or form body that `http.MaxBytesReader` cut off, which told the client
+  to fix its syntax. The `*http.MaxBytesError` is now recognised and answered with
+  `413 request body too large`, through one emitted helper, before the generic 400.
+- **An extractor's status under 400 is the code alone.** An extractor returns a value or an
+  error, never a response, so a 2xx or 3xx it returns in the error position used to be written as
+  a JSON error body under that code. It is now the status with no body, the way `nil,
+  servo.Status.NO_CONTENT` is for a handler.
+- **`Ready` drops for a group the moment `Shutdown` starts draining it**, instead of reporting a
+  listener as bound until the process exits.
+- **`servo config` prints absolute positions**, like `explain`, `why` and `list` — the table is for
+  a person and their editor; only `graph` and the generated file carry module-relative ones.
+- **`explain`, `why` and `config` match a short type name at a segment boundary**: `api.Server`
+  no longer also matches `otherapi.Server`, which made the short form ambiguous in exactly the
+  modules with enough packages to want it.
+- **The stale-file diff trims the common prefix and suffix** before its quadratic core runs, so a
+  one-line change in a fifteen-hundred-line generated file no longer costs a twenty-megabyte
+  table, and a ten-thousand-line one no longer costs a gigabyte.
+- **`examples/variants` keeps its `go:generate` directives in an untagged `servo_generate.go`**,
+  through `go tool servo`, the shape `servo init` scaffolds and the only one `go generate ./...`
+  ever reaches; the module gained the `tool` directive and a `go.sum` for it. The tutorial's
+  `cmd/ordersservo` includes `internal/wiring` like the other three injectors instead of
+  copy-pasting the shared set, which also brings the notifier root it had silently dropped.
 - **The tutorial runs on the directive.** `examples/tutorial` dropped its
   hand-rolled `internal/config` package (and with it the `caarlos0/env`
   dependency): every package's config now carries `//servo:config`, the notifier
@@ -226,6 +274,27 @@ companion files; nothing it changes is breaking under the rules above. A graph d
   version 5, which v0.49.0 could not read).
 
 ### Fixed
+- **A `//servo:` handler in another `package main` no longer breaks the build.** A directive on a
+  function beside a sibling binary's `main.go` was served by every HTTP injector in the module,
+  which meant importing a main package: `servo generate` exited 0 and `go build` failed with "is
+  a program, not an importable package". Such a handler is now served only by its own package's
+  injector — every other injector skips it — and a main package whose injector declares no
+  `servo.HTTP()`, or that has none, is a diagnostic at the directive. Constructors in another
+  main package are likewise rejected from the candidate index (`declared in another package
+  main, which nothing can import`) instead of being selected into a file that could not compile.
+- **An extracted parameter no longer shadows the handler's package.** An extractor producing
+  `*user.User` for a handler in package `user` emitted `user, err := …Extract(r)` followed by
+  `user.Me(r.Context(), user)`, which the compiler reads as a method on the local. The adapter's
+  locals are now allocated clear of every import identifier the body writes.
+- **A scope member no longer shadows its own package in the entry's `build()`.** The same
+  collision the constructor has guarded against since the shadowing fix: `room :=
+  room.NewRoom(e.key)` hid the package from every later member built through it. Members get the
+  same qualified-by-package names nodes get, and the entry's allocator claims the standard-library
+  identifiers `build()` hard-codes.
+- **`go vet -tags=prod -vettool=servo-vet` works.** The go command forwards `-tags` to the tool
+  along with the `.cfg` file it has already loaded packages for, and servo-vet's own refusal of
+  the flag — which recommends exactly that invocation — refused it too. A run driven by the go
+  command is now recognised and let through.
 - **An `Override` can no longer fail a spec that is fine in production.** The `NewTestApp`
   resolve ran the same unused-declaration checks as the production one, so a mock that takes
   fewer things than the real implementation — the ordinary mock — tripped "declared, but nothing
