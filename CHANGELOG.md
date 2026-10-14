@@ -23,7 +23,7 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
-## [Unreleased]
+## [3.4.0] - 2026-10-14
 
 **Why MINOR.** This release adds comment directives (`//servo:config` and the `//servo:` HTTP
 routes), several markers, two packages (`middleware`, `servovet`), a subcommand, and generated
