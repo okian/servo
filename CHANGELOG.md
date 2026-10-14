@@ -30,18 +30,17 @@ diagnostic wording, or a case that used to be a diagnostic now resolving success
   `v*` tag push. A plan job checks that the tag is a semantic version whose major matches go.mod's
   `/vN` suffix and that this file has a section for it — a tag with no section fails before
   anything is built, with a message saying to cut the changelog first — and lists the ports from
-  `go tool dist list`: every GOOS/GOARCH the toolchain can link without cgo — which drops ios and
-  three of the four android ports — less js/wasm and wasip1/wasm, where nothing could run the go
-  command for either binary. One build job per operating system then
-  cross-compiles `servo` and `servo-vet` for each of its architectures (linux/arm twice, as ARMv6
-  for the Raspberry Pi 1 and Zero and as ARMv7), refuses any binary whose stamped module version
-  is not the tag, and archives them with the license. The root module's build, vet and tests run
-  alongside. The publish job checks that every port's archive arrived, writes a `sha256` checksums
-  file, and publishes the release — created as a draft, made public only once every asset is
-  attached — with that changelog section as the notes. A `workflow_dispatch` input re-runs it for
-  an existing tag, so a failed upload never calls for re-pushing a tag the module proxy has
-  already cached. `go install github.com/okian/servo/v3/cmd/servo@<tag>` remains the primary
-  install; the archives are for machines without a Go toolchain.
+  `go tool dist list`: every architecture the toolchain supports on Linux, macOS and Windows. One
+  build job per operating system then cross-compiles `servo` and `servo-vet` for each of its
+  architectures (linux/arm twice, as ARMv6 for the Raspberry Pi 1 and Zero and as ARMv7), refuses
+  any binary whose stamped module version is not the tag, and archives them with the license. The
+  root module's build, vet and tests run alongside. The publish job checks that every port's
+  archive arrived, writes a `sha256` checksums file, and publishes the release — created as a
+  draft, made public only once every asset is attached — with that changelog section as the notes.
+  A `workflow_dispatch` input re-runs it for an existing tag, so a failed upload never calls for
+  re-pushing a tag the module proxy has already cached. `go install
+  github.com/okian/servo/v3/cmd/servo@<tag>` remains the primary install; the archives are for
+  machines without a Go toolchain.
 
 ## [3.4.0] - 2026-10-14
 

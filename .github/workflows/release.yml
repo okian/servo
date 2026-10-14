@@ -1,10 +1,9 @@
 name: Release
 
-# Every version tag becomes a GitHub release: one archive per port of the
-# Go toolchain — every GOOS/GOARCH `go tool dist list` names, less the few
-# on which the binaries could not work — each holding the two binaries this
-# module ships, servo and servo-vet, plus a checksums file, with the tag's
-# section of CHANGELOG.md as the notes.
+# Every version tag becomes a GitHub release: one archive per architecture
+# the Go toolchain supports on Linux, macOS and Windows, each holding the
+# two binaries this module ships, servo and servo-vet, plus a checksums
+# file, with the tag's section of CHANGELOG.md as the notes.
 #
 # `go install github.com/okian/servo/v3/cmd/servo@<tag>` stays the primary
 # way to get the CLI: nothing to download by hand, and always the version a
@@ -118,7 +117,7 @@ jobs:
             tail -n +2 "$RUNNER_TEMP/section.md"
             printf '\n---\n\n'
             printf 'With a Go toolchain, `go install github.com/okian/servo/v3/cmd/servo@%s` installs this exact version, and `servo version` prints it. ' "$TAG"
-            printf 'The archives hold the same `servo` and `servo-vet` binaries, built with %s for every port the toolchain can link without cgo, less js/wasm and wasip1/wasm, where nothing could run the go command for them; verify a download with `sha256sum --ignore-missing -c servo_%s_checksums.txt`. ' "$(go env GOVERSION)" "$TAG"
+            printf 'The archives hold the same `servo` and `servo-vet` binaries, built with %s for every architecture the toolchain supports on Linux, macOS and Windows; verify a download with `sha256sum --ignore-missing -c servo_%s_checksums.txt`. ' "$(go env GOVERSION)" "$TAG"
             printf 'The versioning rules these notes refer to, and every earlier release, are in [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md).\n' "$REPO" "$TAG"
           } > "$RUNNER_TEMP/notes.md"
 
@@ -130,22 +129,20 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-      # One build job per operating system, each handed that system's
-      # architectures: every port the toolchain can link without cgo, bar
-      # the two where no process can be spawned. Both binaries exist to run
-      # the go command — servo through go/packages, servo-vet under go vet —
-      # which rules out js/wasm and wasip1/wasm; ios and android's 386,
-      # amd64 and arm ports refuse to link at all without cgo (android/arm64
-      # links fine, and Termux gives it a go command to run). Everything
-      # else gets an archive, whatever its size. A port Go adds that needs
-      # cgo will fail its build job, and so block the release, until it is
-      # listed here — which is the point: a platform silently dropped is the
-      # failure nobody notices.
+      # One build job per operating system, each handed every architecture
+      # the toolchain supports for it, so a new linux port joins the next
+      # release by itself. Linux, macOS and Windows are the systems the CLI
+      # is run on. Every other port Go has — the BSDs, illumos and Solaris,
+      # AIX, Plan 9, android/arm64 — also builds without cgo (checked
+      # against go1.27.2), so adding one is a word in the filter below; ios
+      # and android's other ports refuse to link without cgo, and nothing on
+      # js/wasm or wasip1/wasm could spawn the go command both binaries
+      # exist to run.
       - name: List the ports
         id: ports
         run: |
           set -euo pipefail
-          ports=$(go tool dist list -json | jq -c '[ .[] | select(.GOARCH != "wasm" and .GOOS != "ios" and (.GOOS != "android" or .GOARCH == "arm64")) ]')
+          ports=$(go tool dist list -json | jq -c '[ .[] | select(.GOOS == "linux" or .GOOS == "darwin" or .GOOS == "windows") ]')
           matrix=$(jq -c 'group_by(.GOOS) | map({goos: .[0].GOOS, goarchs: (map(.GOARCH) | join(" "))}) | {include: .}' <<< "$ports")
           # One archive per port, plus the extra ARMv6 build of linux/arm
           # the build job makes, so publish can tell a complete set from one
@@ -193,9 +190,13 @@ jobs:
       # needs all of them, so one failure still means no release.
       fail-fast: false
       matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    # Not GOOS itself: a job-level variable reaches every step, and
+    # setup-go runs `go env` under it, which fails for a system without the
+    # runner's own architecture (there is no aix/amd64). The build step sets
+    # GOOS for the go commands that should see it.
     env:
-      GOOS: ${{ matrix.goos }}
-      GOARCHS: ${{ matrix.goarchs }}
+      TARGET_GOOS: ${{ matrix.goos }}
+      TARGET_GOARCHS: ${{ matrix.goarchs }}
     steps:
       - name: Check out the tag
         uses: actions/checkout@v7
@@ -223,15 +224,19 @@ jobs:
       - name: Build the archives
         run: |
           set -euo pipefail
-          export CGO_ENABLED=0
+          export CGO_ENABLED=0 GOOS="$TARGET_GOOS"
+          # Both outside the checkout. An archive written into it is an
+          # untracked file, `git status` reports it, and the go command
+          # stamps every binary built after the first as <tag>+dirty.
+          out="$RUNNER_TEMP/dist"
           stage="$RUNNER_TEMP/stage"
-          mkdir -p dist "$stage"
+          mkdir -p "$out" "$stage"
           ext=""
           if [ "$GOOS" = windows ]; then
             ext=".exe"
           fi
 
-          read -r -a archs <<< "$GOARCHS"
+          read -r -a archs <<< "$TARGET_GOARCHS"
           for GOARCH in "${archs[@]}"; do
             export GOARCH
 
@@ -265,32 +270,37 @@ jobs:
 
               for cmd in servo servo-vet; do
                 go build -trimpath -ldflags='-s -w' -o "$dir/$cmd$ext" "./cmd/$cmd"
-                # `go version -m` reads the stamp out of any binary, cross-
-                # compiled or not, without running it. A missing tag in the
-                # checkout would ship a binary that calls itself (devel).
+                # `go version -m` reads the stamp out of an ELF, Mach-O or PE
+                # binary — every format these three systems use — cross-
+                # compiled or not, without running it. It cannot read plan9
+                # or aix executables, so adding either system needs another
+                # check. A checkout without the tag would ship a binary that
+                # calls itself (devel); a checkout with a stray file in it,
+                # one that calls itself +dirty — hence the status listing.
                 stamped=$(go version -m "$dir/$cmd$ext" | awk '$1 == "mod" { print $3 }')
                 if [ "$stamped" != "$TAG" ]; then
                   echo "::error::$name/$cmd$ext carries module version '$stamped', not $TAG"
+                  git status --short
                   exit 1
                 fi
               done
               cp LICENSE "$dir/"
 
               if [ "$GOOS" = windows ]; then
-                (cd "$dir" && zip -q "$GITHUB_WORKSPACE/dist/$name.zip" "servo$ext" "servo-vet$ext" LICENSE)
+                (cd "$dir" && zip -q "$out/$name.zip" "servo$ext" "servo-vet$ext" LICENSE)
               else
-                tar -C "$dir" -czf "dist/$name.tar.gz" servo servo-vet LICENSE
+                tar -C "$dir" -czf "$out/$name.tar.gz" servo servo-vet LICENSE
               fi
               echo "built $name"
             done
           done
-          ls -l dist
+          ls -l "$out"
 
       - name: Keep the archives for the publish job
         uses: actions/upload-artifact@v7
         with:
           name: archives-${{ matrix.goos }}
-          path: dist/*
+          path: ${{ runner.temp }}/dist/*
           retention-days: 1
           if-no-files-found: error
 
