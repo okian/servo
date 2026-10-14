@@ -1,0 +1,362 @@
+name: Release
+
+# Every version tag becomes a GitHub release: one archive per port of the
+# Go toolchain — every GOOS/GOARCH `go tool dist list` names, less the few
+# on which the binaries could not work — each holding the two binaries this
+# module ships, servo and servo-vet, plus a checksums file, with the tag's
+# section of CHANGELOG.md as the notes.
+#
+# `go install github.com/okian/servo/v3/cmd/servo@<tag>` stays the primary
+# way to get the CLI: nothing to download by hand, and always the version a
+# consumer pinned in go.mod. The archives are for the places that have no
+# Go toolchain, or must not build at install time — a CI image that only
+# runs `servo check`, a container stage that copies a binary in, a machine
+# whose egress rules block the module proxy.
+on:
+  push:
+    tags: [ 'v[0-9]*' ]
+  # Re-run for a tag that already exists — after a failed upload or a
+  # runner outage — instead of deleting and re-pushing the tag. The module
+  # proxy caches a version the first time anyone asks for it, so a re-pushed
+  # tag on a different commit would hand `go install` and this release two
+  # different binaries under one version.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release, e.g. v3.4.0'
+        required: true
+        type: string
+
+# Only the publish job writes anything, and it says so itself.
+permissions:
+  contents: read
+
+# A dispatch for the tag a push is already releasing waits its turn: two
+# runs racing to create one release would each trip over the other's draft.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+  # Same reason as go.yml: build with the toolchain setup-go installed, not
+  # one the go command downloads because a go directive outranks it. Here
+  # it also fixes which ports exist: `go tool dist list` is the toolchain's.
+  GOTOOLCHAIN: local
+
+jobs:
+  # The tag is the last step of a release, not the first. Everything a
+  # release needs to already be true is checked here, before a single
+  # binary is built, with a message that says what to fix; and the list of
+  # ports every other job works from is decided once, here.
+  plan:
+    name: Check the tag and list the ports
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.ports.outputs.matrix }}
+      archives: ${{ steps.ports.outputs.archives }}
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Check the tag against go.mod and CHANGELOG.md
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # vMAJOR.MINOR.PATCH, optionally -pre-release: the shapes a Go
+          # module version can take.
+          if ! [[ "$TAG" =~ ^v([0-9]+)\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::tag $TAG is not a semantic version (vMAJOR.MINOR.PATCH, optionally -pre-release)"
+            exit 1
+          fi
+          major="${BASH_REMATCH[1]}"
+          prerelease="${BASH_REMATCH[2]}"
+
+          # CHANGELOG.md's versioning section: a release's tag and its
+          # import path's version suffix always match. A v4 tag on a /v3
+          # module is not a version the go command would ever resolve.
+          module=$(go list -m)
+          suffix=$(printf '%s' "$module" | sed -nE 's#^.*(/v[0-9]+)$#\1#p')
+          want=""
+          if [ "$major" -ge 2 ]; then
+            want="/v$major"
+          fi
+          if [ "$suffix" != "$want" ]; then
+            echo "::error::tag $TAG belongs to a module path ending in '$want', but go.mod declares $module"
+            exit 1
+          fi
+
+          # The notes are the changelog section for this version, verbatim.
+          # A pre-release has no section of its own: it is the unreleased
+          # work, so it takes that section instead.
+          section() { awk -v v="$1" '/^## /{p = ($2 == "[" v "]")} p' CHANGELOG.md; }
+          version="${TAG#v}"
+          section "$version" > "$RUNNER_TEMP/section.md"
+          if ! [ -s "$RUNNER_TEMP/section.md" ] && [ -n "$prerelease" ]; then
+            section Unreleased > "$RUNNER_TEMP/section.md"
+          fi
+          if ! [ -s "$RUNNER_TEMP/section.md" ]; then
+            echo "::error::CHANGELOG.md has no '## [$version]' section. Rename [Unreleased] to it, commit, and tag that commit."
+            exit 1
+          fi
+          echo "release notes: $(wc -l < "$RUNNER_TEMP/section.md") lines from CHANGELOG.md [$version]"
+
+          # The section's heading repeats the version, which is already the
+          # release's title. A footer says how to install and verify; its
+          # backticks are Markdown code spans, not substitutions.
+          # shellcheck disable=SC2016
+          {
+            tail -n +2 "$RUNNER_TEMP/section.md"
+            printf '\n---\n\n'
+            printf 'With a Go toolchain, `go install github.com/okian/servo/v3/cmd/servo@%s` installs this exact version, and `servo version` prints it. ' "$TAG"
+            printf 'The archives hold the same `servo` and `servo-vet` binaries, built with %s for every port the toolchain can link without cgo, less js/wasm and wasip1/wasm, where nothing could run the go command for them; verify a download with `sha256sum --ignore-missing -c servo_%s_checksums.txt`. ' "$(go env GOVERSION)" "$TAG"
+            printf 'The versioning rules these notes refer to, and every earlier release, are in [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md).\n' "$REPO" "$TAG"
+          } > "$RUNNER_TEMP/notes.md"
+
+      - name: Keep the notes for the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: notes
+          path: ${{ runner.temp }}/notes.md
+          retention-days: 1
+          if-no-files-found: error
+
+      # One build job per operating system, each handed that system's
+      # architectures: every port the toolchain can link without cgo, bar
+      # the two where no process can be spawned. Both binaries exist to run
+      # the go command — servo through go/packages, servo-vet under go vet —
+      # which rules out js/wasm and wasip1/wasm; ios and android's 386,
+      # amd64 and arm ports refuse to link at all without cgo (android/arm64
+      # links fine, and Termux gives it a go command to run). Everything
+      # else gets an archive, whatever its size. A port Go adds that needs
+      # cgo will fail its build job, and so block the release, until it is
+      # listed here — which is the point: a platform silently dropped is the
+      # failure nobody notices.
+      - name: List the ports
+        id: ports
+        run: |
+          set -euo pipefail
+          ports=$(go tool dist list -json | jq -c '[ .[] | select(.GOARCH != "wasm" and .GOOS != "ios" and (.GOOS != "android" or .GOARCH == "arm64")) ]')
+          matrix=$(jq -c 'group_by(.GOOS) | map({goos: .[0].GOOS, goarchs: (map(.GOARCH) | join(" "))}) | {include: .}' <<< "$ports")
+          # One archive per port, plus the extra ARMv6 build of linux/arm
+          # the build job makes, so publish can tell a complete set from one
+          # that lost a job's upload.
+          count=$(jq 'length' <<< "$ports")
+          extra=$(jq '[ .[] | select(.GOOS == "linux" and .GOARCH == "arm") ] | length' <<< "$ports")
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "archives=$((count + extra))" >> "$GITHUB_OUTPUT"
+          echo "$count ports across $(jq '.include | length' <<< "$matrix") operating systems; $((count + extra)) archives"
+          jq -r '.include[] | "\(.goos): \(.goarchs)"' <<< "$matrix"
+
+  # go.yml runs on pushes to master, not on tags, and a tag can be pushed
+  # before — or without — its commit's run going green. The root module's
+  # own suite is the cheap part of that run and the part that covers the
+  # two binaries. Alongside the builds rather than before them: a failure
+  # here blocks the publish job just the same.
+  test:
+    name: Build, vet and test
+    needs: plan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Build, vet and test
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+  build:
+    name: Build ${{ matrix.goos }}
+    needs: plan
+    runs-on: ubuntu-latest
+    strategy:
+      # Every operating system reports its own result: one port that stops
+      # building should not hide the state of the others. The publish job
+      # needs all of them, so one failure still means no release.
+      fail-fast: false
+      matrix: ${{ fromJson(needs.plan.outputs.matrix) }}
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCHS: ${{ matrix.goarchs }}
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          # Since Go 1.24 the go command stamps the main module's version
+          # into each binary from the tag on HEAD. That stamp is what
+          # `servo version` prints and what the stale-file report tells two
+          # machines to compare, so the build below refuses a binary without
+          # it. The full clone carries every tag and the history behind it
+          # regardless of which event checked the commit out; the repository
+          # is small, since the tutorial's binaries are not committed.
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      # One archive per port, both binaries in each, files at the archive's
+      # root so `tar xzf … servo` drops the binary where you stand. Pure Go
+      # throughout, so CGO_ENABLED=0 cross-compiles every port from one
+      # runner, and -trimpath keeps the runner's paths out of panics and
+      # `servo version`'s VCS stamp alike.
+      - name: Build the archives
+        run: |
+          set -euo pipefail
+          export CGO_ENABLED=0
+          stage="$RUNNER_TEMP/stage"
+          mkdir -p dist "$stage"
+          ext=""
+          if [ "$GOOS" = windows ]; then
+            ext=".exe"
+          fi
+
+          read -r -a archs <<< "$GOARCHS"
+          for GOARCH in "${archs[@]}"; do
+            export GOARCH
+
+            # Every architecture's sub-architecture knob is left at its
+            # default, which is the most compatible setting there is
+            # (GOAMD64=v1, GO386=sse2, GOARM64=v8.0, GORISCV64=rva20u64,
+            # GOPPC64=power8, hard-float MIPS) — except GOARM, whose default
+            # of 7 leaves out the ARMv6 Raspberry Pi 1 and Zero. So arm is
+            # labelled with the level it was built for, and linux/arm, the
+            # only place that hardware runs Go, also ships a v6 build; a v6
+            # binary runs on v7 hardware too.
+            levels=("")
+            if [ "$GOARCH" = arm ]; then
+              levels=(7)
+              if [ "$GOOS" = linux ]; then
+                levels=(6 7)
+              fi
+            fi
+
+            for level in "${levels[@]}"; do
+              label="$GOARCH"
+              if [ -n "$level" ]; then
+                export GOARM="$level"
+                label="${GOARCH}v${level}"
+              else
+                unset GOARM
+              fi
+              name="servo_${TAG}_${GOOS}_${label}"
+              dir="$stage/$name"
+              mkdir -p "$dir"
+
+              for cmd in servo servo-vet; do
+                go build -trimpath -ldflags='-s -w' -o "$dir/$cmd$ext" "./cmd/$cmd"
+                # `go version -m` reads the stamp out of any binary, cross-
+                # compiled or not, without running it. A missing tag in the
+                # checkout would ship a binary that calls itself (devel).
+                stamped=$(go version -m "$dir/$cmd$ext" | awk '$1 == "mod" { print $3 }')
+                if [ "$stamped" != "$TAG" ]; then
+                  echo "::error::$name/$cmd$ext carries module version '$stamped', not $TAG"
+                  exit 1
+                fi
+              done
+              cp LICENSE "$dir/"
+
+              if [ "$GOOS" = windows ]; then
+                (cd "$dir" && zip -q "$GITHUB_WORKSPACE/dist/$name.zip" "servo$ext" "servo-vet$ext" LICENSE)
+              else
+                tar -C "$dir" -czf "dist/$name.tar.gz" servo servo-vet LICENSE
+              fi
+              echo "built $name"
+            done
+          done
+          ls -l dist
+
+      - name: Keep the archives for the publish job
+        uses: actions/upload-artifact@v7
+        with:
+          name: archives-${{ matrix.goos }}
+          path: dist/*
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [ plan, test, build ]
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the release and attaching its assets is the only write.
+      contents: write
+    env:
+      EXPECTED: ${{ needs.plan.outputs.archives }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Collect the archives
+        uses: actions/download-artifact@v8
+        with:
+          pattern: archives-*
+          merge-multiple: true
+          path: dist
+
+      - name: Collect the notes
+        uses: actions/download-artifact@v8
+        with:
+          name: notes
+          path: ${{ runner.temp }}/notes
+
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+
+          # `needs: build` means every job succeeded; this means every job's
+          # upload arrived. A release missing a platform would otherwise be
+          # the kind of failure nobody notices until someone on that
+          # platform does.
+          have=$(( $(find dist -maxdepth 1 -type f \( -name '*.tar.gz' -o -name '*.zip' \) | wc -l) ))
+          if [ "$have" -ne "$EXPECTED" ]; then
+            echo "::error::expected $EXPECTED archives from the build jobs, found $have"
+            ls -l dist
+            exit 1
+          fi
+          (cd dist && sha256sum -- * > "servo_${TAG}_checksums.txt")
+          ls -l dist
+
+          flags=(--title "$TAG" --notes-file "$RUNNER_TEMP/notes/notes.md")
+          if [[ "$TAG" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+
+          # A draft left behind by a failed run is replaced. A published
+          # release is not: its URL and checksums may already be in use, so
+          # rebuilding one is a deliberate act — delete it by hand, then
+          # dispatch this workflow for the tag.
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" = true ]; then
+              gh release delete "$TAG" --yes
+            else
+              echo "::error::release $TAG is already published; delete it by hand first if it must be rebuilt"
+              exit 1
+            fi
+          fi
+
+          # Created as a draft and published only once every asset is
+          # attached, so nobody sees — or is notified about — a release
+          # with half its files.
+          gh release create "$TAG" --draft --verify-tag "${flags[@]}" dist/*
+          gh release edit "$TAG" --draft=false
+          echo "published https://github.com/$GH_REPO/releases/tag/$TAG"
