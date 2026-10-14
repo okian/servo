@@ -23,7 +23,10 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
-## [Unreleased]
+## [3.4.1] - 2026-10-14
+
+**Why PATCH.** No change to `servo`/`servotest`'s exported API, the CLI, or generated code: this
+release is the release pipeline itself, CI and repository maintenance only.
 
 ### Added
 - **A version tag publishes a GitHub release.** `.github/workflows/release.yml` runs on every
