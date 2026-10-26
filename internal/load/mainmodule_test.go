@@ -270,6 +270,18 @@ func TestNonInjectorErrorsExcusesCallersOfAnUngeneratedInjector(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "undefined: undefinedHelper") {
 		t.Fatalf("NonInjectorErrors = %v, want the caller's own mistake reported", err)
 	}
+
+	// The same for mistakes that are no "undefined:" at all — a type
+	// mismatch, and a syntax error in another of the caller's files — which
+	// the pending injector cannot explain wherever they are.
+	mixed := writeLibraryInjectorModule(t, "\tvar _ int = \"not an int\"\n")
+	mustWriteFile(t, mixed, "cmd/app/a_broken.go", "package main\n\nfunc broken( {\n")
+	err = mustLoad(t, Config{Dir: mixed}).NonInjectorErrors()
+	for _, want := range []string{`"not an int"`, "a_broken.go:3:"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("NonInjectorErrors = %v, want the caller's %s reported", err, want)
+		}
+	}
 }
 
 // TestLoadExplainsWhereTheGoCommandCannotLoad covers the setup mistakes the

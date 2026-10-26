@@ -72,6 +72,7 @@ type DBAlias = *DB
 
 type Cache[T any] struct{}
 type Pair[K comparable, V any] struct{}
+type Getter[T any] interface{ Get() T }
 
 // A generic alias, instantiated, is the instantiated target.
 type CacheOf[T any] = Cache[T]
@@ -100,6 +101,10 @@ var (
 	structPlain   struct{ D *DB ` + "`json:\"d\"`" + ` }
 	ifaceAlias    interface{ Get(DBAlias) DBAlias }
 	ifacePlain    interface{ Get(*DB) *DB }
+	embedAlias    interface{ Getter[DBAlias]; Close() }
+	embedPlain    interface{ Getter[*DB]; Close() }
+	noArgsAlias   func() DBAlias
+	noArgsPlain   func() *DB
 	embeddedAlias struct{ Embedded }
 	embeddedPlain struct{ DB }
 )
@@ -128,6 +133,8 @@ var (
 		{"namedParams", "namedPlain"},
 		{"structAlias", "structPlain"},
 		{"ifaceAlias", "ifacePlain"},
+		{"embedAlias", "embedPlain"},
+		{"noArgsAlias", "noArgsPlain"},
 	} {
 		aliased, plain := typeOf(pair[0]), typeOf(pair[1])
 		if !types.Identical(aliased, plain) {
@@ -211,5 +218,34 @@ var (
 		if got := typeOf(name); got != want {
 			t.Errorf("TypeString(%s) = %q, want %q", name, got, want)
 		}
+	}
+}
+
+// TypeStringWith resolves aliases at every depth exactly as TypeString
+// does; only the qualifier is the caller's. A diagnostic that spells a type
+// the way a spec file writes it must still name the type its key names.
+func TestTypeStringWithResolvesAliasesUnderTheCallersQualifier(t *testing.T) {
+	const src = `
+package probe
+
+type DB struct{}
+type DBAlias = *DB
+
+type Cache[T any] struct{}
+
+var viaArg *Cache[DBAlias]
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "probe.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	pkg, err := (&types.Config{Importer: importer.Default()}).Check("example.com/probe", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	byName := func(p *types.Package) string { return p.Name() }
+	if got, want := TypeStringWith(pkg.Scope().Lookup("viaArg").Type(), byName), "*probe.Cache[*probe.DB]"; got != want {
+		t.Errorf("TypeStringWith(*Cache[DBAlias], by name) = %q, want %q", got, want)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"go/types"
 	"io/fs"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"testing"
@@ -158,5 +159,10 @@ func TestToolsVersionIsReadFromTheBinary(t *testing.T) {
 	}
 	if v := goVersion("."); !strings.HasPrefix(v, "go1.") {
 		t.Errorf("goVersion(.) = %q, want the go command's GOVERSION", v)
+	}
+	// Where the go command cannot even start, there is no release to name,
+	// and the message says "this Go release" instead.
+	if v := goVersion(filepath.Join(t.TempDir(), "missing")); v != "" {
+		t.Errorf("goVersion(a missing directory) = %q, want \"\"", v)
 	}
 }

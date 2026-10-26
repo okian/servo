@@ -57,6 +57,9 @@ func TestFindSpecConfigFileErrors(t *testing.T) {
 		{"not a literal", "cfgvar", "\t\tservo.ConfigFile(path),\n", "must be a string literal"},
 		{"duplicate", "cfgdup", "\t\tservo.ConfigFile(\"a.yaml\"),\n\t\tservo.ConfigFile(\"b.yaml\"),\n", "declared twice"},
 		{"empty path", "cfgempty", "\t\tservo.ConfigFile(\"\"),\n", "not a usable path"},
+		// Two paths do not type-check, but the spec is still read, and the
+		// parser names the shape instead of reading only the first.
+		{"two paths", "cfgtwo", "\t\tservo.ConfigFile(\"a.yaml\", \"b.yaml\"),\n", "servo.ConfigFile takes exactly one argument, a string literal path"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

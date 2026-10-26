@@ -217,6 +217,9 @@ func TestImplies(t *testing.T) {
 		{"//go:build servoinject && (prod || dev)\n\npackage spec\n", "prod", false},
 		{"//go:build servoinject && !prod\n\npackage spec\n", "prod", false},
 		{"//go:build servoinject && prod && dev\n\npackage spec\n", "dev", true},
+		// Past the enumeration ceiling the answer is no, even where it is
+		// yes: that costs a redundant conjunct, never a missing one.
+		{"//go:build servoinject && prod && " + strings.Join(manyTags(16), " && ") + "\n\npackage spec\n", "prod", false},
 	}
 	for _, c := range cases {
 		t.Run(c.src+" "+c.tag, func(t *testing.T) {
@@ -392,6 +395,10 @@ func TestConstraintsOverlap(t *testing.T) {
 		{"identical", "!servoinject && prod", "!servoinject && prod", true},
 		{"disjunction that still overlaps", "!servoinject && (prod || dev)", "!servoinject && dev", true},
 		{"unrelated tags overlap, since both can be set", "!servoinject && a", "!servoinject && b", true},
+		// Past the enumeration ceiling the answer is no, even for two
+		// identical constraints: a yes is a refusal to generate, and a real
+		// overlap still fails in the compiler.
+		{"past the enumeration ceiling", "!servoinject && " + strings.Join(manyTags(17), " && "), "!servoinject && " + strings.Join(manyTags(17), " && "), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

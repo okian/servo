@@ -666,6 +666,55 @@ func TestFindSpecRejectsBadHTTPOptions(t *testing.T) {
 			body: `	servo.Build(servo.HTTP(servo.Root[*mw.Recover]()))`,
 			want: "servo.Root is not a servo.HTTP option",
 		},
+		{
+			name: "an HTTP option held in a variable",
+			body: `	opt := servo.Group("x")
+	servo.Build(servo.HTTP(opt))`,
+			want: "servo.HTTP option is not a marker call",
+		},
+		{
+			name: "a call of another package inside HTTP",
+			body: `	servo.Build(servo.HTTP(mw.NewRecover()))`,
+			want: "not a servo marker call",
+		},
+		{
+			name: "Group without its argument",
+			body: `	servo.Build(servo.HTTP(servo.Group()))`,
+			want: "servo.Group expects exactly one argument",
+		},
+		{
+			name: "a Use selector held in a variable",
+			body: `	sel := servo.Group("x")
+	servo.Build(servo.HTTP(servo.Use[*mw.Auth](sel)))`,
+			want: "servo.Use selector is not a marker call",
+		},
+		{
+			name: "a call of another package as a Use selector",
+			body: `	servo.Build(servo.HTTP(servo.Use[*mw.Auth](mw.NewRecover())))`,
+			want: "not a servo marker call",
+		},
+		{
+			name: "non-constant group name in a Use selector",
+			body: `	name := "x"
+	servo.Build(servo.HTTP(servo.Use[*mw.Auth](servo.Group(name))))`,
+			want: "servo.Group's argument must be a constant string",
+		},
+		{
+			name: "bad group name in a Use selector",
+			body: `	servo.Build(servo.HTTP(servo.Use[*mw.Auth](servo.Group("bad name"))))`,
+			want: `group name "bad name" must match [A-Za-z0-9_-]+`,
+		},
+		{
+			name: "non-constant route pattern",
+			body: `	pattern := "GET /x"
+	servo.Build(servo.HTTP(servo.Use[*mw.Auth](servo.Route(pattern))))`,
+			want: "servo.Route's argument must be a constant string",
+		},
+		{
+			name: "non-selector inside Use",
+			body: `	servo.Build(servo.HTTP(servo.Use[*mw.Auth](servo.Root[*mw.Recover]())))`,
+			want: "servo.Root is not a servo.Use selector",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

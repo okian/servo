@@ -384,6 +384,9 @@ type Pair[K comparable, V any] struct{}
 func NewCache[T any]() *Cache[T] { return nil }
 func NewSame[T comparable]() *Pair[T, T] { return nil }
 func NewDB() *DB { return nil }
+func NewList[T any]() []T { return nil }
+func NewIndex[K comparable, V any]() map[K]V { return nil }
+func NewName() string { return "" }
 
 var (
 	cacheOfDB   *Cache[*DB]
@@ -392,6 +395,10 @@ var (
 	pairMixed   *Pair[string, int]
 	db          *DB
 	other       *Other
+	list        []*DB
+	index       map[string]*DB
+	name        string
+	count       int
 )
 `)
 	result := func(fn string) types.Type {
@@ -409,10 +416,22 @@ var (
 		{"NewSame", "pairMixed", false}, // T cannot be string and int at once
 		{"NewDB", "db", true},
 		{"NewDB", "other", false},
+		{"NewList", "list", true},
+		{"NewList", "index", false}, // a slice never produces a map
+		{"NewIndex", "index", true},
+		{"NewIndex", "list", false},
+		{"NewName", "name", true}, // no type parameter: the identical type or nothing
+		{"NewName", "count", false},
 	}
 	for _, c := range cases {
 		if got := Produces(result(c.fn), typ(c.want)); got != c.ok {
 			t.Errorf("Produces(%s's result, %s) = %v, want %v", c.fn, c.want, got, c.ok)
 		}
+	}
+
+	// The generic type itself, uninstantiated, has no type arguments to
+	// match, so it is none of its own instantiations.
+	if Produces(pkg.Types.Scope().Lookup("Cache").Type(), typ("cacheValue")) {
+		t.Error("Produces(Cache, Cache[*DB]) = true, want false")
 	}
 }
