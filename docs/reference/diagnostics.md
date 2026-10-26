@@ -184,7 +184,10 @@ type OrdersAccount struct{ *Client }
 type AuditAccount  struct{ *Client }
 ```
 
-Embedding keeps every method available with no delegation boilerplate. The README's
+Embedding keeps every method available with no delegation boilerplate. A type Go cannot embed —
+an unnamed interface, a pointer to an interface, a named pointer type — is suggested as a field
+instead, named the way an embedded one would be:
+`type PrimaryValue struct{ Value interface{Get() string} }`. The README's
 [Multiple instances of the same type](https://github.com/okian/servo/blob/master/README.md#multiple-instances-of-the-same-type)
 walks through a complete worked example, and
 [Limitations](../limitations.md#there-are-no-tags-or-names-so-you-cant-have-two-of-the-same-type)

@@ -1,6 +1,9 @@
 package resolve
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/types"
 	"strings"
 	"testing"
 )
@@ -211,5 +214,100 @@ func NewServer(g interface{ Get() string }) *Server { return &Server{} }
 	}
 	if strings.Contains(msg, "with these imports") {
 		t.Errorf("diagnostic lists imports for a type that needs none:\n%s", msg)
+	}
+}
+
+// duplicateAdviceSrc gives each shape a result type can take two
+// constructors and one consumer, so resolving a consumer is an ambiguity
+// whose advice has to make up a type to hold the contested one.
+const duplicateAdviceSrc = `package app
+
+type Logger struct{}
+
+func NewLogger() *Logger    { return &Logger{} }
+func NewLoggerTwo() *Logger { return &Logger{} }
+
+type Config struct{}
+
+func NewConfig() Config    { return Config{} }
+func NewConfigTwo() Config { return Config{} }
+
+type Cache[T any] struct{}
+
+func NewCache() *Cache[string]    { return nil }
+func NewCacheTwo() *Cache[string] { return nil }
+
+type Store interface{ Get() string }
+
+func NewStore() Store    { return nil }
+func NewStoreTwo() Store { return nil }
+
+func NewStorePtr() *Store    { return nil }
+func NewStorePtrTwo() *Store { return nil }
+
+type LoggerRef *Logger
+
+func NewLoggerRef() LoggerRef    { return nil }
+func NewLoggerRefTwo() LoggerRef { return nil }
+
+func NewGetter() interface{ Get() string }    { return nil }
+func NewGetterTwo() interface{ Get() string } { return nil }
+
+type ForLogger struct{}
+type ForConfig struct{}
+type ForCache struct{}
+type ForStore struct{}
+type ForStorePtr struct{}
+type ForLoggerRef struct{}
+type ForGetter struct{}
+
+func NewForLogger(v *Logger) *ForLogger                   { return nil }
+func NewForConfig(v Config) *ForConfig                    { return nil }
+func NewForCache(v *Cache[string]) *ForCache              { return nil }
+func NewForStore(v Store) *ForStore                       { return nil }
+func NewForStorePtr(v *Store) *ForStorePtr                { return nil }
+func NewForLoggerRef(v LoggerRef) *ForLoggerRef           { return nil }
+func NewForGetter(v interface{ Get() string }) *ForGetter { return nil }
+`
+
+// TestDuplicateProviderAdviceIsGoForEveryResultType: the advice for two
+// constructors of one type is a declaration to paste, so it has to be Go.
+// A type Go can embed is embedded as before, keeping its methods. One it
+// cannot (an unnamed interface, a pointer to an interface, a named pointer
+// type) used to be written embedded anyway, which does not parse or does
+// not compile; it is held in a field named the way an embedded one would
+// be. Each declaration is parsed, and type-checked beside the package it
+// names the types of.
+func TestDuplicateProviderAdviceIsGoForEveryResultType(t *testing.T) {
+	m := checkModule(t, pkgSrc{"example.com/mod/app", duplicateAdviceSrc})
+	for _, tc := range []struct{ consumer, advice string }{
+		{"ForLogger", "type PrimaryLogger struct{ *Logger }"},
+		{"ForConfig", "type PrimaryConfig struct{ Config }"},
+		{"ForCache", "type PrimaryCache struct{ *Cache[string] }"},
+		{"ForStore", "type PrimaryStore struct{ Store }"},
+		{"ForStorePtr", "type PrimaryStore struct{ Store *Store }"},
+		{"ForLoggerRef", "type PrimaryLoggerRef struct{ LoggerRef LoggerRef }"},
+		{"ForGetter", "type PrimaryValue struct{ Value interface{Get() string} }"},
+	} {
+		t.Run(tc.consumer, func(t *testing.T) {
+			msg := onlyDiagnostic(t, m.input("example.com/mod/app", m.ptr("example.com/mod/app", tc.consumer))).Message
+			var advice string
+			for _, line := range strings.Split(msg, "\n") {
+				if s, ok := strings.CutPrefix(line, "\ttype Primary"); ok {
+					advice = "type Primary" + s
+				}
+			}
+			if advice != tc.advice {
+				t.Errorf("advice = %q, want %q:\n%s", advice, tc.advice, msg)
+			}
+			f, err := parser.ParseFile(m.fset, "advice.go", "package app\n\n"+advice+"\n", 0)
+			if err != nil {
+				t.Fatalf("advice %q does not parse: %v", advice, err)
+			}
+			files := append(append([]*ast.File(nil), m.pkg("example.com/mod/app").Syntax...), f)
+			if _, err := (&types.Config{Importer: importerFor(loadPkg(t, "context"))}).Check("example.com/mod/app", m.fset, files, nil); err != nil {
+				t.Errorf("advice %q does not compile in its package: %v", advice, err)
+			}
+		})
 	}
 }

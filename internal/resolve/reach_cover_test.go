@@ -248,3 +248,94 @@ func TestConfigTheInjectorCannotLoadIsRefused(t *testing.T) {
 		t.Fatalf("Configs = %v, want the one config, loaded from inside its tree", r.Configs)
 	}
 }
+
+// internalConfigSrcs declare a //servo:config type in svc's internal cfg
+// package, as decl spells it, with a consumer of it in svc.
+func internalConfigSrcs(decl string) []pkgSrc {
+	return []pkgSrc{
+		{"example.com/mod/svc/internal/cfg", "package cfg\n\n//servo:config prefix=APP\n" + decl},
+		reachConfigSrcs[1],
+		{"example.com/mod/cmd/app", mainOnlySrc},
+	}
+}
+
+// selfConfigSrcs alias the injector package's own struct from conf, a
+// package that has to import the injector to do it.
+var selfConfigSrcs = []pkgSrc{
+	{"example.com/mod/app", "package app\n\ntype Settings struct {\n\tDSN string `config:\"dsn\"`\n}\n\ntype Server struct{}\n\nfunc NewServer(s Settings) *Server { return &Server{} }\n"},
+	{"example.com/mod/conf", "package conf\n\nimport \"example.com/mod/app\"\n\n//servo:config prefix=APP\ntype Settings = app.Settings\n"},
+	{"example.com/mod/cmd/app", mainOnlySrc},
+}
+
+// TestAliasedConfigIsJudgedByTheDirectivesPackage: the loader is generated
+// beside the //servo:config directive, so the injector has to import the
+// package holding the directive. For an alias, servo judged the package of
+// the aliased type instead, which can be one the injector may import, and
+// for an alias of a struct literal is no package at all, so both aliases
+// below resolved into a file the compiler refuses. They are refused as a
+// named type in the same package is, and an alias the injector can import
+// still loads.
+func TestAliasedConfigIsJudgedByTheDirectivesPackage(t *testing.T) {
+	const internalWhy = "its loader, cfg.ServoConfig, is declared in example.com/mod/svc/internal/cfg, which example.com/mod/cmd/app cannot import: it is internal to example.com/mod/svc — move one of the two so the injector sits inside that tree, or the type outside it"
+	for _, tc := range []struct {
+		name     string
+		srcs     []pkgSrc
+		injector string
+		root     [2]string // the root's package and type name
+		why      string    // "" when the config loads
+	}{{
+		name:     "named struct under another tree's internal directory",
+		srcs:     internalConfigSrcs("type Settings struct {\n\tDSN string `config:\"dsn\"`\n}\n"),
+		injector: "example.com/mod/cmd/app", root: [2]string{"example.com/mod/svc", "Service"},
+		why: internalWhy,
+	}, {
+		name:     "alias of a struct under another tree's internal directory",
+		srcs:     internalConfigSrcs("type Settings = struct {\n\tDSN string `config:\"dsn\"`\n}\n"),
+		injector: "example.com/mod/cmd/app", root: [2]string{"example.com/mod/svc", "Service"},
+		why: internalWhy,
+	}, {
+		name: "alias of a struct the injector can import",
+		srcs: []pkgSrc{
+			{"example.com/mod/svc/cfg", "package cfg\n\n//servo:config prefix=APP\ntype Settings = struct {\n\tDSN string `config:\"dsn\"`\n}\n"},
+			{"example.com/mod/svc", strings.ReplaceAll(reachConfigSrcs[1].src, "svc/internal/cfg", "svc/cfg")},
+			{"example.com/mod/cmd/app", mainOnlySrc},
+		},
+		injector: "example.com/mod/cmd/app", root: [2]string{"example.com/mod/svc", "Service"},
+	}, {
+		name:     "alias in a package that imports the injector",
+		srcs:     selfConfigSrcs,
+		injector: "example.com/mod/app", root: [2]string{"example.com/mod/app", "Server"},
+		why: "its loader, conf.ServoConfig, is declared in example.com/mod/conf, which imports example.com/mod/app, the injector's own package, so importing it back from there would be an import cycle — declare servo.Build in a package nothing imports, such as a cmd/ main",
+	}, {
+		// The fix that diagnostic names: from a cmd/ main, nothing closes
+		// the cycle.
+		name:     "the same alias with servo.Build in a cmd/ main",
+		srcs:     selfConfigSrcs,
+		injector: "example.com/mod/cmd/app", root: [2]string{"example.com/mod/app", "Server"},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := checkModule(t, tc.srcs...)
+			decls, err := graph.ScanConfigs(m.pkgs)
+			if err != nil || len(decls) != 1 {
+				t.Fatalf("ScanConfigs = %v, %v; want the one declaration", decls, err)
+			}
+			in := m.input(tc.injector, m.ptr(tc.root[0], tc.root[1]))
+			in.Configs = decls
+			if tc.why == "" {
+				if r := mustResolve(t, in); len(r.Configs) != 1 || r.Configs[0].Config != decls[0] {
+					t.Fatalf("Configs = %v, want the one config", r.Configs)
+				}
+				return
+			}
+			msg := onlyDiagnostic(t, in).Message
+			for _, want := range []string{
+				" cannot be loaded by the injector in " + tc.injector + "\n",
+				"\n  New calls the generated loader of every config its graph uses, and " + tc.why + ".\n",
+			} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("diagnostic missing %q:\n%s", want, msg)
+				}
+			}
+		})
+	}
+}

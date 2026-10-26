@@ -220,5 +220,6 @@ file: config.yaml (override the path with CONFIG_FILE; environment always wins)
 | `constructs %s, which carries a //servo:config directive` | a hand-written provider for a config type | delete the constructor or drop the directive |
 | `resolve to the same environment variable` / `same config file key` | two used configs claim one name | change a tag name or a prefix |
 | `scoped constructor depends on config type` | a scope member takes a config | wrap the values in a singleton of your own |
+| `config type … cannot be loaded by the injector in …` | `New` calls the loader generated beside the directive, but the injector cannot import that package — for an alias, the alias's own, not the aliased type's — because it is internal to another tree or imports the injector's package | declare the type where the injector can import it; for the import cycle, declare `servo.Build` in a `cmd/` main |
 | `servo.ConfigFile(...) is declared, but no //servo:config type is in this graph` | a file nothing would read | mark a struct, or delete the declaration |
 | `declare a ConfigFile in both injectors or neither` | two injectors share a config and disagree | make them agree |

@@ -151,7 +151,15 @@ func (r *resolver) writeAmbiguity(b *strings.Builder, sel selection) {
 		// the type, so the way to have two is to make them two types.
 		fmt.Fprintf(b, "  %d functions produce %s, and servo tells values apart by type alone, so they\n  are one contested node, not %d instances:\n", len(cands), want, len(cands))
 		listed(byName)
-		fmt.Fprintf(b, "\n  Delete all but one. If you want %d instances, give each its own named type and\n  have each constructor return its own — renaming a function cannot change the\n  type it returns:\n\n\ttype Primary%s struct{ %s }\n\n", len(cands), typeBaseName(sel.requestedType), want)
+		// Embedded, the suggested type keeps every method of the one it
+		// holds, but only a type Go allows as an embedded field can be
+		// written that way. Any other type goes in a field, named the way
+		// an embedded one would be, so the line still compiles.
+		base, field := typeBaseName(sel.requestedType), want
+		if !embeddable(sel.requestedType) {
+			field = base + " " + want
+		}
+		fmt.Fprintf(b, "\n  Delete all but one. If you want %d instances, give each its own named type and\n  have each constructor return its own — renaming a function cannot change the\n  type it returns:\n\n\ttype Primary%s struct{ %s }\n\n", len(cands), base, field)
 		b.WriteString("  \"Multiple instances of the same type\" in the README walks through it.\n")
 	}
 }
@@ -189,6 +197,28 @@ func typeBaseName(t types.Type) string {
 		return named.Obj().Name()
 	}
 	return "Value"
+}
+
+// embeddable reports whether Go allows t as an embedded field: a type name
+// T that is not itself a pointer type, or *T where T is neither a pointer
+// type nor an interface.
+func embeddable(t types.Type) bool {
+	t = types.Unalias(t)
+	ptr, isPtr := t.(*types.Pointer)
+	if isPtr {
+		t = types.Unalias(ptr.Elem())
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return false
+	}
+	switch named.Underlying().(type) {
+	case *types.Pointer:
+		return false
+	case *types.Interface:
+		return !isPtr
+	}
+	return true
 }
 
 // specSpelling writes types the way the spec file does: by the name it
