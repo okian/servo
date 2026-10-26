@@ -66,6 +66,10 @@ type (
 	nnFeedsLit       = interface{ Feeds() chan (<-chan nnUser) }
 )
 
+// byte and rune, which run time knows only as uint8 and int32, and which
+// servo's keys spell that way too, wherever they are written.
+type nnWriterLit = interface{ Write([]byte) (int, error) }
+
 // nnStoreCloser is the cure NodeName's doc comment gives for an interface
 // literal that embeds another, which run time sees only flattened: the
 // same interface, declared under a name of its own.
@@ -153,6 +157,10 @@ func TestNodeNameMatchesTheGenerator(t *testing.T) {
 		{NodeName[nnRepo[nnChanOfRecvChan]](), instantiate("nnRepo", named("nnChanOfRecvChan"))},
 		{NodeName[nnStoreCloser](), named("nnStoreCloser")},
 		{NodeName[nnRepo[nnStoreCloser]](), instantiate("nnRepo", named("nnStoreCloser"))},
+
+		{NodeName[nnRepo[[]byte]](), instantiate("nnRepo", types.NewSlice(types.Universe.Lookup("byte").Type()))},
+		{NodeName[*nnRepo[rune]](), types.NewPointer(instantiate("nnRepo", types.Universe.Lookup("rune").Type()))},
+		{NodeName[nnWriterLit](), named("nnWriterLit")},
 	}
 	for _, c := range cases {
 		if want := graph.TypeString(c.want); c.got != want {

@@ -26,7 +26,7 @@ import (
 // keeps its assertion in step without an edit. That covers what a node
 // can be — a defined type, a pointer to one, an instantiated generic
 // type, whose type arguments are spelled with full import paths too, or
-// an interface literal — except for three things run time does not keep,
+// an interface literal — except for two things run time does not keep,
 // which servo spells as the source does:
 //
 //   - Parameter and result names. A func or interface literal, wherever
@@ -36,14 +36,10 @@ import (
 //   - Embedded interfaces. Run time flattens an interface literal's method
 //     set, so interface{ io.Reader; Close() error } comes out with Read's
 //     signature written out where servo writes io.Reader.
-//   - byte and rune. Run time knows them only as uint8 and int32, so the
-//     type argument of a *cache.Cache[[]byte] comes out as []uint8.
 //
-// A name of its own is the cure for all three: declare the interface, or
-// the type argument, as a defined type — type ReadCloser interface{
-// io.Reader; Close() error }, type Payload []byte — and NodeName and servo
-// agree on that name. For byte and rune, spelling uint8 and int32 where
-// the node's type is written does as well.
+// A name of its own is the cure for both: declare the interface as a
+// defined type — type ReadCloser interface{ io.Reader; Close() error } —
+// and NodeName and servo agree on that name.
 //
 // And a binary built from package main names that package "main", where
 // servo uses its import path; under go test the package being tested
