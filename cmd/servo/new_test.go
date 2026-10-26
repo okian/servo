@@ -88,6 +88,8 @@ func TestRunNewAdapterRefusesWhatItCannotPrint(t *testing.T) {
 		{[]string{"my-redis"}, "", "not a valid package name"},
 		{[]string{"func"}, "", "not a valid package name"},
 		{[]string{"redis"}, "other", "--package does not apply"},
+		// A valid package name can still make a prefix //servo:config refuses.
+		{[]string{"_1x"}, "", `package "_1x" would give its config the prefix 1X, which servo refuses`},
 	} {
 		err := runNew("adapter", c.args, c.pkg)
 		if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -200,6 +202,7 @@ func TestRunNewRefusesNamesASpecCannotUse(t *testing.T) {
 		{"component", []string{"widget"}, "", "unexported"},
 		{"component", []string{"Widget"}, "my-pkg", "not a valid package name"},
 		{"mock-adapter", []string{"moq", "storeMock"}, "", "unexported"},
+		{"mock-adapter", []string{"moq", "StoreMock"}, "my-mocks", "not a valid package name"},
 	} {
 		err := runNew(c.kind, c.args, c.pkg)
 		if err == nil || !strings.Contains(err.Error(), c.want) {

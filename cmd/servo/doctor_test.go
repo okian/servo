@@ -603,3 +603,285 @@ func TestDoctorRepeatsTheFlagsItWasGiven(t *testing.T) {
 		t.Fatalf("doctor --dir err=%v, want the suggestion to repeat --dir:\n%s", err, out)
 	}
 }
+
+// TestServoDirectivesInReadsLikeGoGenerate: the scan keeps only the
+// lines that run servo generate, expanding -command shorthands the way go
+// generate does and passing over blank directives, other tools, and servo
+// commands that generate nothing.
+func TestServoDirectivesInReadsLikeGoGenerate(t *testing.T) {
+	src := "package main\n\n" +
+		"//go:generate   \n" +
+		"//go:generate -command sv go tool servo\n" +
+		"//go:generate -command\n" +
+		"//go:generate sv generate --dir ./cmd\n" +
+		"//go:generate stringer -type=Pill\n" +
+		"//go:generate go tool servo check\n" +
+		"//go:generate go tool -n servo generate\n"
+	got := servoDirectivesIn(filepath.FromSlash("/m/gen.go"), []byte(src), true)
+	if len(got) != 2 {
+		t.Fatalf("servoDirectivesIn found %d directives, want the shorthand's and the -n one: %+v", len(got), got)
+	}
+	if d := got[0]; d.line != 6 || !d.goTool || d.root != filepath.FromSlash("/m/cmd") || d.err != nil {
+		t.Errorf("the shorthand directive = %+v, want line 6, go tool, rooted at /m/cmd", d)
+	}
+	if d := got[1]; d.line != 9 || !d.goTool || d.root != filepath.FromSlash("/m") {
+		t.Errorf("the go tool -n directive = %+v, want line 9, go tool, rooted at /m", d)
+	}
+	if _, _, ok := servoInvocation(nil); ok {
+		t.Error("servoInvocation(nil) recognised servo in an empty line")
+	}
+}
+
+// TestSplitGenerateLineHandlesQuotes: an escaped quote stays inside its
+// word, and a quote that never closes, or holds an escape Go rejects,
+// ends the line there, as it ends go generate's run.
+func TestSplitGenerateLineHandlesQuotes(t *testing.T) {
+	cases := []struct {
+		line string
+		want []string
+	}{
+		{`servo "a \"quoted\" word" generate`, []string{"servo", `a "quoted" word`, "generate"}},
+		{`servo generate "--dir`, []string{"servo", "generate"}},
+		{`servo "\q" generate`, []string{"servo"}},
+	}
+	for _, c := range cases {
+		if got := splitGenerateLine(c.line, "gen.go", 1); !slices.Equal(got, c.want) {
+			t.Errorf("splitGenerateLine(%s) = %q, want %q", c.line, got, c.want)
+		}
+	}
+}
+
+// TestScanGenerateDirectivesWalksLikeGoGenerate: a nested module is
+// another module's business, a root that cannot be read is an error, and
+// so is a Go file that cannot be read.
+func TestScanGenerateDirectivesWalksLikeGoGenerate(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "gen.go", "package main\n\n//go:generate servo generate\n")
+	mustWriteFile(t, dir, "nested/go.mod", "module example.com/nested\n\ngo 1.23\n")
+	mustWriteFile(t, dir, "nested/gen.go", "package nested\n\n//go:generate servo generate\n")
+	md, err := scanGenerateDirectives(dir, nil)
+	if err != nil {
+		t.Fatalf("scanGenerateDirectives: %v", err)
+	}
+	if len(md.servo) != 1 || md.servo[0].file != filepath.Join(dir, "gen.go") {
+		t.Errorf("scanGenerateDirectives = %+v, want only the module's own directive", md.servo)
+	}
+
+	if _, err := scanGenerateDirectives(filepath.Join(dir, "missing"), nil); err == nil {
+		t.Error("scanGenerateDirectives on a missing directory = nil error")
+	}
+
+	if err := os.Symlink(filepath.Join(dir, "no-such-target.go"), filepath.Join(dir, "dangling.go")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if _, err := scanGenerateDirectives(dir, nil); err == nil {
+		t.Error("scanGenerateDirectives read past a Go file it could not open")
+	}
+}
+
+// TestReportToolDirectiveReadsTheModFileInUse: with -modfile the tool
+// directive has to be in that file, not go.mod, and a mod file the go
+// command cannot read is reported rather than taken as "no directive".
+func TestReportToolDirectiveReadsTheModFileInUse(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module example.com/tools\n\ngo 1.24\n")
+	mustWriteFile(t, dir, "alt.mod", "module example.com/tools\n\ngo 1.24\n\ntool "+servoToolPath+"\n")
+	md := &moduleDirectives{servo: []generateDirective{{file: filepath.Join(dir, "gen.go"), line: 3, live: true, goTool: true}}}
+	mod := &packages.Module{Dir: dir, GoMod: filepath.Join(dir, "go.mod")}
+
+	var lines []string
+	collect := func(ok bool, format string, args ...any) {
+		lines = append(lines, fmt.Sprintf("%v %s", ok, fmt.Sprintf(format, args...)))
+	}
+	alt := load.Config{Dir: dir, Build: load.BuildFlags{ModFile: filepath.Join(dir, "alt.mod")}}
+	reportToolDirective(md, alt, mod, collect)
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "true "+filepath.Join(dir, "alt.mod")+" declares the servo tool") {
+		t.Errorf("with -modfile=alt.mod, reportToolDirective = %q, want alt.mod's tool directive found", lines)
+	}
+
+	lines = nil
+	missing := &packages.Module{Dir: dir, GoMod: filepath.Join(dir, "nope", "go.mod")}
+	reportToolDirective(md, load.Config{Dir: dir}, missing, collect)
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "false reading "+filepath.Join(dir, "nope", "go.mod")+" for its tool directives: ") {
+		t.Errorf("with an unreadable go.mod, reportToolDirective = %q, want the read failure", lines)
+	}
+}
+
+// TestReportGenerateCoverageNamesABrokenDirective: a line covering the
+// injector that servo would refuse fails on its own, and is not then
+// reported a second time as missing coverage.
+func TestReportGenerateCoverageNamesABrokenDirective(t *testing.T) {
+	dir := t.TempDir()
+	spec := &load.Spec{Pos: token.Position{Filename: filepath.Join(dir, "cmd", "app", "spec.go")}}
+	_, _, _, flagErr := generateRunOf([]string{"generate", "--no-such-flag"})
+	md := &moduleDirectives{servo: []generateDirective{{
+		file: filepath.Join(dir, "gen.go"), line: 4, text: "//go:generate servo generate --no-such-flag",
+		live: true, root: dir, err: flagErr,
+	}}}
+	var reports, notes []string
+	reportGenerateCoverage(md, spec,
+		func(ok bool, format string, args ...any) {
+			reports = append(reports, fmt.Sprintf("%v %s", ok, fmt.Sprintf(format, args...)))
+		},
+		func(status, format string, args ...any) { notes = append(notes, status) })
+	want := "false " + filepath.Join(dir, "gen.go") + ":4 will fail when go generate runs it — "
+	if len(reports) != 1 || !strings.HasPrefix(reports[0], want) || !strings.HasSuffix(reports[0], ": //go:generate servo generate --no-such-flag") {
+		t.Errorf("reportGenerateCoverage = %q, want the one broken line, %q…", reports, want)
+	}
+	if len(notes) != 0 {
+		t.Errorf("a broken directive should not also draw a note: %q", notes)
+	}
+}
+
+// TestBuildConstraintOf names the constraint a skipped file carries, and
+// falls back to a phrase when the file has none or cannot be read.
+func TestBuildConstraintOf(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "tagged.go", "// Copyright.\n\n//go:build servoinject\n\npackage main\n")
+	mustWriteFile(t, dir, "plain_linux.go", "package main\n\n//go:build ignore\n")
+	for path, want := range map[string]string{
+		filepath.Join(dir, "tagged.go"):      "`//go:build servoinject`",
+		filepath.Join(dir, "plain_linux.go"): "its file name or build tags",
+		filepath.Join(dir, "missing.go"):     "its build constraint",
+	} {
+		if got := buildConstraintOf(path); got != want {
+			t.Errorf("buildConstraintOf(%s) = %q, want %q", filepath.Base(path), got, want)
+		}
+	}
+}
+
+// TestVersionSkewNamesAReplacementsVersion: a replacement pinned to a
+// version is named with it, since that is what was built.
+func TestVersionSkewNamesAReplacementsVersion(t *testing.T) {
+	mod := &packages.Module{Path: "github.com/okian/servo/v3", Version: "v3.4.1", Replace: &packages.Module{Path: "example.com/fork", Version: "v1.2.3"}}
+	if got := versionSkew("v3.4.1", mod); got.status != "INFO" || !strings.Contains(got.msg, "replaces github.com/okian/servo/v3 with example.com/fork v1.2.3,") {
+		t.Errorf("versionSkew = %+v, want the replacement and its version named", got)
+	}
+}
+
+// TestWorkspaceModulesReportsWhatTheGoCommandCannotRead: a directory
+// that does not exist, and a GOWORK naming a file that does not parse,
+// are errors — doctor then says nothing about workspaces, rather than
+// something wrong.
+func TestWorkspaceModulesReportsWhatTheGoCommandCannotRead(t *testing.T) {
+	if _, _, err := workspaceModules(filepath.Join(t.TempDir(), "missing")); err == nil {
+		t.Error("workspaceModules in a missing directory = nil error")
+	}
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "bad.work", "this is not a go.work file\n")
+	t.Setenv("GOWORK", filepath.Join(dir, "bad.work"))
+	if _, _, err := workspaceModules(dir); err == nil {
+		t.Error("workspaceModules with a malformed go.work = nil error")
+	}
+}
+
+// TestDoctorNamesTheWorkspaceItRunsIn: a go.work listing a second module
+// changes nothing about which types bind, which doctor says before CI
+// finds out.
+func TestDoctorNamesTheWorkspaceItRunsIn(t *testing.T) {
+	dir := writeAppModule(t, "example.com/doctorwork", true, "")
+	mustWriteFile(t, dir, "lib/go.mod", "module example.com/doctorwork/lib\n\ngo 1.23\n")
+	mustWriteFile(t, dir, "lib/lib.go", "package lib\n")
+	mustWriteFile(t, dir, "go.work", "go 1.26.0\n\nuse (\n\t.\n\t./lib\n)\n")
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("runGenerate: %v", err)
+	}
+	out, _ := doctorOutput(t, dir)
+	want := "[WARN] " + filepath.Join(dir, "go.work") + " lists 2 modules ("
+	if !strings.Contains(out, want) || !strings.Contains(out, "--scope=workspace treats every listed module as part of the graph") {
+		t.Errorf("doctor output missing %q and the --scope advice:\n%s", want, out)
+	}
+}
+
+// TestDoctorReportsTheModulesRouteProblems: a route in an undeclared
+// group and a handler in a package main nothing serves are failures of
+// the module, which doctor reports beside everything else.
+func TestDoctorReportsTheModulesRouteProblems(t *testing.T) {
+	dir := writeHTTPModule(t)
+	mustWriteFile(t, dir, "api/extra.go", "package api\n\nimport (\n\t\"context\"\n\n\t\"github.com/okian/servo/v3/servo\"\n)\n\n//servo:get /extra backoffice\nfunc Extra(ctx context.Context) (servo.Json[*HealthzResp], error) {\n\treturn servo.JSON(&HealthzResp{}), nil\n}\n")
+	mustWriteFile(t, dir, "cmd/other/main.go", "package main\n\nimport (\n\t\"context\"\n\n\t\"github.com/okian/servo/v3/servo\"\n)\n\ntype PingResp struct{}\n\n//servo:get /ping-from-main\nfunc PingFromMain(ctx context.Context) (servo.Json[*PingResp], error) {\n\treturn servo.JSON(&PingResp{}), nil\n}\n\nfunc main() {}\n")
+	out, err := doctorOutput(t, filepath.Join(dir, "cmd", "app"))
+	if err == nil {
+		t.Fatalf("doctor passed a module with an undeclared route group:\n%s", out)
+	}
+	for _, want := range []string{
+		`[FAIL] route groups: servo: 1 diagnostic(s):`,
+		`group "backoffice" is not declared by any injector`,
+		"[FAIL] routes in package main: servo: 1 diagnostic(s):",
+		"declared in package main (example.com/httpfix/cmd/other)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestDoctorNotesRoutesNothingServes: routes with no servo.HTTP() in any
+// injector are not an error, since a variant may serve them, but doctor
+// is the one place that says they are unserved.
+func TestDoctorNotesRoutesNothingServes(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) { mustWriteFile(t, dir, rel, content) }
+	write("go.mod", "module example.com/unserved\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+repoRoot(t)+"\n")
+	write("api/api.go", "package api\n\nimport (\n\t\"context\"\n\n\t\"github.com/okian/servo/v3/servo\"\n)\n\ntype Server struct{}\n\nfunc New() *Server { return &Server{} }\n\ntype Pong struct{}\n\n//servo:get /ping\nfunc Ping(ctx context.Context) (servo.Json[*Pong], error) {\n\treturn servo.JSON(&Pong{}), nil\n}\n")
+	write("cmd/app/main.go", "package main\n\nfunc main() {}\n")
+	write("cmd/app/spec.go", "//go:build servoinject\n\npackage main\n\nimport (\n\t\"example.com/unserved/api\"\n\t\"github.com/okian/servo/v3/servo\"\n)\n\nfunc wire() {\n\tservo.Build(servo.Root[*api.Server]())\n}\n")
+	runGoModTidy(t, dir)
+	out, _ := doctorOutput(t, dir)
+	if want := "[INFO] 1 //servo: route(s) found, but no injector in this configuration declares servo.HTTP(), so nothing serves them"; !strings.Contains(out, want) {
+		t.Errorf("doctor output missing %q:\n%s", want, out)
+	}
+}
+
+// TestDoctorSaysWhenTheGraphNoLongerResolves: a generated file whose
+// graph has since stopped resolving is not stale, it cannot be
+// regenerated at all, and doctor says so under the injector's heading.
+func TestDoctorSaysWhenTheGraphNoLongerResolves(t *testing.T) {
+	const module = "example.com/doctornoresolve"
+	dir := writeAppModule(t, module, true, "")
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("runGenerate: %v", err)
+	}
+	// Without the Bind, store.Store has two implementations.
+	mustWriteFile(t, dir, "cmd/app/spec.go", "//go:build servoinject\n\npackage main\n\nimport (\n\t\""+module+"/api\"\n\t\""+module+"/worker\"\n\t\"github.com/okian/servo/v3/servo\"\n)\n\nfunc wire() {\n\tservo.Build(\n\t\tservo.Root[*api.Server](),\n\t\tservo.Root[*worker.Consumer](),\n\t)\n}\n")
+	out, err := doctorOutput(t, dir)
+	if err == nil {
+		t.Fatalf("doctor passed a graph that does not resolve:\n%s", out)
+	}
+	if want := "[FAIL] the graph does not resolve, so nothing can be generated from it: "; !strings.Contains(out, want) || !strings.Contains(out, "ambiguous provider for") {
+		t.Errorf("doctor output missing %q and the ambiguity:\n%s", want, out)
+	}
+	if strings.Contains(out, "is stale") {
+		t.Errorf("an unresolvable graph should not be called stale:\n%s", out)
+	}
+}
+
+// TestDoctorChecksTheOverrideVariant: a spec with an Override has a
+// second generated file, which doctor compares as it does the first.
+func TestDoctorChecksTheOverrideVariant(t *testing.T) {
+	dir := writeOverrideModule(t, true)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("runGenerate: %v", err)
+	}
+	out, _ := doctorOutput(t, dir)
+	if want := "[OK  ] override variant present: " + filepath.Join(dir, "cmd", "app", generatedTestFileName) + ", matches a fresh generation"; !strings.Contains(out, want) {
+		t.Errorf("doctor output missing %q:\n%s", want, out)
+	}
+}
+
+// TestDoctorWarnsWhenItCannotReadTheGenerateLines: a Go file that cannot
+// be opened is a build error, which doctor reports, and it also leaves
+// unknown whether go generate reaches the injector — a WARN, not a guess.
+func TestDoctorWarnsWhenItCannotReadTheGenerateLines(t *testing.T) {
+	dir := writeAppModule(t, "example.com/doctorunreadable", true, "")
+	if err := os.Symlink(filepath.Join(dir, "no", "such.go"), filepath.Join(dir, "logger", "dangling.go")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	out, err := doctorOutput(t, dir)
+	if err == nil {
+		t.Fatalf("doctor passed a module with a file it cannot open:\n%s", out)
+	}
+	if want := "[WARN] could not read the module's go:generate lines: "; !strings.Contains(out, want) || !strings.Contains(out, "dangling.go") {
+		t.Errorf("doctor output missing %q naming the file:\n%s", want, out)
+	}
+}

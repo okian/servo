@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
@@ -530,5 +531,92 @@ func TestHunkRange(t *testing.T) {
 		if got := hunkRange(c.start, c.count); got != c.want {
 			t.Errorf("hunkRange(%d, %d) = %q, want %q", c.start, c.count, got, c.want)
 		}
+	}
+}
+
+// TestUnifiedDiffTruncatesBetweenHunks: when the budget runs out exactly
+// at the end of a hunk, the report stops before the next heading and
+// counts every line left unshown, across all the hunks still to come.
+func TestUnifiedDiffTruncatesBetweenHunks(t *testing.T) {
+	// A change every 10 lines is its own hunk of 8 lines: 3 of context, the
+	// deleted line, the inserted one, 3 more of context. 50 of them fill
+	// the budget exactly; two more are left over.
+	const changes = maxDiffLines/8 + 2
+	var a, b []string
+	for i := range changes * 10 {
+		line := "line " + strconv.Itoa(i)
+		a = append(a, line)
+		if i%10 == 5 {
+			line += " changed"
+		}
+		b = append(b, line)
+	}
+	got := unifiedDiff(strings.Join(a, "\n")+"\n", strings.Join(b, "\n")+"\n", "f.go")
+	if n := strings.Count(got, "\n@@ "); n != maxDiffLines/8 {
+		t.Errorf("unifiedDiff printed %d hunks, want %d", n, maxDiffLines/8)
+	}
+	if want := "\n... 16 more lines of diff not shown — regenerate, and `git diff` shows the whole change\n"; !strings.HasSuffix(got, want) {
+		t.Errorf("unifiedDiff should end with %q, got the tail:\n%s", want, got[max(0, len(got)-200):])
+	}
+}
+
+// TestHunkHeadingCutsAtARuneBoundary: a declaration line longer than a
+// terminal line is cut to fit, never in the middle of a character.
+func TestHunkHeadingCutsAtARuneBoundary(t *testing.T) {
+	long := "func " + strings.Repeat("é", 50) + "() {"
+	got := hunkHeading([]string{long, "\tx := 1"}, 2)
+	if len(got) > maxHeadingLen || !utf8.ValidString(got) || !strings.HasPrefix(long, got) || len(got) < maxHeadingLen-1 {
+		t.Errorf("hunkHeading = %q (%d bytes), want the longest whole-rune prefix of at most %d bytes", got, len(got), maxHeadingLen)
+	}
+}
+
+// TestDiffLinesKeepsTheLinesBetweenTwoEdits: an unchanged line between two
+// changes is context in the edit script, not a delete and an insert.
+func TestDiffLinesKeepsTheLinesBetweenTwoEdits(t *testing.T) {
+	ops := diffLines([]string{"a", "same", "also same", "b"}, []string{"x", "same", "also same", "y"})
+	var marks []string
+	for _, op := range ops {
+		marks = append(marks, diffMarks[op.kind]+op.line)
+	}
+	want := []string{"-a", "+x", " same", " also same", "-b", "+y"}
+	if !slices.Equal(marks, want) {
+		t.Errorf("diffLines = %q, want %q", marks, want)
+	}
+}
+
+// TestMatchesSuffixOfTheWholeType: a query that is the whole type string
+// names it.
+func TestMatchesSuffixOfTheWholeType(t *testing.T) {
+	if !matchesSuffix("api.Server", "api.Server") {
+		t.Error("matchesSuffix(api.Server, api.Server) = false")
+	}
+}
+
+// TestListHelpersOnMissingInput: no result type renders as nothing, an
+// unusable entry with no candidate behind it provides nothing, and a name
+// without a dot has no receiver to split off.
+func TestListHelpersOnMissingInput(t *testing.T) {
+	if got := shortType(nil); got != "" {
+		t.Errorf("shortType(nil) = %q, want empty", got)
+	}
+	if got := providesOf(nil, resolve.NearMiss{Func: "comp.New"}); got != "" {
+		t.Errorf("providesOf with no candidates = %q, want empty", got)
+	}
+	if recv, method := splitMethodName("New"); recv != "New" || method != "" {
+		t.Errorf("splitMethodName(New) = %q, %q; want the name and no method", recv, method)
+	}
+}
+
+// TestAppendEditsKeepsALeadingRunOfEqualLines: diffLines trims the common
+// prefix before calling it, but the edit script itself starts from the
+// origin, so a leading run of equal lines is context, as anywhere else.
+func TestAppendEditsKeepsALeadingRunOfEqualLines(t *testing.T) {
+	ops := appendEdits(nil, []string{"same", "a"}, []string{"same", "b"})
+	var marks []string
+	for _, op := range ops {
+		marks = append(marks, diffMarks[op.kind]+op.line)
+	}
+	if want := []string{" same", "-a", "+b"}; !slices.Equal(marks, want) {
+		t.Errorf("appendEdits = %q, want %q", marks, want)
 	}
 }
