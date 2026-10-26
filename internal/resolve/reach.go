@@ -74,11 +74,16 @@ func (rc *reach) configProblem(d *graph.ConfigDecl) string {
 	if rc == nil || rc.injector == "" || d.PkgPath == rc.injector {
 		return ""
 	}
-	named, ok := types.Unalias(d.Type).(*types.Named)
-	if !ok || named.Obj().Pkg() == nil {
+	// The loader is generated beside the //servo:config directive, so the
+	// package to judge is the one declaring d.Type's own name. For an alias
+	// that is the alias's package, not the package of the type it stands
+	// for: that one can be fine to import when the directive's is not, and
+	// an alias of a struct literal has none at all.
+	declared, ok := d.Type.(interface{ Obj() *types.TypeName }) // a *types.Named or a *types.Alias
+	if !ok || declared.Obj().Pkg() == nil {
 		return ""
 	}
-	if why := rc.packageProblem(named.Obj().Pkg()); why != "" {
+	if why := rc.packageProblem(declared.Obj().Pkg()); why != "" {
 		return fmt.Sprintf("its loader, %s.ServoConfig, is declared in %s, %s", d.PkgName, d.PkgPath, why)
 	}
 	return ""
