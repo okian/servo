@@ -435,3 +435,34 @@ var (
 		t.Error("Produces(Cache, Cache[*DB]) = true, want false")
 	}
 }
+
+// A method declared through an alias of its type — `type A = T; func (A)
+// M()`, or an alias of *T — is a method of T, named and grouped as one.
+// Its receiver used to read "?", so `servo list --rejected` listed such
+// methods as al.?.Make, under a receiver of that name.
+func TestScanNamesAMethodOnAnAliasReceiverByItsType(t *testing.T) {
+	pkg := mustCheck(t, "example.com/al", "al.go", `
+package al
+
+type DB struct{}
+type T struct{}
+type A = T
+type P = *T
+
+func (T) Direct() *DB       { return nil }
+func (A) Make() *DB         { return nil }
+func (*A) MakePtr() *DB     { return nil }
+func (P) ViaPtrAlias() *DB  { return nil }
+`)
+	_, rejected := ScanCandidates([]*packages.Package{pkg}, "")
+	for name, recv := range map[string]string{
+		"al.T.Direct":         "T",
+		"al.T.Make":           "T",
+		"al.(*T).MakePtr":     "(*T)",
+		"al.(*T).ViaPtrAlias": "(*T)",
+	} {
+		if r := findRejected(t, rejected, name); r.Recv != recv || r.Reason != "method, not a function" {
+			t.Errorf("%s: Recv %q, reason %q; want %q, method, not a function", name, r.Recv, r.Reason, recv)
+		}
+	}
+}

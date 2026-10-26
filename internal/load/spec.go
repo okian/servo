@@ -940,7 +940,11 @@ func parseUseCall(pkg *packages.Package, call *ast.CallExpr, typeArgs []types.Ty
 			}
 			use.Routes = append(use.Routes, RouteSel{Pattern: pattern, Pos: selPos})
 		default:
-			if returnsServoType(calledMarker(pkg, selCall), "HTTPOption") {
+			// An HTTP option is only a newer runtime's selector when this
+			// CLI has never heard of it. servo.Use returns an HTTPOption
+			// too, and one nested in a selector list is misplaced, not
+			// version skew.
+			if !knownMarkers[name] && returnsServoType(calledMarker(pkg, selCall), "HTTPOption") {
 				return UseDecl{}, &markerSkewError{pos: selPos, name: name, kind: "servo.Use selector"}
 			}
 			return UseDecl{}, fmt.Errorf(`%s: servo.%s is not a servo.Use selector — use servo.Group("name") or servo.Route("METHOD /pattern")`, selPos, name)
@@ -1390,8 +1394,13 @@ func spliceInclude(pkg *packages.Package, spec *Spec, call *ast.CallExpr, pos to
 	}
 
 	decl, declPkg, ok := findFuncDecl(pkg, fn)
-	if !ok {
-		return fmt.Errorf("%s: servo.Include names %s, whose declaration is not in this build — a shared marker set must carry the `//go:build %s` constraint, the same as a spec file", pos, fn.FullName(), BuildTag)
+	// A marker set's body is read as syntax, so it is source in a module:
+	// the main module or one it requires. A function from anywhere else —
+	// the standard library's, which the load reads from export data with
+	// no body at all, or from source when export data cannot be read — is
+	// no marker set, and no build constraint would make it one.
+	if !ok || declPkg.Module == nil {
+		return fmt.Errorf("%s: servo.Include names %s, which is not a marker set servo can read — a marker set is a func() []servo.Marker declared in your module or in a module it requires, and servo reads its body as syntax", pos, fn.FullName())
 	}
 	if !FileRequiresBuildTag(fileOf(declPkg, decl), BuildTag) {
 		return fmt.Errorf("%s: servo.Include names %s, which is declared in a file without a `//go:build %s` constraint — as written it would compile into the real binary, where every marker it returns panics", pos, fn.FullName(), BuildTag)

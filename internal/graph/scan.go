@@ -137,24 +137,24 @@ func scanMethods(pkg *packages.Package, rejected *[]Rejected) {
 				continue
 			}
 			pos := pkg.Fset.Position(m.Pos())
-			recv := recvString(sig)
+			recv := recvString(named, sig)
 			qualifiedName := fmt.Sprintf("%s.%s.%s", pkg.Types.Name(), recv, m.Name())
 			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "method, not a function", Result: wouldBeResult(sig), Recv: recv})
 		}
 	}
 }
 
-func recvString(sig *types.Signature) string {
-	recv := sig.Recv().Type()
-	if ptr, ok := recv.(*types.Pointer); ok {
-		if named, ok := ptr.Elem().(*types.Named); ok {
-			return "(*" + named.Obj().Name() + ")"
-		}
+// recvString is the receiver a rejected method is named and grouped by:
+// the type whose method it is, behind "(*...)" for a pointer receiver. A
+// receiver written through an alias — `type A = T; func (A) M()` — is still
+// a method of T, and is named T too: `servo list --rejected` groups methods
+// by this string, and one type's methods belong in one group however each
+// receiver was spelled.
+func recvString(named *types.Named, sig *types.Signature) string {
+	if _, ok := types.Unalias(sig.Recv().Type()).(*types.Pointer); ok {
+		return "(*" + named.Obj().Name() + ")"
 	}
-	if named, ok := recv.(*types.Named); ok {
-		return named.Obj().Name()
-	}
-	return "?"
+	return named.Obj().Name()
 }
 
 // classifyResults matches sig's results against the four accepted shapes:

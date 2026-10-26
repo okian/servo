@@ -973,8 +973,9 @@ constructor and servo doesn't see it — though a "no provider" diagnostic now n
 [near misses](resolution.md#near-misses) for the type it is about. It lists every function that
 *looked* like it might be a provider, the type it would have provided, and the rule that excluded
 it; then the candidates this injector [cannot refer to](resolution.md#the-injector-has-to-be-able-to-refer-to-it);
-then the methods, grouped by receiver — every `Init`, `Stop` and `Health` lands there, and listed one
-per line they were most of the output:
+then the methods, grouped by receiver, a receiver written through an alias under the type it stands
+for — every `Init`, `Stop` and `Health` lands there, and listed one per line they were most of the
+output:
 
 ```
 $ servo list --rejected

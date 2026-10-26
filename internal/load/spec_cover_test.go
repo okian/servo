@@ -127,16 +127,35 @@ func TestFindSpecNamesAnUninstantiatedMarkerOutsideASpecFile(t *testing.T) {
 	}
 }
 
-// TestFindSpecRefusesAnIncludeWhoseBodyItCannotRead: a function servo.Include
-// names is read as syntax, so one that arrives as export data — a standard
-// library function, with no body in the load — is refused by name rather
-// than spliced in as nothing.
-func TestFindSpecRefusesAnIncludeWhoseBodyItCannotRead(t *testing.T) {
-	dir := writeSkewRuntime(t, "func Include(func() []Marker) Marker { return Marker{} }\n")
-	mustWriteFile(t, dir, "spec/spec.go", skewSpec("\t\"os\"\n", "servo.Include(os.Environ)"))
-	_, err := FindSpec(mustLoad(t, Config{Dir: dir}))
-	if err == nil || !strings.Contains(err.Error(), "servo.Include names os.Environ, whose declaration is not in this build") {
-		t.Fatalf("got %v, want the Include refused by name", err)
+// TestFindSpecRefusesAnIncludeOfAFunctionOutsideTheModule: servo.Include
+// reads the function it names as syntax, so one from outside the module's
+// source — the standard library's — is not a marker set servo can read,
+// and is called that whether the load read its package from export data,
+// with no body at all, or type-checked it from source because export data
+// could not be read. It used to be told to carry a `//go:build servoinject`
+// constraint, which nothing in the standard library can.
+func TestFindSpecRefusesAnIncludeOfAFunctionOutsideTheModule(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		fromSource bool
+	}{
+		{"read from export data", false},
+		{"type-checked from source", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if c.fromSource {
+				failExportData(t)
+			}
+			dir := writeSkewRuntime(t, "func Include(func() []Marker) Marker { return Marker{} }\n")
+			mustWriteFile(t, dir, "spec/spec.go", skewSpec("\t\"os\"\n", "servo.Include(os.Environ)"))
+			_, err := FindSpec(mustLoad(t, Config{Dir: dir}))
+			if err == nil || !strings.Contains(err.Error(), "servo.Include names os.Environ, which is not a marker set servo can read") {
+				t.Fatalf("got %v, want os.Environ refused as no marker set", err)
+			}
+			if strings.Contains(err.Error(), "//go:build") {
+				t.Errorf("got %v, which still advises a build constraint", err)
+			}
+		})
 	}
 }
 
