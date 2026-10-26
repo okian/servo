@@ -501,8 +501,7 @@ a call. Anything else is
 
 **The included file must carry the `servoinject` build tag**, for exactly the reason a spec file
 does: every marker it returns panics if executed, so an untagged file compiles them into your real
-binary. Both failure modes have their own message — one for a file this build cannot see at all, one
-for a file it can see that isn't gated:
+binary. An untagged one is refused by name:
 
 ```
 cmd/api/spec.go:12:3: servo.Include names example.com/app/wiring.Shared, which is declared in a
@@ -525,7 +524,9 @@ answer is refused
 
 **The function may live in another package**, which is the whole point: a shared marker set is not
 part of any one injector. Servo finds the declaration by walking the injector package's import
-graph, so the spec file importing it is what makes it reachable.
+graph, so the spec file importing it is what makes it reachable. It has to be declared in your
+module or in a module it requires, whose source servo reads; a function from anywhere else, such as
+the standard library, is `not a marker set servo can read`.
 
 **Includes may nest.** An included function may itself `Include` another. A cycle is a diagnostic
 naming the path that closed it, not a hang:
@@ -690,7 +691,7 @@ Everything the spec parser can reject, in one place:
 | `servo.Value[…]() declared twice` | One `Value` per type, unless the first came from an `Include` |
 | `servo.Include takes exactly one argument, the name of a func() []servo.Marker` | `Include` with the wrong arity |
 | `servo.Include's argument must name a declared func() []servo.Marker` | A literal, a method value, or a call where the function name belongs |
-| `servo.Include names …, whose declaration is not in this build` | The included function is not reachable in this configuration |
+| `servo.Include names …, which is not a marker set servo can read` | A function from outside your module and the modules it requires, such as the standard library's |
 | ``servo.Include names …, which is declared in a file without a `//go:build servoinject` constraint`` | The included file is untagged |
 | ``X must be exactly `return []servo.Marker{ ... }` `` | The included function's body is something servo would have to run |
 | `servo.Include cycle — X includes itself, through:` | Two included sets include each other |

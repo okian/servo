@@ -97,6 +97,14 @@ func TestLoadRefusesPackagesOfNoMainModule(t *testing.T) {
 // through a load, which no real module can be made to do on cue.
 func fakeGoFailing(t *testing.T, args ...string) {
 	t.Helper()
+	fakeGo(t, "echo 'go: simulated failure' >&2\nexit 1\n", args...)
+}
+
+// fakeGo is fakeGoFailing with the failure written by the caller: onMatch
+// is the shell run when every one of args is present, with the real go
+// command in $real and a scratch directory in $scratch.
+func fakeGo(t *testing.T, onMatch string, args ...string) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the stand-in go command is a shell script")
 	}
@@ -104,13 +112,13 @@ func fakeGoFailing(t *testing.T, args ...string) {
 	if err != nil {
 		t.Fatalf("finding the go command: %v", err)
 	}
-	var script strings.Builder
-	script.WriteString("#!/bin/sh\n")
-	for _, arg := range args {
-		fmt.Fprintf(&script, "case \" $* \" in *\" %s \"*) ;; *) exec '%s' \"$@\" ;; esac\n", arg, real)
-	}
-	script.WriteString("echo 'go: simulated failure' >&2\nexit 1\n")
 	bin := t.TempDir()
+	var script strings.Builder
+	fmt.Fprintf(&script, "#!/bin/sh\nreal='%s'\nscratch='%s'\n", real, t.TempDir())
+	for _, arg := range args {
+		fmt.Fprintf(&script, "case \" $* \" in *\" %s \"*) ;; *) exec \"$real\" \"$@\" ;; esac\n", arg)
+	}
+	script.WriteString(onMatch)
 	if err := os.WriteFile(filepath.Join(bin, "go"), []byte(script.String()), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +127,10 @@ func fakeGoFailing(t *testing.T, args ...string) {
 
 // TestLoadReportsAGoCommandThatFailsPartway covers the go/packages calls
 // after the first. The import graph is asked for on its own, and its
-// failure is reported rather than taken for an empty module. When export
+// failure is reported rather than taken for an empty module. So is a
+// failure of the type-checked load, which go/packages itself does not
+// report: the go command's own words, its exit status when it printed
+// none, and an empty load even when asking again succeeds. When export
 // data cannot be read and the from-source retry fails as well, the error
 // names both: the decode failure that forced the retry, with its remedy,
 // and why the retry could not stand in for it.
@@ -131,6 +142,32 @@ func TestLoadReportsAGoCommandThatFailsPartway(t *testing.T) {
 		_, err := Load(Config{Dir: dir})
 		if err == nil || !strings.HasPrefix(err.Error(), "load: ") || !strings.Contains(err.Error(), "go: simulated failure") {
 			t.Fatalf("Load = %v, want the go command's failure", err)
+		}
+	})
+	t.Run("the type-checked load", func(t *testing.T) {
+		// -export is the call that type-checks against export data, and
+		// go/packages reports nothing when it fails: what reaches servo is
+		// a load with no packages in it, which read as a missing runtime.
+		fakeGoFailing(t, "-export=true")
+		_, err := Load(Config{Dir: dir})
+		if err == nil || err.Error() != "load: go list -export failed: go: simulated failure" {
+			t.Fatalf("Load = %v, want the go command's failure", err)
+		}
+	})
+	t.Run("the type-checked load, without a word", func(t *testing.T) {
+		fakeGo(t, "exit 3\n", "-export=true")
+		_, err := Load(Config{Dir: dir})
+		if err == nil || err.Error() != "load: go list -export failed: exit status 3" {
+			t.Fatalf("Load = %v, want the go command's exit status", err)
+		}
+	})
+	t.Run("the type-checked load, once", func(t *testing.T) {
+		// Failing the first time only, the way a transient failure does:
+		// asked again, the go command lists the packages after all.
+		fakeGo(t, "if [ -e \"$scratch/failed\" ]; then exec \"$real\" \"$@\"; fi\ntouch \"$scratch/failed\"\nexit 1\n", "-export=true")
+		_, err := Load(Config{Dir: dir})
+		if err == nil || !strings.Contains(err.Error(), "listed no packages, then listed them when asked again — run servo again") {
+			t.Fatalf("Load = %v, want the empty load reported", err)
 		}
 	})
 	t.Run("the from-source retry", func(t *testing.T) {
@@ -343,5 +380,54 @@ func TestStdlibErrorIsOnlyAStandardLibraryTypeError(t *testing.T) {
 	}}
 	if err := stdlibError([]*packages.Package{module, missing, newer}); err == nil || err.Error() != "server.go:9:2: undefined: newer" {
 		t.Errorf("stdlibError = %v, want net/http's type error", err)
+	}
+}
+
+// TestLoadReportsAFailedBuildOfTheExportData covers the failures that stop
+// the go command before it lists anything, and only when it has to build:
+// the type-checked load asks it for export data, the earlier questions do
+// not. go/packages reports no error for that call — it takes any failure
+// for a package's own build error, which the packages carry — so the load
+// came back empty, and servo said the runtime was not imported and to run
+// `servo init`. The go command's own reason is what the user has to see.
+func TestLoadReportsAFailedBuildOfTheExportData(t *testing.T) {
+	dir := writeFixtureModule(t, "")
+	type failure struct {
+		name, env, value, want string
+		overlay                bool
+	}
+	cases := []failure{
+		{name: "the build cache turned off", env: "GOCACHE", value: "off", want: "build cache is disabled by GOCACHE=off"},
+		// The go command is asked again with the overlay the run was
+		// given; one it could not read would be the failure reported.
+		{name: "the build cache turned off, under --overlay", env: "GOCACHE", value: "off", want: "build cache is disabled by GOCACHE=off", overlay: true},
+	}
+	if falseCmd, err := exec.LookPath("false"); err == nil {
+		cases = append(cases, failure{name: "a -toolexec that fails", env: "GOFLAGS", value: "-toolexec=" + falseCmd, want: "error obtaining buildID for go tool compile"})
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{Dir: dir}
+			if c.overlay {
+				api := filepath.Join(dir, "api", "api.go")
+				src, err := os.ReadFile(api)
+				if err != nil {
+					t.Fatal(err)
+				}
+				replacements := t.TempDir()
+				mustWriteFile(t, replacements, "api.go", string(src))
+				cfg.Build.Overlay = writeOverlayFile(t, replacements, map[string]string{api: filepath.Join(replacements, "api.go")})
+			}
+			t.Setenv(c.env, c.value)
+			_, err := Load(cfg)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load = %v, want the go command's %q", err, c.want)
+			}
+			for _, wrong := range []string{"servo init", "spec file"} {
+				if strings.Contains(err.Error(), wrong) {
+					t.Errorf("Load = %v, which still points at %s", err, wrong)
+				}
+			}
+		})
 	}
 }

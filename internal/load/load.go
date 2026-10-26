@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
@@ -329,7 +330,18 @@ func load(cfg Config, overlay map[string][]byte, sel *selection, stdlibFromSourc
 		// packages the patterns name and reads their dependencies from
 		// export data — so every package that needs syntax is passed as a
 		// pattern.
-		pkgs, err = packages.Load(newConfig(mode|packages.NeedExportFile), append(patterns, sourcePatterns(importGraph)...)...)
+		args := append(patterns, sourcePatterns(importGraph)...)
+		pkgs, err = packages.Load(newConfig(mode|packages.NeedExportFile), args...)
+		if err == nil && len(pkgs) == 0 {
+			// Export data means a build, and go/packages reports no failure
+			// of this call: it takes one for a package's own build error,
+			// which that package carries, and returns what the go command
+			// printed — nothing, when it stopped before listing a package.
+			// ./... matched packages a moment ago, so an empty answer is
+			// that failure, and left alone it read as a runtime nothing
+			// imports, with the advice to run `servo init`.
+			err = exportListFailure(cfg, args)
+		}
 	}
 	if err != nil {
 		return nil, fmt.Errorf("load: %w", err)
@@ -419,6 +431,29 @@ func load(cfg Config, overlay map[string][]byte, sel *selection, stdlibFromSourc
 		scan:        &candidateScan{},
 		specs:       &moduleSpecs{},
 	}, nil
+}
+
+// exportListFailure is the go command's reason it listed no packages when
+// asked for export data — a build cache turned off with GOCACHE=off, a
+// -toolexec that fails. go/packages drops the go command's stderr for that
+// call, so the same question is asked again here, directly, to read it.
+func exportListFailure(cfg Config, patterns []string) error {
+	args := append([]string{"list", "-e", "-export=true", "-deps=true", "-f", "{{.ImportPath}}"}, cfg.Build.Args()...)
+	if cfg.Build.Overlay != "" {
+		args = append(args, "-overlay="+cfg.Build.Overlay)
+	}
+	cmd := exec.Command("go", append(append(args, "--"), patterns...)...)
+	cmd.Dir = cfg.Dir
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		reason := oneLineMsg(stderr.String())
+		if reason == "" {
+			reason = err.Error()
+		}
+		return fmt.Errorf("go list -export failed: %s", reason)
+	}
+	return errors.New("go list -export listed no packages, then listed them when asked again — run servo again")
 }
 
 // runtimeLoadError is the go command's reason the servo runtime package did

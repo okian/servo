@@ -715,6 +715,14 @@ func TestFindSpecRejectsBadHTTPOptions(t *testing.T) {
 			body: `	servo.Build(servo.HTTP(servo.Use[*mw.Auth](servo.Root[*mw.Recover]())))`,
 			want: "servo.Root is not a servo.Use selector",
 		},
+		{
+			// servo.Use returns an HTTP option, as a selector does, but
+			// this CLI knows it: one written as a selector is misplaced,
+			// not a marker of a newer runtime.
+			name: "Use nested inside Use",
+			body: `	servo.Build(servo.HTTP(servo.Use[*mw.Auth](servo.Use[*mw.Audit]())))`,
+			want: `servo.Use is not a servo.Use selector — use servo.Group("name") or servo.Route("METHOD /pattern")`,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

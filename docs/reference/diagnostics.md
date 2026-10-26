@@ -309,7 +309,7 @@ Full explanations on [Spec file and markers](spec.md#errors-from-this-stage). In
 | `servo.Value[…]() declared twice` | One `Value` per type |
 | `servo.Include takes exactly one argument, the name of a func() []servo.Marker` | `Include(pkg.Shared)` |
 | `servo.Include's argument must name a declared func() []servo.Marker` | Pass the function's name, not a literal, a method value, or a call |
-| `servo.Include names …, whose declaration is not in this build` | The included function is excluded by a constraint this run doesn't satisfy |
+| `servo.Include names …, which is not a marker set servo can read` | The function is not declared in your module or one it requires — the standard library's, say — so there is no body for servo to read; name a `func() []servo.Marker` of your own |
 | ``servo.Include names …, which is declared in a file without a `//go:build servoinject` constraint`` | Tag the shared marker set's file, exactly like a spec file |
 | ``X must be exactly `return []servo.Marker{ ... }` `` | The included body is read as syntax, so it can't be a variable, a conditional, or an `append` |
 | `servo.Include cycle — X includes itself, through:` | Two shared sets include each other; the path that closed the loop is printed |
@@ -430,6 +430,18 @@ build list, so `go get golang.org/x/tools@latest` there puts a newer reader into
 release involved; an installed `servo` binary carries the x/tools its release pinned, and only a
 newer servo moves it. Should type-checking from source fail as well — a `go/types` too old for the
 standard library it is reading — the same sentence is an error, with that failure appended.
+
+### The go command cannot build export data
+
+```
+load: go list -export failed: build cache is disabled by GOCACHE=off, but required as of Go 1.12
+```
+
+Export data is something the go command builds, and that build can fail before it lists a single
+package: the build cache turned off with `GOCACHE=off`, a `-toolexec` in `GOFLAGS` that fails.
+The go command's own reason follows the colon; fix what it names. This used to arrive as an empty
+load, reported as the [missing runtime package](#missing-runtime-package) below, with the advice
+to run `servo init`.
 
 ### Missing runtime package
 
