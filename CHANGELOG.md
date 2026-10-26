@@ -925,6 +925,67 @@ in 3.2.0 was: it changes nothing this section defines as breaking.
   `auth.New(&Config{...})`, which stopped compiling when the tutorial moved to `//servo:config`;
   chapter 10 said `/readyz` reported no nodes, while the generated `Ready` reports `api.Server`; and
   chapter 15's try-it ran the service without the four settings it requires.
+- **`servo explain` and `servo why` answer for a scope's key and for `context.Context`.** `explain`
+  lists a scoped constructor's key and a constructor's `ctx` among a node's dependencies, but
+  nothing builds either, so asking about one answered that nothing in the graph asks for it.
+  `explain` now describes a scope key from the `ScopeKey` extractor that produces it, and the
+  construction context as the ctx `New`, `NewWith` or `NewTestApp` is called with; `why` traces a
+  path to each.
+- **`explain` names each dependent once, and `why --all` prints each path once.** A constructor
+  taking one node as two interfaces was listed twice among the node's dependents, and `why --all`
+  printed the same path twice.
+- **`[]byte` and `[]uint8` are one dependency, as are `rune` and `int32`.** Go defines `byte` and
+  `rune` as aliases of `uint8` and `int32`, but servo keyed them by the spelling the source used, so
+  a constructor returning `*Repo[[]byte]` did not satisfy a parameter written `*Repo[[]uint8]`
+  (`no provider for *Repo[[]uint8]`), and a `servo.Value[[]byte]` reached no `[]uint8` parameter.
+  Keys now spell them `uint8` and `int32` wherever they sit, the type arguments of an embedded
+  field's generic type included, which also makes `struct{ Cache[DBAlias] }` and
+  `struct{ Cache[*DB] }` one key. Node names in reports, `servo graph` and the generated file's
+  graph follow the keys, so a committed file naming one changes when regenerated; the generated code
+  keeps your types as written, and `servotest.NodeName` now agrees with servo on them.
+- **A `//servo:config` alias the injector cannot import is refused.** The check that the injector
+  can call a config's loader looked at the package of the type an alias stands for, not the package
+  holding the directive, where the loader is generated. So an alias of a struct literal under
+  another tree's `internal/`, or an alias in a package that imports the injector's own, resolved,
+  and `servo generate` wrote a file that `go build` refused. Both now get the
+  `config type … cannot be loaded by the injector` diagnostic a named type in that package gets.
+- **The advice for two constructors of one type is valid Go for every type.** It always embedded the
+  contested type, so for an unnamed interface it printed
+  `type PrimaryValue struct{ interface{Get() string} }`, which does not parse, and for a pointer to
+  an interface or a named pointer type a line that does not compile. Such a type is now held in a
+  named field, `struct{ Value interface{Get() string} }`; every other type is still embedded.
+- **A hand-written `App` method with a parenthesized receiver is no longer declared twice.** servo
+  recognised a method of your own on the generated `App` only when its receiver was spelled plainly,
+  so one on `(App)`, `*(App)` or `(*App)`, all legal Go, went unseen: a `Run` was not reported, and
+  the generated file declared `App.Run` again, a compile error blamed on servo. Receivers are now
+  read through their parentheses, so the collision is reported at your declaration, and fields step
+  around such methods.
+- **`servo-vet` flags a parenthesized marker call.** A call like `(servo.Build)(…)` or
+  `(servo.Root[T])()` in a file without the `servoinject` tag went unreported, yet it compiles into
+  the binary and panics at run time. It now gets the same diagnostic as `servo.Build(…)`.
+- **`servotest.NodeName` spells `chan (<-chan T)` as servo does.** It dropped the parentheses
+  go/types and the generator write, so an assertion naming a node whose type held such a channel
+  never matched. What run time cannot see, parameter and result names and an interface literal's
+  embedded interfaces, is now documented on `NodeName` and in the servotest reference, with a named
+  type as the cure.
+- **A `servo.Use` nested inside `servo.Use` is no longer called version skew.** The selector was
+  reported as a marker of a newer runtime that this CLI does not know, which sent users to upgrade
+  servo for a misplaced call. It now says `servo.Use is not a servo.Use selector` and names the two
+  selectors that are.
+- **A go command that fails building export data is reported in its own words.** With `GOCACHE=off`,
+  or a `-toolexec` that fails, the load came back empty, and servo said the runtime was not imported
+  and to run `servo init`; the compile check `generate` and `check` run afterwards passed, having
+  compiled nothing. Both now print the go command's reason, e.g.
+  `go list -export failed: build cache is disabled by GOCACHE=off`.
+- **Methods declared through an alias receiver are named after their type.** For
+  `type A = T; func (A) M()`, `servo list --rejected` listed `pkg.?.M` under a receiver called `?`.
+  Such methods are now named, and grouped, under `T`, or `(*T)` for a pointer receiver.
+- **`servo.Include` says why it cannot read what it names.** Including a function from outside the
+  module, such as `os.Environ`, was told to add a `//go:build servoinject` constraint, which cannot
+  help; it is now told the function is not a marker set servo can read. A marker set in a file this
+  build leaves out, by a constraint beyond `servoinject` or a `GOOS` in its name, was refused as an
+  argument of the wrong shape; it is now named with that file and its constraint, and a name
+  declared nowhere gets the type checker's `undefined`.
 
 ### Security
 - **`middleware.RateLimit` could be bypassed over IPv6 and exhausted with distinct keys.** Keyed
