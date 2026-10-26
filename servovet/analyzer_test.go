@@ -221,6 +221,27 @@ func wire() {
 	}
 }
 
+// Parentheses change nothing about which function a call runs: Go reads
+// (servo.Build)() as servo.Build(), and the panic it carries is as real.
+// They can wrap the marker or, for a generic one, its instantiation, once
+// or nested, qualified or dot-imported.
+func TestFlagsParenthesizedMarkerCalls(t *testing.T) {
+	const plain, dot = `"github.com/okian/servo/v3/servo"`, `. "github.com/okian/servo/v3/servo"`
+	for _, tc := range []struct{ imp, call, want string }{
+		{plain, "(servo.Build)()", "servo.Build"},
+		{plain, "((servo.Build))()", "servo.Build"},
+		{plain, "(servo.Root[int])()", "servo.Root"},
+		{plain, "((servo.Bind[int, int]))()", "servo.Bind"},
+		{dot, "(Build)()", "servo.Build"},
+		{dot, "(Root[int])()", "servo.Root"},
+	} {
+		got := runOn(t, "package fixture\n\nimport "+tc.imp+"\n\nfunc wire() {\n\t"+tc.call+"\n}\n")
+		if len(got) != 1 || !strings.Contains(got[0], tc.want) {
+			t.Errorf("%s: got %v, want one diagnostic naming %s", tc.call, got, tc.want)
+		}
+	}
+}
+
 func TestDoesNotFlagUnqualifiedGenericCall(t *testing.T) {
 	const src = `package fixture
 

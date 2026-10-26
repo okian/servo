@@ -240,11 +240,26 @@ servotest.NodeName[*api.Server]() // "*example.com/app/api.Server"
   for the latter.
 
 `NodeName` computes that at run time from `T` itself, so a renamed or moved type keeps its assertion
-in step with no edit. Two cases differ, both outside what a test usually names. Run time keeps no
-parameter names, so a `func` or interface literal among a generic's type arguments is spelled
-without any its source gave. And a binary built from `package main` calls that package `main` at run
-time, where servo uses its import path; under `go test`, the package being tested carries its import
-path, so a test's own types come out as servo names them.
+in step with no edit. Run time does not keep three things the source says, which servo spells as
+written; where `T` holds one of them, the two names differ:
+
+- **Parameter and result names.** A `func` or interface literal, wherever it sits in `T`, comes out
+  without them: a node of type `interface{ Get(key string) string }` is
+  `interface{Get(string) string}` to `NodeName` and `interface{Get(key string) string}` to servo.
+- **Embedded interfaces.** Run time flattens an interface literal's method set, so
+  `interface{ io.Reader; Close() error }` comes out with `Read`'s signature written out, where
+  servo writes `io.Reader`.
+- **`byte` and `rune`.** Run time knows them only as `uint8` and `int32`, so a
+  `*example.com/app/cache.Cache[[]byte]` node comes out as `…Cache[[]uint8]`.
+
+A name of its own is the cure for all three: declare the interface, or the type argument, as a
+defined type — `type ReadCloser interface{ io.Reader; Close() error }`, `type Payload []byte` — and
+`NodeName` and servo agree on that name. For `byte` and `rune`, spelling `uint8` and `int32` where
+the node's type is written does as well.
+
+And a binary built from `package main` calls that package `main` at run time, where servo uses its
+import path; under `go test`, the package being tested carries its import path, so a test's own
+types come out as servo names them.
 
 `servo graph`, `servo explain` and the generated file's header comment print the same names. Two
 kinds of report entry are not a type at all, and `NodeName` has nothing to say about them: a scope

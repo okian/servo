@@ -25,13 +25,30 @@ import (
 // It is computed at run time, from T itself, so a renamed or moved type
 // keeps its assertion in step without an edit. That covers what a node
 // can be — a defined type, a pointer to one, an instantiated generic
-// type, whose type arguments are spelled with full import paths too —
-// with two exceptions. Run time keeps no parameter names, so a func or
-// interface literal among a generic's type arguments is spelled without
-// any its source gave. And a binary built from package main names that
-// package "main", where servo uses its import path; under go test the
-// package being tested carries its import path, so a test's own types
-// are named as servo names them.
+// type, whose type arguments are spelled with full import paths too, or
+// an interface literal — except for three things run time does not keep,
+// which servo spells as the source does:
+//
+//   - Parameter and result names. A func or interface literal, wherever
+//     it sits in T, comes out without them: a node of type
+//     interface{ Get(key string) string } is "interface{Get(string) string}"
+//     here, and "interface{Get(key string) string}" to servo.
+//   - Embedded interfaces. Run time flattens an interface literal's method
+//     set, so interface{ io.Reader; Close() error } comes out with Read's
+//     signature written out where servo writes io.Reader.
+//   - byte and rune. Run time knows them only as uint8 and int32, so the
+//     type argument of a *cache.Cache[[]byte] comes out as []uint8.
+//
+// A name of its own is the cure for all three: declare the interface, or
+// the type argument, as a defined type — type ReadCloser interface{
+// io.Reader; Close() error }, type Payload []byte — and NodeName and servo
+// agree on that name. For byte and rune, spelling uint8 and int32 where
+// the node's type is written does as well.
+//
+// And a binary built from package main names that package "main", where
+// servo uses its import path; under go test the package being tested
+// carries its import path, so a test's own types are named as servo names
+// them.
 func NodeName[T any]() string {
 	return typeName(reflect.TypeFor[T]())
 }
@@ -60,6 +77,13 @@ func typeName(t reflect.Type) string {
 			return "<-chan " + typeName(t.Elem())
 		case reflect.SendDir:
 			return "chan<- " + typeName(t.Elem())
+		}
+		// A <- binds to the leftmost chan it can, so chan <-chan T would
+		// read as chan<- (chan T): go/types parenthesizes an unnamed
+		// receive-only element of a bidirectional channel, and so does
+		// the generator's name for it.
+		if e := t.Elem(); e.Kind() == reflect.Chan && e.Name() == "" && e.ChanDir() == reflect.RecvDir {
+			return "chan (" + typeName(e) + ")"
 		}
 		return "chan " + typeName(t.Elem())
 	case reflect.Func:

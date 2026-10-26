@@ -119,8 +119,14 @@ func run(pass *analysis.Pass) (any, error) {
 // is just as real. The identifier is resolved through TypesInfo.Uses either
 // way, so a bare call to some other package's Build is not mistaken for
 // servo's.
+//
+// Parentheses around the function, `(servo.Build)()` or
+// `(servo.Root[T])()`, call it all the same, so they are stripped first;
+// matched only as plainly spelled, such a call went unflagged and
+// panicked at run time. Go accepts them nowhere else in the callee: a
+// generic function has to be instantiated before it can be parenthesized.
 func markerFuncCalled(pass *analysis.Pass, call *ast.CallExpr) (*types.Func, bool) {
-	fun := call.Fun
+	fun := ast.Unparen(call.Fun)
 	switch f := fun.(type) {
 	case *ast.IndexExpr:
 		fun = f.X

@@ -97,13 +97,19 @@ func collectUserDecls(pkg *packages.Package, recvs ...string) userDecls {
 
 // receiverTypeName is the name of the type a method is declared on,
 // pointer or not, "" for anything it cannot name.
+//
+// Go lets the receiver type sit in parentheses, around the star or inside
+// it — (App), *(App), (*App) — and the method is App's all the same, so
+// they are unwrapped on both sides of the one star a receiver may have.
+// Read only as plainly spelled, such a method escaped the collision check,
+// and the generated file declared it a second time.
 func receiverTypeName(recv *ast.FieldList) string {
 	if recv == nil || len(recv.List) == 0 {
 		return ""
 	}
-	expr := recv.List[0].Type
+	expr := ast.Unparen(recv.List[0].Type)
 	if star, ok := expr.(*ast.StarExpr); ok {
-		expr = star.X
+		expr = ast.Unparen(star.X)
 	}
 	switch x := expr.(type) {
 	case *ast.Ident:

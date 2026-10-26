@@ -10,13 +10,15 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// TestReceiverTypeNameReadsGenericReceivers: a hand-written method is
+// TestReceiverTypeNameReadsEveryReceiverSpelling: a hand-written method is
 // matched to the generated App by its receiver's type name, read from
 // syntax that need not type-check. A method on a generic type is declared
 // with its type parameters, one or several, and is still a method of that
-// type; a receiver list with nothing in it, or a receiver no method can be
-// declared on, names no type at all.
-func TestReceiverTypeNameReadsGenericReceivers(t *testing.T) {
+// type; so is one whose receiver type sits in parentheses, around the star
+// or inside it, as Go allows. A receiver list with nothing in it, or a
+// receiver no method can be declared on — a slice, a pointer to a
+// pointer — names no type at all, as it names none to the compiler.
+func TestReceiverTypeNameReadsEveryReceiverSpelling(t *testing.T) {
 	for _, c := range []struct{ decl, want string }{
 		{"func (a App) M() {}", "App"},
 		{"func (a *App) M() {}", "App"},
@@ -24,8 +26,17 @@ func TestReceiverTypeNameReadsGenericReceivers(t *testing.T) {
 		{"func (a *App[T]) M() {}", "App"},
 		{"func (a App[K, V]) M() {}", "App"},
 		{"func (a *App[K, V]) M() {}", "App"},
+		{"func (a (App)) M() {}", "App"},
+		{"func (a *(App)) M() {}", "App"},
+		{"func (a (*App)) M() {}", "App"},
+		{"func (a ((*App))) M() {}", "App"},
+		{"func (a (*(App))) M() {}", "App"},
+		{"func (a *(App[T])) M() {}", "App"},
+		{"func (a (*App[K, V])) M() {}", "App"},
 		{"func () M() {}", ""},
 		{"func (a []App) M() {}", ""},
+		{"func (a **App) M() {}", ""},
+		{"func (a *(*App)) M() {}", ""},
 	} {
 		f, err := parser.ParseFile(token.NewFileSet(), "m.go", "package app\n"+c.decl, 0)
 		if err != nil {
