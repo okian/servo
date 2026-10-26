@@ -1,0 +1,12 @@
+# The docs site's build dependencies, for the docs job in
+# .github/workflows/go.yml. github-pages is the gem set GitHub Pages itself
+# builds with, so a build that passes there is the build that happens on
+# publish. Gemfile.lock pins every gem beneath it, with checksums, so the
+# job installs exactly what was reviewed instead of whatever an unpinned
+# `gem install` resolved that day; Dependabot proposes the updates.
+#
+# Pages does not read this file: it builds with its own copy of the same
+# gem set.
+source "https://rubygems.org"
+
+gem "github-pages", "= 232", group: :jekyll_plugins

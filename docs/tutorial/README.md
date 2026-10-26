@@ -24,10 +24,34 @@ happens to also be a complete reference for how the pieces fit together.
 
 Each chapter follows the same shape: what problem this layer solves and why it exists, the real
 code that solves it (with enough surrounding explanation that you're not just staring at syntax),
-a diagram where the shape of something is easier to see than to describe, a "try it yourself"
-section with commands you can actually run, then diagnostics, do's and don'ts, and pointers to
-alternatives. Read chapters in order the first time — each one builds on code the previous ones
-already wrote. After that, they hold up fine as standalone reference.
+a diagram where the shape of something is easier to see than to describe, something to run that
+proves it — the chapter's tests, and where real infrastructure is the point, a "try it" section
+against the running service — then diagnostics, do's and don'ts, and pointers to alternatives.
+Read chapters in order the first time — each one builds on code the previous ones already wrote.
+After that, they hold up fine as standalone reference.
+
+## Following along in your own module
+
+Chapter 2 starts a module of your own, and every package from chapter 3 on compiles and passes its
+tests the moment you write it. The binaries are the exception. `cmd/orders` is an injector — a spec
+file, a `main.go`, and the files `servo generate` writes from them, the config loaders of chapter 3
+included — and it arrives in [chapter 14](14-wiring-with-servo.md), once every package it wires
+exists. So chapters 10 to 13, which run the service, run it in the finished module: clone servo,
+`cd examples/tutorial`, start Postgres, Redis and NATS on their own —
+
+```
+docker compose -f deploy/docker-compose.yml up -d postgres redis nats
+```
+
+— and use the commands as the chapter shows them. (`make up` starts the whole stack instead,
+including a containerized copy of the service on ports 8080 and 8081, which a `go run` of your
+own would then find taken.) From chapter 14 on, your own module runs them too.
+
+One file arrives early. Chapter 5 is the first to start Postgres, with `make up`, which reads
+`deploy/docker-compose.yml` — a file chapter 20 explains. Copy it from the finished module when
+chapter 5 asks for it, and until chapter 20 start the three dependencies by name, as above: the
+file's `orders` service builds the finished service from servo's own repository layout, which your
+module doesn't have.
 
 ## Who this is for
 

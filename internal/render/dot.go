@@ -23,7 +23,7 @@ func DOT(g servo.Graph) string {
 		fmt.Fprintf(&b, "  subgraph cluster_scope%d {\n", i)
 		fmt.Fprintf(&b, "    label=%q;\n    style=dashed;\n    color=\"#64748b\";\n", fmt.Sprintf("scope %s  (linger %s, max %d)", s.Key, s.Linger, s.Max))
 		writeDotNodes(&b, membersOf(g, s.Key), "  ")
-		fmt.Fprintf(&b, "    %q [label=%q, shape=note, fillcolor=\"#fef9c3\"];\n", s.Key, s.Key+"\\n(scope key)")
+		fmt.Fprintf(&b, "    %q [label=%q, shape=note, fillcolor=\"#fef9c3\"];\n", s.Key, s.Key+"\n(scope key)")
 		b.WriteString("  }\n")
 	}
 	b.WriteString("\n")
@@ -41,7 +41,10 @@ func writeDotNodes(b *strings.Builder, g servo.Graph, indent string) {
 	for _, n := range g.Nodes {
 		label := n.Type
 		if len(n.Capabilities) > 0 {
-			label += "\\n" + strings.Join(n.Capabilities, ", ")
+			// A real newline: %q renders it as DOT's own \n escape. Writing
+			// the escape here instead had %q double its backslash, and dot
+			// drew a literal "\n" on one line.
+			label += "\n" + strings.Join(n.Capabilities, ", ")
 		}
 		fmt.Fprintf(b, "  %s%q [label=%q, fillcolor=%q];\n", indent, n.Type, label, colorFor(n.Level))
 	}

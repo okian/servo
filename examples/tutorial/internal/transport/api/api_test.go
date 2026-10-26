@@ -95,10 +95,13 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	// request per test, ever; see
 	// TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt for the test that
 	// actually wants that.
-	authCfg := auth.Config{Secret: "test-secret", Expiry: time.Hour}
+	authCfg := auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour}
 	limitCfg := resilience.Config{RPS: 1000}
 	sessionSettings := session.NewSettings(session.Config{Recent: 10})
-	issuer := auth.New(authCfg)
+	issuer, err := auth.New(authCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	orders := service.New(repo, orderCache, pub, quietLogger())
 	authSvc := service.NewAuthService(users, issuer)
 	metrics := observability.NewMetrics()
@@ -249,7 +252,10 @@ func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	apiCfg := api.Config{HTTPAddr: "127.0.0.1:0"}
 	limitCfg := resilience.Config{RPS: 1000}
-	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
 	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl), quietLogger())
 	authSvc := service.NewAuthService(mocks.NewMockUserRepository(ctrl), issuer)
 	tracer, err := observability.NewTracer(observability.Config{})

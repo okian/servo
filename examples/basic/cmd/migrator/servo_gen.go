@@ -5,32 +5,37 @@
 // Resolved graph:
 //
 //	[L0] example.com/servobasic/migrator.Target
-//	      supplied by the caller  cmd/migrator/spec.go:18:3
+//	      supplied by the caller, as Values.Target
 //	[L1] *example.com/servobasic/logger.Logger
 //	      deps: none
-//	      capabilities: Finalizer | binding: sole candidate | logger/logger.go:10:6
+//	      capabilities: Finalizer | binding: sole candidate | logger.New
 //	[L2] *example.com/servobasic/postgres.DB
 //	      deps: *example.com/servobasic/logger.Logger
-//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | postgres/postgres.go:13:6
+//	      capabilities: Initializer, Finalizer, Healther | binding: sole candidate | postgres.New
 //	[L3] *example.com/servobasic/migrator.Migrator
 //	      deps: *example.com/servobasic/postgres.DB, *example.com/servobasic/logger.Logger, example.com/servobasic/migrator.Target
-//	      capabilities: Initializer | binding: sole candidate | migrator/migrator.go:26:6
+//	      capabilities: Initializer | binding: sole candidate | migrator.New
 package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"example.com/servobasic/logger"
 	"example.com/servobasic/migrator"
 	"example.com/servobasic/postgres"
 	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type App struct {
 	logger           *logger.Logger
@@ -52,8 +57,8 @@ type Values struct {
 
 // New builds the app with the zero value of every servo.Value.
 // Prefer NewWith: the zero value is a real value for a struct of
-// options and a nil pointer for anything else, so this is right only when
-// the zero value is what you meant.
+// options, but a nil pointer, interface, map, func or chan is refused,
+// so this is right only when the zero value is what you meant.
 func New(ctx context.Context) (*App, error) {
 	return NewWith(ctx, Values{})
 }
@@ -64,51 +69,49 @@ func NewWith(ctx context.Context, v Values) (*App, error) {
 	target := v.Target
 	a.target = target
 
+	var undo []func(context.Context) servo.NodeResult
+
 	logger := logger.New()
 	a.logger = logger
+	undo = append(undo, a.stopLogger)
 
 	db, err := postgres.New(logger)
 	if err != nil {
-		_ = a.stopLogger(context.WithoutCancel(ctx))
+		a.unwind(context.WithoutCancel(ctx), undo)
 		return nil, err
 	}
 	a.db = db
+	undo = append(undo, a.stopDb)
 
 	migrator := migrator.New(db, logger, target)
 	a.migrator = migrator
 
-	{
-		start := time.Now()
-		err := a.db.Init(ctx)
-		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servobasic/postgres.DB", Duration: time.Since(start)})
-		if err != nil {
-			report := a.Shutdown(context.WithoutCancel(ctx))
-			if report.Clean() {
-				return nil, err
-			}
-			return nil, errors.Join(err, report)
-		}
-	}
-	{
-		start := time.Now()
-		err := a.migrator.Init(ctx)
-		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servobasic/migrator.Migrator", Duration: time.Since(start)})
-		if err != nil {
-			report := a.Shutdown(context.WithoutCancel(ctx))
-			if report.Clean() {
-				return nil, err
-			}
-			return nil, errors.Join(err, report)
-		}
+	if err := servoimpl.Init(ctx, servo.DefaultInitBudget, &a.startupReport,
+		[]servoimpl.Call{
+			{Node: "*example.com/servobasic/postgres.DB", Fn: a.db.Init},
+		},
+		[]servoimpl.Call{
+			{Node: "*example.com/servobasic/migrator.Migrator", Fn: a.migrator.Init},
+		},
+	); err != nil {
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	return a, nil
+}
+
+// unwind stops, newest first, every node built before a constructor failed:
+// undo holds their stop methods in the order the nodes were built.
+func (a *App) unwind(ctx context.Context, undo []func(context.Context) servo.NodeResult) {
+	for i := len(undo) - 1; i >= 0; i-- {
+		_ = undo[i](ctx)
+	}
 }
 
 func (a *App) stopLogger(ctx context.Context) servo.NodeResult {
 	a.loggerStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/logger.Logger", a.logger.Stop))
-		a.loggerStopResult = servo.MergeNodeResults("*example.com/servobasic/logger.Logger", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/logger.Logger", a.logger.Stop))
+		a.loggerStopResult = servoimpl.MergeNodeResults("*example.com/servobasic/logger.Logger", results...)
 	})
 	return a.loggerStopResult
 }
@@ -116,8 +119,8 @@ func (a *App) stopLogger(ctx context.Context) servo.NodeResult {
 func (a *App) stopDb(ctx context.Context) servo.NodeResult {
 	a.dbStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/postgres.DB", a.db.Stop))
-		a.dbStopResult = servo.MergeNodeResults("*example.com/servobasic/postgres.DB", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/postgres.DB", a.db.Stop))
+		a.dbStopResult = servoimpl.MergeNodeResults("*example.com/servobasic/postgres.DB", results...)
 	})
 	return a.dbStopResult
 }
@@ -134,8 +137,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -163,10 +166,10 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "example.com/servobasic/migrator.Target", Level: 0, Deps: nil, Capabilities: nil, Binding: "supplied", Pos: "cmd/migrator/spec.go:18:3"},
-		{Type: "*example.com/servobasic/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "logger/logger.go:10:6"},
-		{Type: "*example.com/servobasic/postgres.DB", Level: 2, Deps: []string{"*example.com/servobasic/logger.Logger"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "sole candidate", Pos: "postgres/postgres.go:13:6"},
-		{Type: "*example.com/servobasic/migrator.Migrator", Level: 3, Deps: []string{"*example.com/servobasic/postgres.DB", "*example.com/servobasic/logger.Logger", "example.com/servobasic/migrator.Target"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Pos: "migrator/migrator.go:26:6"},
+		{Type: "example.com/servobasic/migrator.Target", Level: 0, Deps: nil, Capabilities: nil, Binding: "supplied"},
+		{Type: "*example.com/servobasic/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Provider: "logger.New"},
+		{Type: "*example.com/servobasic/postgres.DB", Level: 2, Deps: []string{"*example.com/servobasic/logger.Logger"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "sole candidate", Provider: "postgres.New"},
+		{Type: "*example.com/servobasic/migrator.Migrator", Level: 3, Deps: []string{"*example.com/servobasic/postgres.DB", "*example.com/servobasic/logger.Logger", "example.com/servobasic/migrator.Target"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Provider: "migrator.New"},
 	}}
 }
 

@@ -4,6 +4,7 @@
 package resolve
 
 import (
+	"fmt"
 	"go/token"
 	"go/types"
 	"sort"
@@ -91,6 +92,13 @@ type Resolved struct {
 	// one non-provider kind the construction loop has to know about. An
 	// app declaring none emits a byte-identical file.
 	Traced []*Node
+
+	// Notes are things worth saying about a graph that resolved, none of
+	// which stops it from generating: a capability-named method with the
+	// wrong signature, which servo will never call, and a Close or Shutdown
+	// that no Stop bridges to. Ordered by position, and empty for the
+	// override variant, whose mocks are not the reader's components.
+	Notes []Diagnostic
 }
 
 // Input is everything Resolve needs: the spec's roots/binds/scopes, the
@@ -117,10 +125,13 @@ type Input struct {
 	// requested type matching one resolves to its generated loader; the
 	// ones nothing requests are simply not part of this graph.
 	Configs []*graph.ConfigDecl
-	// Fset and Pkgs are used only by scope detection: positions for a
-	// ScopeKey method, and its declaration's syntax for the blank-receiver
-	// check. Both are optional — a graph with no Scoped declarations never
-	// looks at them.
+	// Fset and Pkgs are optional. Scope detection reads them — positions
+	// for a ScopeKey method, its declaration's syntax for the
+	// blank-receiver check — and so do the near-miss lines of a "no
+	// provider" diagnostic, which scan the main module's packages for the
+	// functions the candidate scan refused, and the source order generated
+	// output is sorted in. Without them those lines are left out and
+	// positions sort by raw filename.
 	Fset *token.FileSet
 	Pkgs []*packages.Package
 
@@ -182,6 +193,26 @@ type resolver struct {
 	// overrideVariant is Input.OverrideVariant: the unused-declaration
 	// checks step aside, and Resolved.Supplied carries only the used values.
 	overrideVariant bool
+	// srcOrder ranks declaration positions the same way on every machine
+	// — by module path, then the module-relative file — for every order
+	// that reaches the generated file. nil (no loaded packages, as in a
+	// test that checks its fixture by hand) falls back to raw filenames.
+	srcOrder *graph.SourceOrder
+
+	// spec is the spec being resolved: its file's imports are what a
+	// suggested marker line is written against.
+	spec *load.Spec
+	// explicitType is the concrete type behind each explicit entry, for
+	// the diagnostics that print it.
+	explicitType map[graph.Key]types.Type
+	// reach decides which candidates generated code in the injector can
+	// refer to at all; finder, built on the first failure, explains the
+	// near misses of a missing provider.
+	reach  *reach
+	finder *finder
+	// ctxNode is the construction context — New's own ctx — created the
+	// first time a constructor asks for a context.Context.
+	ctxNode *Node
 }
 
 // Resolve builds the construction plan for in.Spec.Roots. On any
@@ -222,19 +253,28 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 		traceByKey:      make(map[graph.Key]*load.TraceDecl),
 		traceUsed:       make(map[graph.Key]bool),
 		overrideVariant: in.OverrideVariant,
+		spec:            in.Spec,
+		explicitType:    make(map[graph.Key]types.Type),
 	}
-	if in.Spec.InjectorPkg != nil {
-		r.injectorPath = in.Spec.InjectorPkg.PkgPath
+	// Nothing can import a package main, so an injector in one can never
+	// be on the far end of an import cycle.
+	injector, importable := injectorOf(in)
+	r.injectorPath = injector
+	r.reach = newReach(injector, importable)
+	if in.Pkgs != nil {
+		r.srcOrder = graph.NewSourceOrder(in.Pkgs)
 	}
 	for _, c := range in.Candidates {
 		r.byResult[c.Result] = append(r.byResult[c.Result], c)
 	}
 	for _, b := range in.Spec.Binds {
 		r.explicit[b.Iface] = b.Concrete
+		r.explicitType[b.Iface] = b.ConcreteType
 		r.explicitPos[b.Iface] = b.Pos
 	}
 	for _, b := range in.ExtraBinds {
 		r.explicit[b.Iface] = b.Concrete // overrides win over normal binds
+		r.explicitType[b.Iface] = b.ConcreteType
 		r.explicitPos[b.Iface] = b.Pos
 	}
 	for _, d := range in.Spec.Scopes {
@@ -323,12 +363,16 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	// diagnostic for the same edge would only say it less well.
 	r.checkTraces(in.Spec.Traces)
 	r.checkScopeEdges(roots)
+	r.checkContextConsumers()
 	r.checkAccessorInterfaces()
 	r.checkSuppliedValues(in.Spec.Values)
 	r.checkConfigs(in.Spec)
 	if len(r.diags) > 0 {
 		return nil, r.diags
 	}
+	// Read before finishScopes moves the scoped members out of r.order, so
+	// a scoped component's misspelled Run is noted as a singleton's is.
+	notes := r.capabilityNotes()
 
 	var supplied []*Node
 	for _, v := range in.Spec.Values {
@@ -343,10 +387,7 @@ func Resolve(in Input) (*Resolved, []Diagnostic) {
 	// Declaration-position order, not discovery order: which root's DFS
 	// reached a config first is an accident of the spec file's line order,
 	// and the generated preamble should not reshuffle when roots do.
-	sort.Slice(r.configNodes, func(i, j int) bool {
-		return graph.ComparePos(r.configNodes[i].Config.Pos, r.configNodes[j].Config.Pos) < 0
-	})
-	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, HTTP: httpPlan, Supplied: supplied, Configs: r.configNodes, Traced: sortedTraceNodes(r.traceNodes)}, nil
+	return &Resolved{Order: r.finishScopes(), Roots: roots, ByKey: r.nodes, Scopes: r.scopes, HTTP: httpPlan, Supplied: supplied, Configs: r.sortedConfigNodes(), Traced: r.sortedTraceNodes(), Notes: notes}, nil
 }
 
 // checkConfigs runs the config checks that only make sense once the graph
@@ -381,7 +422,7 @@ func (r *resolver) checkConfigs(spec *load.Spec) {
 	}
 	envClaims := map[string]claim{}
 	fileClaims := map[string]claim{}
-	for _, n := range sortedConfigNodes(r.configNodes) {
+	for _, n := range r.sortedConfigNodes() {
 		for _, f := range n.Config.Fields {
 			if prior, dup := envClaims[f.EnvName]; dup {
 				r.diags = append(r.diags, r.configCollisionDiagnostic("environment variable", f.EnvName, prior.decl, prior.field, n.Config, f))
@@ -407,13 +448,14 @@ func (r *resolver) checkConfigs(spec *load.Spec) {
 	}
 }
 
-// sortedConfigNodes orders by declaration position without mutating the
-// resolver's own slice, so collision reporting is deterministic even when
-// it runs before the final sort in Resolve.
-func sortedConfigNodes(nodes []*Node) []*Node {
-	sorted := append([]*Node(nil), nodes...)
-	sort.Slice(sorted, func(i, j int) bool {
-		return graph.ComparePos(sorted[i].Config.Pos, sorted[j].Config.Pos) < 0
+// sortedConfigNodes orders the used configs by declaration position, in
+// the machine-independent source order, without mutating the resolver's
+// own slice — so collision reporting and the generated preamble agree, and
+// neither depends on where a module was checked out.
+func (r *resolver) sortedConfigNodes() []*Node {
+	sorted := append([]*Node(nil), r.configNodes...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return r.srcOrder.Compare(sorted[i].Config.Pos, sorted[j].Config.Pos) < 0
 	})
 	return sorted
 }
@@ -451,7 +493,17 @@ func (r *resolver) checkSuppliedValues(values []load.ValueDecl) {
 // diagnostic's trailing "root" line (a node can be both a root and, from
 // its dependency's point of view, a "needed by" consumer — the diagnostic
 // prints both lines for such a node, not one replacing the other).
+//
+// It is the entry point for a traversal's first frames — a root, a scope
+// root, an HTTP handler, each with at most one frame of its own — and the
+// recursion below it runs on resolveLinked's shared links.
 func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry, rootPos token.Position) (*Node, bool) {
+	return r.resolveLinked(k, kType, linkOf(chain), rootPos)
+}
+
+// resolveLinked is resolveKey over a linked chain, which every frame
+// extends without copying.
+func (r *resolver) resolveLinked(k graph.Key, kType types.Type, chain *chainLink, rootPos token.Position) (*Node, bool) {
 	// A traced interface answers every request with its wrapper, whatever
 	// the interface itself would have resolved to — which is what the
 	// wrapper resolves next, through the ordinary path below.
@@ -464,7 +516,7 @@ func (r *resolver) resolveKey(k graph.Key, kType types.Type, chain []chainEntry,
 // resolveUntraced is resolveKey without the trace indirection: the
 // precedence walk itself. resolveTraced calls it for the implementation
 // behind a wrapper; everything else goes through resolveKey.
-func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainEntry, rootPos token.Position) (*Node, bool) {
+func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain *chainLink, rootPos token.Position) (*Node, bool) {
 	// A scope's key is produced per instance by its extractor, so it
 	// resolves only while some scope's sub-graph is being walked, and is
 	// deliberately never cached in resolvedKey: the identical key
@@ -481,7 +533,7 @@ func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainE
 		if r.activeScope != nil {
 			return s.Key, true
 		}
-		r.diags = append(r.diags, r.scopeKeyOutsideScopeDiagnostic(s, chain, rootPos))
+		r.diags = append(r.diags, r.scopeKeyOutsideScopeDiagnostic(s, chain.entries(), rootPos))
 		r.failedKey[k] = true
 		return nil, false
 	}
@@ -496,6 +548,16 @@ func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainE
 	if n, ok := r.suppliedByKey[k]; ok {
 		r.suppliedUsed[k] = true
 		return n, true
+	}
+	// A context.Context parameter is the context New, NewWith or
+	// NewTestApp was called with: supplied, never searched for. The search
+	// found ten functions in the standard library returning context.Context,
+	// every one of them the wrong answer, and told the reader to remove or
+	// rename all but one. A declared servo.Value, above, still wins — and so
+	// does a Bind or an Override naming the type: both are the spec file
+	// speaking.
+	if _, bound := r.explicit[k]; !bound && isContextKey(k, kType) {
+		return r.contextNode(k), true
 	}
 
 	if n, ok := r.resolvedKey[k]; ok {
@@ -513,6 +575,13 @@ func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainE
 	// *member* taking one directly is refused later, in checkConfigs, once
 	// membership is known.
 	if decl, ok := r.configByKey[k]; ok {
+		// The loader is called from the injector package, so the config's
+		// package must be one the injector can import.
+		if why := r.reach.configProblem(decl); why != "" {
+			r.diags = append(r.diags, r.unreachableConfigDiagnostic(decl, why, chain.entries(), rootPos))
+			r.failedKey[k] = true
+			return nil, false
+		}
 		node := &Node{Key: k, Kind: NodeConfig, Level: 0, Config: decl, Binding: "config directive"}
 		r.nodes[k] = node
 		r.resolvedKey[k] = node
@@ -525,10 +594,10 @@ func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainE
 		// The tracer provider is the one dependency the user did not ask
 		// for by name, so "no provider, zero implementations" needs to
 		// say whose job writing one is.
-		if r.traceIn != nil && k == r.traceIn.ProviderKey && len(sel.candidates) == 0 {
-			r.diags = append(r.diags, r.missingTracerProviderDiagnostic(chain, rootPos))
+		if r.traceIn != nil && k == r.traceIn.ProviderKey && len(sel.candidates) == 0 && sel.unusable == 0 {
+			r.diags = append(r.diags, r.missingTracerProviderDiagnostic(chain.entries(), rootPos))
 		} else {
-			r.diags = append(r.diags, r.unresolvedDiagnostic(sel, chain, rootPos))
+			r.diags = append(r.diags, r.unresolvedDiagnostic(sel, chain.entries(), rootPos))
 		}
 		r.failedKey[k] = true
 		return nil, false
@@ -539,7 +608,7 @@ func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainE
 
 	if existing, ok := r.nodes[resultKey]; ok {
 		if r.color[resultKey] == colorGray {
-			r.diags = append(r.diags, r.cycleDiagnostic(append(chain, frame)))
+			r.diags = append(r.diags, r.cycleDiagnostic(chain.push(frame).entries()))
 			r.failedKey[k] = true
 			return nil, false
 		}
@@ -553,17 +622,17 @@ func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainE
 	node := &Node{Key: resultKey, Provider: sel.provider, Binding: sel.binding, Capabilities: r.caps.Detect(sel.provider.ResultType)}
 	r.nodes[resultKey] = node
 
-	if !r.checkScopeDeclaration(node, sel.provider, append(append([]chainEntry{}, chain...), frame), rootPos) {
+	newChain := chain.push(frame)
+	if !r.checkScopeDeclaration(node, sel.provider, newChain, rootPos) {
 		r.color[resultKey] = colorBlack
 		r.failedKey[k] = true
 		return nil, false
 	}
 
-	newChain := append(append([]chainEntry{}, chain...), frame)
 	ok := true
 	maxDepLevel := 0
 	for i, paramKey := range sel.provider.Params {
-		dep, depOK := r.resolveKey(paramKey, sel.provider.ParamTypes[i], newChain, rootPos)
+		dep, depOK := r.resolveLinked(paramKey, sel.provider.ParamTypes[i], newChain, rootPos)
 		if !depOK {
 			ok = false
 			continue
@@ -593,7 +662,7 @@ func (r *resolver) resolveUntraced(k graph.Key, kType types.Type, chain []chainE
 // one the user needs, instead of the "no provider for chat.RoomKey" that
 // descending into a scoped constructor's key parameter would otherwise
 // produce.
-func (r *resolver) checkScopeDeclaration(node *Node, p *graph.Provider, chain []chainEntry, rootPos token.Position) bool {
+func (r *resolver) checkScopeDeclaration(node *Node, p *graph.Provider, chain *chainLink, rootPos token.Position) bool {
 	if r.declaredScope[node.Key] {
 		return true // buildScopes already validated it, strictly
 	}
@@ -622,6 +691,105 @@ func (r *resolver) checkScopeDeclaration(node *Node, p *graph.Provider, chain []
 	// else is wrong with it is downstream of the thing the user has to do
 	// first, which is decide whether this type is scoped at all;
 	// buildScopes reports the rest, strictly, once they have said it is.
-	r.diags = append(r.diags, r.undeclaredScopeDiagnostic(node, graph.ScopeKeyPos(r.fset, p.ResultType), chain, rootPos))
+	r.diags = append(r.diags, r.undeclaredScopeDiagnostic(node, graph.ScopeKeyPos(r.fset, p.ResultType), chain.entries(), rootPos))
 	return false
+}
+
+// isContextKey reports whether a request is for context.Context — by type
+// when the request carries one, by key when it does not.
+func isContextKey(k graph.Key, kType types.Type) bool {
+	if kType != nil {
+		return graph.IsContextType(kType)
+	}
+	return k.Type == "context.Context" && k.Tag == ""
+}
+
+// contextNode is the construction context: one node per graph, created the
+// first time a constructor asks for a context.Context. It has no provider
+// and nothing to stop — the emitter hands every consumer New's own ctx
+// parameter.
+func (r *resolver) contextNode(k graph.Key) *Node {
+	if r.ctxNode == nil {
+		r.ctxNode = &Node{Key: k, Kind: NodeContext, Level: 0, Binding: "construction context"}
+	}
+	return r.ctxNode
+}
+
+// checkContextConsumers refuses the construction context wherever the
+// generated code has none to hand over. New's ctx is in scope only inside
+// New: a scoped instance is built later, inside an Acquire, and a
+// ScopeKey extractor runs per acquire, long after New returned. Neither
+// can be given the context New was called with, and passing some other
+// one under the same name would be a quiet lie about its lifetime.
+func (r *resolver) checkContextConsumers() {
+	if r.ctxNode == nil {
+		return
+	}
+	for _, n := range r.order {
+		if n.Scope == nil || n.Kind != NodeProvider {
+			continue
+		}
+		for _, d := range n.Deps {
+			if d == r.ctxNode {
+				r.diags = append(r.diags, r.scopedContextDiagnostic(n))
+				break
+			}
+		}
+	}
+	for _, s := range r.scopes {
+		for _, root := range s.Roots {
+			for _, d := range root.ExtractorDeps {
+				if d == r.ctxNode {
+					r.diags = append(r.diags, r.extractorContextDiagnostic(root))
+					break
+				}
+			}
+		}
+	}
+}
+
+// capabilityNotes says, for every node a constructor in the main module
+// builds, which capability-named methods servo will not call — the wrong
+// signature, or a pointer-receiver method on a value node — and when a
+// Close or Shutdown has no Stop to be called through. Capabilities are
+// detected by signature alone, so each of these used to leave a component
+// at "capabilities: none" with nothing said. They are notes, not
+// diagnostics: a Run() error may be meant for some other caller, and
+// generation goes ahead. The override variant reports none — its mocks are
+// not the reader's components.
+func (r *resolver) capabilityNotes() []Diagnostic {
+	if r.overrideVariant {
+		return nil
+	}
+	var notes []Diagnostic
+	for _, n := range r.order {
+		if n.Kind != NodeProvider || !r.scope[n.Provider.Pkg] {
+			continue
+		}
+		p := n.Provider
+		for _, miss := range graph.CapabilityNearMisses(p.ResultType) {
+			pos := p.Pos
+			if mp := r.fset.Position(miss.Method.Pos()); mp.IsValid() && miss.Method.Pkg() != nil && r.scope[miss.Method.Pkg().Path()] {
+				pos = mp
+			}
+			notes = append(notes, Diagnostic{Pos: pos, Message: fmt.Sprintf(
+				"servo: note: %s's %s method %s, so servo will never call it — the %s capability is detected by signature alone",
+				n.Key, miss.Method.Name(), miss.Problem, miss.Capability)})
+		}
+		if p.HasCleanup {
+			continue // the cleanup func is how it is released
+		}
+		if closer := graph.UnstoppedCloser(p.ResultType); closer != nil {
+			notes = append(notes, Diagnostic{Pos: p.Pos, Message: fmt.Sprintf(
+				"servo: note: %s has a %s method but no Stop(ctx context.Context) error, so servo will not release it at shutdown — add a Stop that calls %s, or have %s return a cleanup func: (T, func(), error)",
+				n.Key, closer.Name(), closer.Name(), p.Name)})
+		}
+	}
+	sort.SliceStable(notes, func(i, j int) bool {
+		if c := r.srcOrder.Compare(notes[i].Pos, notes[j].Pos); c != 0 {
+			return c < 0
+		}
+		return notes[i].Message < notes[j].Message
+	})
+	return notes
 }

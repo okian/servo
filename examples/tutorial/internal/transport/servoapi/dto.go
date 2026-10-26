@@ -74,6 +74,13 @@ type RecentResp struct {
 // a status-carrying error for the generated adapter to write, instead of
 // writing the response itself. Everything below the API layer still deals
 // only in domain errors.
+//
+// A 4xx body is the returned error's whole message, so the 4xx cases
+// answer in words of their own — with one exception: a validation error is
+// wrapped as it is, because the service writes every word of it for the
+// caller ("validation failed: item must be non-empty…"). Anything else
+// becomes a 500, whose body is the canonical text alone while the wrapped
+// error goes to the log.
 func statusFor(err error) error {
 	switch {
 	case errors.Is(err, domain.ErrNotFound):

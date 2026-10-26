@@ -64,7 +64,10 @@ That's the whole package-side story: no provider to write, no parsing library to
 `New` asks for the type, and writes `servo_config_gen.go` beside it — a loader that reads
 `REDIS_ADDR`, applies defaults, and reports what's missing. The injector calls it before
 constructing anything, so `New` receives a filled, validated struct the same way it would receive
-any other dependency.
+any other dependency. (Servo writes a loader for each config a graph uses, so in your own module
+the first ones appear in chapter 14, with the first injector; until then the package compiles and
+its tests build the struct directly — see
+[Following along in your own module](README.md#following-along-in-your-own-module).)
 
 The tag grammar is deliberately four words: the name, `required`, `default=<value>`, and `secret`.
 
@@ -79,6 +82,31 @@ type Config struct {
 Anything smarter — ranges, cross-field rules — belongs in the constructor that receives the
 struct, which already returns an error at exactly the right moment in the lifecycle. Servo does
 not grow a validation language.
+
+### `required` means present
+
+`required` makes the loader fail when a setting arrives from no source at all. It does not judge
+the value: a variable set to the empty string is present, so `JWT_SECRET=` satisfies it, and
+because the environment outranks a [config file](#also-in-the-box-a-config-file), an empty variable
+also replaces whatever the file said. Templating produces exactly that — a compose file's
+`${JWT_SECRET}` with the variable unset, a Helm `| quote` of a missing value — so it is worth
+knowing before it happens in a deploy.
+
+The line is deliberate. The loader can say what is missing; whether a present value is usable is a
+rule about the value, and the constructor that receives it is where every source of it meets. This
+service's JWT issuer, from [chapter 9](09-authentication.md), is the example: an empty or short
+`JWT_SECRET` passes the loader and is refused here.
+
+```go
+func New(cfg Config) (*Issuer, error) {
+	if len(cfg.Secret) < minSecretLen { // 32 bytes: HS256's own hash size
+		return nil, fmt.Errorf("auth: JWT_SECRET is %d bytes; HS256 needs a key of at least %d", len(cfg.Secret), minSecretLen)
+	}
+	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}, nil
+}
+```
+
+The error still arrives inside `New`, before anything starts, exactly like a missing variable.
 
 ### The prefix is what makes the field names free
 
@@ -144,7 +172,7 @@ Three properties are worth noticing, because no runtime reflection library can o
   inference, without ever naming the type. This service exports a `Config` only where something
   outside the package genuinely constructs it: `natsbroker`'s because the notifier borrows it
   ([chapter 7](07-messaging-layer.md)), the rest because their tests deliberately live in external
-  test packages ([chapter 17](17-testing-strategy.md)) and build literals like
+  test packages ([chapter 18](18-testing-strategy.md)) and build literals like
   `auth.Config{Secret: ...}`. Visibility is a per-package decision, exactly like any other.
 - **`secret` means what it says.** The parse-failure path for `JWT_SECRET` reports
   `(value redacted: secret)` where any other field would quote the value it rejected, so a
@@ -181,8 +209,8 @@ configuration for example.com/servoorders/cmd/orders
 
 That table is derived from the resolved graph, so it's complete and current by construction —
 a config type nothing depends on doesn't appear, exactly as it doesn't reach the binary. This is
-the whole deployment contract of `cmd/orders`, and chapters [18](18-cicd.md) and
-[19](19-running-and-deployment.md) set exactly these variables.
+the whole deployment contract of `cmd/orders`, and chapters [19](19-cicd.md) and
+[20](20-running-and-deployment.md) set exactly these variables.
 
 One setting has an owner you might not expect: `NATS_URL` belongs to `natsbroker` alone, even
 though the notifier — the consuming end of the messaging layer — connects to the same server.
@@ -200,16 +228,16 @@ Unit tests construct the struct literally and call the constructor, exactly as t
 other parameter — no environment involved, nothing to fake:
 
 ```go
-issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
+issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
 ```
 
-App-level tests — the `NewTestApp` tests of [chapter 13](13-wiring-with-servo.md) — set real
+App-level tests — the `NewTestApp` tests of [chapter 14](14-wiring-with-servo.md) — set real
 variables with `t.Setenv`, which exercises the same generated parsing production runs instead of
 bypassing it:
 
 ```go
-t.Setenv("JWT_SECRET", "test-secret")
 t.Setenv("NATS_URL", "unused-in-this-test")
+t.Setenv("JWT_SECRET", "test-secret-of-at-least-32-bytes")
 ```
 
 `t.Setenv` handles cleanup and refuses to run in a parallel test, so the standard library already
@@ -217,18 +245,23 @@ owns the seam a hand-rolled `Source` abstraction used to provide.
 
 ## The trade this design makes
 
-Be clear-eyed about what per-package configs give up against one central struct. There, a single
-parse ran before anything was constructed, so a deployment missing three variables across three
-packages reported all three at once. Here, each config loads separately at the top of `New`, and
-the first one that fails is the one you hear about; you fix `POSTGRES_DSN`, redeploy, and learn
-about `REDIS_ADDR`.
+Be clear-eyed about what per-package configs could have given up against one central struct.
+There, a single parse ran before anything was constructed, so a deployment missing three variables
+across three packages reported all three at once. Per-package loaders could easily have reported
+them one crash at a time: you fix `POSTGRES_DSN`, redeploy, and learn about `REDIS_ADDR`.
 
-Three things soften that. *Within* one config, everything missing is reported together — the
-loader collects its required settings into one error rather than stopping at the first. The error
-always names the exact variable. And nothing partially starts: the failure is still inside `New`,
-before `Run`, so "it started" still means "everything on the constructed path was present."
-`servo config` is the completeness check the central struct used to be: one command lists every
-variable the binary reads, which is more than the big struct ever told you.
+They don't. The generated `New` runs *every* config's loader before it constructs anything and
+joins their errors, so one failed start names every missing or malformed setting in every package —
+and within one config, the loader already collects its required settings rather than stopping at
+the first. Each line names the exact variable. Nothing partially starts: the failure is still
+inside `New`, before `Run`, so "it started" still means "everything on the constructed path was
+present."
+
+Two tools cover the rest of what the central struct gave you. `servo config` lists every variable
+the binary reads, which is more than the big struct ever told you. And each injector's generated
+file has a `ValidateConfig() error` that runs the same loaders without building anything, so an
+init container or a pre-deploy CI step can check a deployment's settings before the service ever
+starts.
 
 ## Also in the box: a config file
 
@@ -277,8 +310,9 @@ generated code carries and why an env-only app never gains a yaml dependency, is
 
 - **Do** make every secret `required` with no default, and tag it `secret`. A convenient fallback
   for a signing key is a vulnerability waiting for someone to forget to override it in production —
-  and the `secret` tag is what keeps a malformed value out of your logs.
-- **Do** run `servo config` when writing deployment manifests; it is the table chapters 18 and 19
+  and the `secret` tag is what keeps a malformed value out of your logs. `required` still lets an
+  empty one through, so the constructor checks what the secret must be, as `auth.New` does.
+- **Do** run `servo config` when writing deployment manifests; it is the table chapters 19 and 20
   were written from.
 - **Do** keep each package's `Config` a flat struct of primitives. Nesting isn't supported, and
   wanting it is usually a sign the package is doing too much.

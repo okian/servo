@@ -54,7 +54,7 @@ func (e *emitter) planTraced() {
 // it has: an interface literal is refused at the declaration.
 func tracedTypeName(t types.Type) string {
 	if named, ok := types.Unalias(t).(*types.Named); ok {
-		return named.Obj().Name()
+		return named.Obj().Name() + typeArgsWord(named)
 	}
 	return "Iface"
 }
@@ -83,9 +83,16 @@ func (e *emitter) writeTraced(b *strings.Builder, te *tracedEmit) {
 		spanPrefix = pkg.Name() + "." + spanPrefix
 		scopeName = pkg.Path()
 	}
+	if named.TypeArgs().Len() > 0 {
+		// Two instantiations of one generic interface are two traced
+		// nodes; without the arguments both would emit one span name and
+		// a trace could not tell Store[User] from Store[Order]. Short
+		// package names, like the prefix itself.
+		spanPrefix = types.TypeString(named, func(p *types.Package) string { return p.Name() })
+	}
 
-	fmt.Fprintf(b, "// %s is the OpenTelemetry wrapper servo.Trace[%s] declares\n", te.TypeName, ifaceStr)
-	fmt.Fprintf(b, "// (%s): every method whose first parameter is a\n", e.posString(tr.Decl.Pos))
+	fmt.Fprintf(b, "// %s is the OpenTelemetry wrapper servo.Trace[%s] declares:\n", te.TypeName, ifaceStr)
+	b.WriteString("// every method whose first parameter is a\n")
 	fmt.Fprintf(b, "// context.Context runs inside a span named %q, the span's\n", spanPrefix+"/<Method>")
 	b.WriteString("// context is what the implementation receives, and a non-nil error marks the\n")
 	if len(tr.Decl.Expected) > 0 {

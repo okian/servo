@@ -6,24 +6,29 @@
 //
 //	[L1] *example.com/servovariants/memory.Mem
 //	      deps: none
-//	      capabilities: none | binding: explicit bind | memory/memory.go:13:6
+//	      capabilities: none | binding: explicit bind | memory.New
 //	[L2] *example.com/servovariants/api.Server
 //	      deps: *example.com/servovariants/memory.Mem
-//	      capabilities: Initializer, Runner | binding: sole candidate | api/api.go:14:6
+//	      capabilities: Initializer, Runner | binding: sole candidate | api.New
 package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"example.com/servovariants/api"
 	"example.com/servovariants/memory"
 	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type App struct {
 	mem           *memory.Mem
@@ -40,23 +45,20 @@ func New(ctx context.Context) (*App, error) {
 	server := api.New(mem)
 	a.server = server
 
-	{
-		start := time.Now()
-		err := a.server.Init(ctx)
-		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servovariants/api.Server", Duration: time.Since(start)})
-		if err != nil {
-			report := a.Shutdown(context.WithoutCancel(ctx))
-			if report.Clean() {
-				return nil, err
-			}
-			return nil, errors.Join(err, report)
-		}
+	if err := servoimpl.Init(ctx, servo.DefaultInitBudget, &a.startupReport,
+		[]servoimpl.Call{
+			{Node: "*example.com/servovariants/api.Server", Fn: a.server.Init},
+		},
+	); err != nil {
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	return a, nil
 }
 
 func (a *App) Run(ctx context.Context) error {
-	return a.server.Run(ctx)
+	return servoimpl.Run(ctx, servo.DefaultRunGrace,
+		servoimpl.Call{Node: "*example.com/servovariants/api.Server", Fn: a.server.Run},
+	)
 }
 
 func (a *App) Shutdown(ctx context.Context) servo.Report {
@@ -67,8 +69,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -89,8 +91,8 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/servovariants/memory.Mem", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "memory/memory.go:13:6"},
-		{Type: "*example.com/servovariants/api.Server", Level: 2, Deps: []string{"*example.com/servovariants/memory.Mem"}, Capabilities: []string{"Initializer", "Runner"}, Binding: "sole candidate", Pos: "api/api.go:14:6"},
+		{Type: "*example.com/servovariants/memory.Mem", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Provider: "memory.New"},
+		{Type: "*example.com/servovariants/api.Server", Level: 2, Deps: []string{"*example.com/servovariants/memory.Mem"}, Capabilities: []string{"Initializer", "Runner"}, Binding: "sole candidate", Provider: "api.New"},
 	}}
 }
 

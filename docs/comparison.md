@@ -46,15 +46,17 @@ Everything below follows from those two.
 
 | | How it works | Errors surface | Startup/shutdown | Generated HTTP transport | Reflection at runtime | Code you can read | Two of the same type | "All implementations of X" | Keyed instances |
 |---|---|---|---|---|---|---|---|---|---|
-| **servo** | Reads constructors, generates Go | Build time | Built in | Yes — opt-in, emitted | No | Yes — `servo_gen.go` | No | No | Yes — scopes, with lifecycle |
+| **servo** | Reads constructors, generates Go | Build time | Built in | Yes — opt-in, emitted | No | Yes — `servo_gen.go` | Via distinct types | No | Yes — scopes, with lifecycle |
 | **google/wire** | Reads constructors, generates Go | Build time | You write it | No | No | Yes — `wire_gen.go` | Via distinct types | No | No |
-| **uber-go/fx** | Container | App startup | Built in | No | Yes | No | Yes — name tags | Yes — value groups | Roll your own |
+| **uber-go/fx** | Container | `fx.New` at startup, or a test calling `fx.ValidateApp` | Built in | No | Yes | No | Yes — name tags | Yes — value groups | Roll your own |
 | **uber-go/dig** | Container | First `Invoke` | You write it | No | Yes | No | Yes — names | Yes — groups | Roll your own |
 | **By hand** | You write it | Compile time | You write it | You write it | No | It *is* your code | Yes — variables | Yes — a slice | Roll your own |
 
-Two of servo's cells say "No." Those are real, and they're the honest price of resolving everything
-before the program runs. Don't skim past them — if either one is something you need, that decision
-is already made, and it isn't servo.
+Two of servo's cells are the honest price of identifying everything by type before the program
+runs. "All implementations of X" is a flat no. "Two of the same type" works, but only the way it
+works in wire: the two instances become two named types, rather than two tagged values of one type.
+Don't skim past either — if you need value groups, or two instances of a type you can't give two
+names, that decision is already made, and it isn't servo.
 
 The last column runs the other way. Every container here can hand you a value keyed at runtime, if
 you write the registry yourself; none of them checks that a singleton didn't capture one of those
@@ -127,14 +129,21 @@ arguments that become graph inputs, which is how a value the program only has at
 config, an open `*sql.DB` — gets in. servo's equivalent is `servo.Value[T]()` in the spec, which
 makes the generator emit a `Values` struct and a `NewWith(ctx, Values{...})` beside `New`. Same
 idea, declared in the spec file rather than in a signature you write; the remaining boundary is
-that it is supplied once per app, so a per-call value still has no way in.
+that it is supplied once per app, so a per-call value still has no way in. One input needs no
+declaration on either side: wire hands an injector's `context.Context` argument to any provider
+that asks for one, and a servo constructor taking a `context.Context` receives the `ctx` that `New`
+was called with.
 
-One more thing worth knowing: wire is in maintenance mode. It works, it's widely deployed, and it
-isn't gaining features.
+One more thing worth knowing: wire is no longer maintained. Google archived the repository in
+August 2025, and its README now asks anyone who wants to update or extend it to do so in a fork.
+Code it already generated is plain Go and keeps compiling. The generator is the exposed part: it
+reads your packages through `golang.org/x/tools`, which has to keep pace with each Go release, and
+wire's last commit before the archive was exactly that kind of update, to build with Go 1.25.
 
 **Pick wire when** you want build-time code generation and nothing more, you already handle
 lifecycle in a way you're happy with, or you need provider sets as a unit of composition — deciding
-which constructors are in scope, not only which bindings apply to them.
+which constructors are in scope, not only which bindings apply to them — and you are comfortable
+running an archived tool, or a fork of it.
 
 ## uber-go/fx
 
@@ -146,23 +155,33 @@ should actually run, and fx works out the graph using reflection as your app sta
 model — `OnStart` and `OnStop` hooks — is mature and has been running Uber's production services
 for years. This is not a toy.
 
-**fx can express two things servo simply cannot.**
+**fx can express one thing servo simply cannot, and another that servo spells differently.**
 
 Value groups let a component depend on every implementation of an interface at once. If you're
 building a plugin registry, a middleware chain assembled from independent packages, or a set of
 handlers that register themselves, fx does this natively and servo has no equivalent.
 
 Named values let you have two instances of the same type — a primary database and a read replica,
-both `*sql.DB` — distinguished by a tag. servo can't do this either.
+both `*sql.DB` — distinguished by a string tag. servo has no tags; it gets the same two instances
+by making them two types (`type Primary struct{ *sql.DB }`, `type Replica struct{ *sql.DB }`),
+which is also wire's answer. That costs a declaration per instance, and buys a name the compiler
+checks where fx matches a string while the app starts.
 
-If your graph needs either one, servo is the wrong tool, and no amount of reading further will
-change that.
+If your graph needs value groups, or two instances of a type you can't wrap in two types of your
+own, servo is the wrong tool, and no amount of reading further will change that.
 
 **What servo gives up in exchange is the reflection.** An fx wiring mistake isn't a compile error.
-It's a failure at `app.Start()`, reported through a reflection-built error chain, in whichever
-environment happened to run the binary first. The equivalent servo mistake stops your build with a
-filename and a line number. There's also a startup cost to reflection, though for most services
-that's a rounding error and not a real argument.
+fx builds the graph when `fx.New` runs, so a missing dependency or a cycle is reported as the
+process starts — a clear message naming the constructor, the missing type and its file and line,
+which `app.Err()` returns and which stops `Start` and `Run` from going further. fx also lets you
+find it sooner:
+`fx.ValidateApp` checks a set of options the same way without calling any constructor, so a test
+that hands it the options `main` uses fails CI instead of a deploy. That test is yours to write and
+to keep in step with `main`, and it checks the options it is given, not the ones an environment
+assembles at run time. servo has no equivalent test to forget: the check *is* generation, and
+[`servo check`](servo-in-ci.md) fails CI when a committed file no longer matches the code. There's
+also a startup cost to reflection, though for most services that's a rounding error and not a real
+argument.
 
 **Pick fx when** you need value groups or named instances, you want a lifecycle with a long
 production track record behind it, or your graph is genuinely dynamic — assembled from modules that
@@ -218,10 +237,12 @@ artifact now includes the HTTP servers themselves. Miss a dependency and the bui
 component a `Stop` method and it gets called, in the right order, under a budget, with a report at
 the end.
 
-Against that: servo can't give you two instances of a type, can't collect every implementation of
-an interface, can't vary the graph by environment, and can't hand you a component at runtime. fx
-does all four. Wire is a reasonable choice if you don't want lifecycle management. Hand-written
-wiring is a reasonable choice for a small service and always will be.
+Against that: servo gives you two instances of one type only as two distinct types, can't collect
+every implementation of an interface, can't vary the graph at run time, and can't hand you a
+component at runtime. fx does all four. Wire is a reasonable choice if you don't want lifecycle
+management and can live with an archived generator. Hand-written wiring is a reasonable choice for
+a small service and always will be.
 
 If you're leaning toward servo, read [Limitations](limitations.md) next — it's the fastest way to
-find out whether one of those "can't"s is a dealbreaker for you.
+find out whether one of those "can't"s is a dealbreaker for you. If you're moving from wire or fx,
+[Coming from wire or fx](coming-from-wire-and-fx.md) maps each of their concepts onto servo's.

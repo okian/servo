@@ -6,10 +6,10 @@
 //
 //	[L1] *example.com/servoscoped/logger.Logger
 //	      deps: none
-//	      capabilities: Finalizer | binding: sole candidate | logger/logger.go:16:6
+//	      capabilities: Finalizer | binding: sole candidate | logger.New
 //	[L2] *example.com/servoscoped/api.Server
 //	      deps: example.com/servoscoped/chat.Rooms, *example.com/servoscoped/logger.Logger
-//	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | api/api.go:19:6
+//	      capabilities: Runner, Drainer, Finalizer | binding: sole candidate | api.New
 //
 // scope example.com/servoscoped/chat.RoomKey
 //
@@ -37,7 +37,14 @@ import (
 	"example.com/servoscoped/chat"
 	"example.com/servoscoped/logger"
 	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type App struct {
 	logger                 *logger.Logger
@@ -95,7 +102,7 @@ func newRoomKeyScope(ctx context.Context, app *App) *roomKeyScope {
 		tearing: map[*roomKeyEntry]struct{}{},
 		quit:    make(chan struct{}),
 		base:    context.WithoutCancel(ctx),
-		linger:  servo.LingerWindow(30 * time.Second),
+		linger:  servoimpl.LingerWindow(30 * time.Second),
 		max:     10000,
 	}
 }
@@ -375,13 +382,14 @@ func (e *roomKeyEntry) build() error {
 	e.room = room
 	e.built = 2
 
-	if err := e.roomLog.Init(e.ctx); err != nil {
-		e.drainRoom(context.Background())
-		e.stopRoom(context.Background())
-		e.stopRoomLog(context.Background())
-		return err
-	}
-	if err := e.room.Init(e.ctx); err != nil {
+	if err := servoimpl.Init(e.ctx, servo.DefaultInitBudget, nil,
+		[]servoimpl.Call{
+			{Node: "*example.com/servoscoped/chat.RoomLog", Fn: e.roomLog.Init},
+		},
+		[]servoimpl.Call{
+			{Node: "*example.com/servoscoped/chat.Room", Fn: e.room.Init},
+		},
+	); err != nil {
 		e.drainRoom(context.Background())
 		e.stopRoom(context.Background())
 		e.stopRoomLog(context.Background())
@@ -390,11 +398,15 @@ func (e *roomKeyEntry) build() error {
 
 	// One goroutine per running instance, on the entry's own context. A
 	// Run that returns because that context was cancelled is a normal
-	// teardown, not a failure, and is not reported as one.
+	// teardown, not a failure, and is not reported as one. A panic is a
+	// failure like any other: Guard recovers it into this instance's
+	// Run error, which teardown reports. Unrecovered, it came from a
+	// goroutine nothing could reach, and took every other key's
+	// instance — the whole process — down with this one.
 	e.runWG.Add(1)
 	go func() {
 		defer e.runWG.Done()
-		if err := e.room.Run(e.ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := servoimpl.Guard(e.ctx, "Run", servoimpl.Call{Node: "*example.com/servoscoped/chat.Room", Fn: e.room.Run}); err != nil && !errors.Is(err, context.Canceled) {
 			e.runMu.Lock()
 			e.runErrs = append(e.runErrs, err)
 			e.runMu.Unlock()
@@ -406,17 +418,17 @@ func (e *roomKeyEntry) build() error {
 
 func (e *roomKeyEntry) stopRoomLog(ctx context.Context) []servo.NodeResult {
 	var results []servo.NodeResult
-	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/chat.RoomLog", e.roomLog.Flush))
+	results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/chat.RoomLog", e.roomLog.Flush))
 	return results
 }
 
 func (e *roomKeyEntry) drainRoom(ctx context.Context) []servo.NodeResult {
-	return []servo.NodeResult{servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/chat.Room", e.room.Drain)}
+	return []servo.NodeResult{servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/chat.Room", e.room.Drain)}
 }
 
 func (e *roomKeyEntry) stopRoom(ctx context.Context) []servo.NodeResult {
 	var results []servo.NodeResult
-	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/chat.Room", e.room.Stop))
+	results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/chat.Room", e.room.Stop))
 	return results
 }
 
@@ -437,7 +449,7 @@ func (e *roomKeyEntry) rollback() {
 // teardown runs on a fresh context, for the same reason main hands
 // Shutdown one: the drain has to survive the cancellation that triggered
 // it. No deadline is set here because there is no caller to take one
-// from — a linger timer can fire this — and servo.RunStop bounds every
+// from — a linger timer can fire this — and RunStop bounds every
 // call below at servo.DefaultStopBudget either way. Drain comes first so
 // a streaming consumer unblocks before its context is pulled out from
 // under it; Flush comes after the Run goroutines have returned, so
@@ -452,10 +464,10 @@ func (e *roomKeyEntry) teardown() servo.NodeResult {
 	}
 	results = append(results, e.drainRoom(ctx)...)
 	e.cancel()
-	results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, e.name(), e.waitRun))
+	results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, e.name(), e.waitRun))
 	results = append(results, e.stopRoom(ctx)...)
 	results = append(results, e.stopRoomLog(ctx)...)
-	return servo.MergeNodeResults(e.name(), results...)
+	return servoimpl.MergeNodeResults(e.name(), results...)
 }
 
 func (e *roomKeyEntry) waitRun(context.Context) error {
@@ -466,7 +478,7 @@ func (e *roomKeyEntry) waitRun(context.Context) error {
 }
 
 // waitTorn blocks until this entry has finished tearing down. Shutdown
-// calls it through servo.RunStop so the wait is bounded.
+// calls it through RunStop so the wait is bounded.
 func (e *roomKeyEntry) waitTorn(ctx context.Context) error {
 	select {
 	case <-e.torn:
@@ -628,8 +640,8 @@ func New(ctx context.Context) (*App, error) {
 func (a *App) stopLogger(ctx context.Context) servo.NodeResult {
 	a.loggerStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/logger.Logger", a.logger.Stop))
-		a.loggerStopResult = servo.MergeNodeResults("*example.com/servoscoped/logger.Logger", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/logger.Logger", a.logger.Stop))
+		a.loggerStopResult = servoimpl.MergeNodeResults("*example.com/servoscoped/logger.Logger", results...)
 	})
 	return a.loggerStopResult
 }
@@ -637,9 +649,9 @@ func (a *App) stopLogger(ctx context.Context) servo.NodeResult {
 func (a *App) stopServer(ctx context.Context) servo.NodeResult {
 	a.serverStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/api.Server", a.server.Drain))
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/api.Server", a.server.Stop))
-		a.serverStopResult = servo.MergeNodeResults("*example.com/servoscoped/api.Server", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/api.Server", a.server.Drain))
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servoscoped/api.Server", a.server.Stop))
+		a.serverStopResult = servoimpl.MergeNodeResults("*example.com/servoscoped/api.Server", results...)
 	})
 	return a.serverStopResult
 }
@@ -673,19 +685,21 @@ func (a *App) stopRoomKeyScope(ctx context.Context) servo.NodeResult {
 		// (5 here): a single budget would time out on an entry that was
 		// tearing down perfectly correctly, and report it abandoned.
 		for _, e := range entries {
-			if res := servo.RunStop(ctx, 5*servo.DefaultStopBudget, e.name(), e.waitTorn); res.Status != servo.StatusOK {
+			if res := servoimpl.RunStop(ctx, 5*servo.DefaultStopBudget, e.name(), e.waitTorn); res.Status != servo.StatusOK {
 				results = append(results, res)
 				continue
 			}
 			results = append(results, e.stopResult)
 		}
-		a.roomKeyScopeStopResult = servo.MergeNodeResults("scope example.com/servoscoped/chat.RoomKey", results...)
+		a.roomKeyScopeStopResult = servoimpl.MergeNodeResults("scope example.com/servoscoped/chat.RoomKey", results...)
 	})
 	return a.roomKeyScopeStopResult
 }
 
 func (a *App) Run(ctx context.Context) error {
-	return a.server.Run(ctx)
+	return servoimpl.Run(ctx, servo.DefaultRunGrace,
+		servoimpl.Call{Node: "*example.com/servoscoped/api.Server", Fn: a.server.Run},
+	)
 }
 
 func (a *App) Shutdown(ctx context.Context) servo.Report {
@@ -696,8 +710,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -721,10 +735,10 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/servoscoped/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "logger/logger.go:16:6"},
-		{Type: "*example.com/servoscoped/api.Server", Level: 2, Deps: []string{"example.com/servoscoped/chat.Rooms", "*example.com/servoscoped/logger.Logger"}, Capabilities: []string{"Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Pos: "api/api.go:19:6"},
-		{Type: "*example.com/servoscoped/chat.RoomLog", Level: 1, Deps: []string{"example.com/servoscoped/chat.RoomKey", "*example.com/servoscoped/logger.Logger"}, Capabilities: []string{"Initializer", "Flusher"}, Binding: "sole candidate", Pos: "chat/chat.go:174:6", Scope: "example.com/servoscoped/chat.RoomKey"},
-		{Type: "*example.com/servoscoped/chat.Room", Level: 2, Deps: []string{"example.com/servoscoped/chat.RoomKey", "*example.com/servoscoped/chat.RoomLog"}, Capabilities: []string{"Initializer", "Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Pos: "chat/chat.go:74:6", Scope: "example.com/servoscoped/chat.RoomKey"},
+		{Type: "*example.com/servoscoped/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Provider: "logger.New"},
+		{Type: "*example.com/servoscoped/api.Server", Level: 2, Deps: []string{"example.com/servoscoped/chat.Rooms", "*example.com/servoscoped/logger.Logger"}, Capabilities: []string{"Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Provider: "api.New"},
+		{Type: "*example.com/servoscoped/chat.RoomLog", Level: 1, Deps: []string{"example.com/servoscoped/chat.RoomKey", "*example.com/servoscoped/logger.Logger"}, Capabilities: []string{"Initializer", "Flusher"}, Binding: "sole candidate", Provider: "chat.NewRoomLog", Scope: "example.com/servoscoped/chat.RoomKey"},
+		{Type: "*example.com/servoscoped/chat.Room", Level: 2, Deps: []string{"example.com/servoscoped/chat.RoomKey", "*example.com/servoscoped/chat.RoomLog"}, Capabilities: []string{"Initializer", "Runner", "Drainer", "Finalizer"}, Binding: "sole candidate", Provider: "chat.NewRoom", Scope: "example.com/servoscoped/chat.RoomKey"},
 	}, Scopes: []servo.GraphScope{
 		{Key: "example.com/servoscoped/chat.RoomKey", Linger: "30s", Max: 10000, Accessors: []string{"example.com/servoscoped/chat.Rooms"}, Members: []string{"*example.com/servoscoped/chat.RoomLog", "*example.com/servoscoped/chat.Room"}, Borrows: []string{"*example.com/servoscoped/logger.Logger"}},
 	}}

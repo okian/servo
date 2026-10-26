@@ -191,13 +191,14 @@ func TestEmitFullApp(t *testing.T) {
 		"func (a *App) Ready(ctx context.Context) servo.Report",
 		"func (a *App) Graph() servo.Graph",
 		"func (a *App) Report() servo.StartupReport",
-		"db, dbCleanup, err := NewDB(logger)",                     // construction with cleanup + error
-		"_ = a.stopLogger(context.WithoutCancel(ctx))",            // rollback stops the one prior stoppable node, on a context the signal that started the shutdown cannot cancel
-		"errgroup.WithContext(ctx)",                               // both the concurrent Init level and the 2-runner Run need this
-		"a.db.Health(ctx)",                                        // Health only iterates Healther nodes
-		"a.server.Ready(ctx)",                                     // Ready only iterates Readier nodes
+		"db, dbCleanup, err := NewDB(logger)",                            // construction with cleanup + error
+		"a.unwind(context.WithoutCancel(ctx), undo)",                     // rollback stops the prior stoppable nodes, on a context the signal that started the shutdown cannot cancel
+		"servoimpl.Init(ctx, servo.DefaultInitBudget, &a.startupReport,", // every Init level goes through the one runtime helper
+		"return servoimpl.Run(ctx, servo.DefaultRunGrace,",               // and so does every runner
+		"a.db.Health(ctx)",    // Health only iterates Healther nodes
+		"a.server.Ready(ctx)", // Ready only iterates Readier nodes
 		"signal.Notify(forceExit, os.Interrupt, syscall.SIGTERM)", // double-signal force-exit watcher
-		"servo.RunStop(ctx, servo.DefaultStopBudget, \"*example.com/app.Server\", a.server.Drain)",
+		"servoimpl.RunStop(ctx, servo.DefaultStopBudget, \"*example.com/app.Server\", a.server.Drain)",
 	}
 	for _, want := range wantSubstrings {
 		if !strings.Contains(src, want) {
@@ -205,8 +206,8 @@ func TestEmitFullApp(t *testing.T) {
 		}
 	}
 
-	// Worker has no Init and is not part of any errgroup Init level, and
-	// Cache has no stop-worthy capability, so it must not get a stop method.
+	// Worker has no Init and is not part of any Init level, and Cache has
+	// no stop-worthy capability, so it must not get a stop method.
 	if strings.Contains(src, "a.worker.Init") {
 		t.Error("Worker has no Initializer capability and must not be Init'd")
 	}
@@ -387,7 +388,9 @@ func newLeaf() *Leaf { return &Leaf{} }
 	if !strings.Contains(src2, "leaf := newLeaf()") {
 		t.Errorf("expected a bare, unqualified call to newLeaf, got:\n%s", src2)
 	}
-	if strings.Contains(src2, "app.newLeaf") {
+	// The header and Graph() name the provider app.newLeaf, as a label;
+	// what must never appear is a call qualified that way.
+	if strings.Contains(src2, "app.newLeaf(") {
 		t.Errorf("an unexported identifier can never be package-qualified, got:\n%s", src2)
 	}
 }
@@ -514,13 +517,14 @@ func TestEmitReturnsErrorWhenGeneratedSourceFailsToFormat(t *testing.T) {
 	}
 }
 
-// TestEmitRelativizesPositionsAgainstModuleDir covers posString's rewrite
-// branch: every other test's fixture leaves InjectorPkg.Module nil, so the
-// generated header always fell through to the raw, un-relativized
-// position. A real module sets Module.Dir, and the header comment must
-// name each provider's file relative to it rather than embedding one
-// checkout's absolute path in output meant to be committed to VCS.
-func TestEmitRelativizesPositionsAgainstModuleDir(t *testing.T) {
+// TestEmitCommitsNoPositions: the header and Graph() used to carry each
+// provider's position, so adding a comment above a constructor made
+// `servo check` fail, and a standard-library provider's position moved
+// with the toolchain's patch release. Neither an absolute nor a relative
+// position may reach the file now; the provider's function names the node
+// instead. posString stays for the one emitter that still writes
+// positions, and keeps rendering them relative to the module root.
+func TestEmitCommitsNoPositions(t *testing.T) {
 	const src = `
 package app
 type Leaf struct{}
@@ -559,11 +563,21 @@ func NewLeaf() *Leaf { return &Leaf{} }
 		t.Fatalf("Emit: %v", err)
 	}
 	src2 := string(out)
-	if strings.Contains(src2, "/repo/app.go") {
-		t.Errorf("expected the module-relative path, not the absolute one, got:\n%s", src2)
+	if strings.Contains(src2, "app.go") {
+		t.Errorf("a position reached the committed file:\n%s", src2)
 	}
-	if !strings.Contains(src2, "app.go:") {
-		t.Errorf("expected the relativized filename app.go to still appear, got:\n%s", src2)
+	for _, want := range []string{
+		"capabilities: none | binding: sole candidate | app.NewLeaf\n",
+		`{Type: "*example.com/modrel.Leaf", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "app.NewLeaf"},`,
+	} {
+		if !strings.Contains(src2, want) {
+			t.Errorf("generated source missing %q\n---\n%s", want, src2)
+		}
+	}
+
+	e := &emitter{spec: spec}
+	if got := e.posString(token.Position{Filename: "/repo/app.go", Line: 4, Column: 6}); got != "app.go:4:6" {
+		t.Errorf("posString = %q, want the module-relative app.go:4:6", got)
 	}
 }
 
@@ -644,9 +658,19 @@ func NewBoxIface() *dep.Box[interface{ M() dep.Marker }] { return &dep.Box[inter
 		`*dep.Box[any]`,
 		`*dep.Box[interface{ M() dep.Marker }]`,
 		`"example.com/dep"`,
+		// Each instantiation is named after its argument, so the three
+		// fields say which Box they hold instead of being numbered.
+		"boxFunc := NewBoxFunc()",
+		"boxAny := NewBoxAny()",
+		"boxIface := NewBoxIface()",
 	} {
 		if !strings.Contains(src2, want) {
 			t.Errorf("generated source missing %q\n---\n%s", want, src2)
+		}
+	}
+	for _, numbered := range []string{"box2", "box3", "depBox2"} {
+		if strings.Contains(src2, numbered) {
+			t.Errorf("generated source numbers a generic instantiation (%s)\n---\n%s", numbered, src2)
 		}
 	}
 }
@@ -654,10 +678,10 @@ func NewBoxIface() *dep.Box[interface{ M() dep.Marker }] { return &dep.Box[inter
 // TestEmitCleanupOnlyAndErrorOnlyConstructionShapes covers the two
 // writeConstruction shapes fullAppSrc never exercises alone (its only
 // error-returning provider, NewDB, also has cleanup) — cleanup without
-// error, and error without cleanup — plus writeConstructionRollback's
-// continue: ErrorOnly's rollback walks back over CleanupOnly (stoppable,
-// gets a rollback line) and then Leaf (not stoppable, must be skipped
-// rather than emitting a call to a stop method Leaf doesn't have).
+// error, and error without cleanup — plus the undo list's selectivity:
+// CleanupOnly (stoppable) registers its stop for ErrorOnly's failure to
+// unwind, and Leaf (not stoppable) must not, rather than naming a stop
+// method Leaf doesn't have.
 func TestEmitCleanupOnlyAndErrorOnlyConstructionShapes(t *testing.T) {
 	const src = `
 package app
@@ -709,7 +733,8 @@ func NewErrorOnly(c *CleanupOnly) (*ErrorOnly, error) { return &ErrorOnly{}, nil
 	if !strings.Contains(src2, "errorOnly, err := NewErrorOnly(cleanupOnly)") {
 		t.Errorf("missing the error-without-cleanup construction shape:\n%s", src2)
 	}
-	if !strings.Contains(src2, "_ = a.stopCleanupOnly(context.WithoutCancel(ctx))") {
+	if !strings.Contains(src2, "undo = append(undo, a.stopCleanupOnly)") ||
+		!strings.Contains(src2, "errorOnly, err := NewErrorOnly(cleanupOnly)\n\tif err != nil {\n\t\ta.unwind(context.WithoutCancel(ctx), undo)\n") {
 		t.Errorf("expected ErrorOnly's rollback to stop the earlier, stoppable CleanupOnly:\n%s", src2)
 	}
 	if strings.Contains(src2, "stopLeaf") {
@@ -719,8 +744,8 @@ func NewErrorOnly(c *CleanupOnly) (*ErrorOnly, error) { return &ErrorOnly{}, nil
 
 // TestEmitFlusherCapabilityAndSingleRunner covers writeStopMethod's Flusher
 // branch (fullAppSrc only exercises Drainer, Finalizer, and cleanup) and
-// runFunc's exactly-one-Runner shortcut (fullAppSrc has two Runners, so it
-// only ever exercises the errgroup path).
+// runFunc with exactly one Runner (fullAppSrc has two), which goes through
+// servoimpl.Run like any other count rather than being called bare.
 func TestEmitFlusherCapabilityAndSingleRunner(t *testing.T) {
 	const src = `
 package app
@@ -771,14 +796,16 @@ func NewSolo() *Solo { return &Solo{} }
 		t.Fatalf("Emit: %v", err)
 	}
 	src2 := string(out)
-	if !strings.Contains(src2, "servo.RunStop(ctx, servo.DefaultStopBudget, \"*example.com/soloflush.Flusher\", a.flusher.Flush)") {
+	if !strings.Contains(src2, "servoimpl.RunStop(ctx, servo.DefaultStopBudget, \"*example.com/soloflush.Flusher\", a.flusher.Flush)") {
 		t.Errorf("missing the Flusher stop call:\n%s", src2)
 	}
-	if !strings.Contains(src2, "return a.solo.Run(ctx)") {
-		t.Errorf("expected the single-runner shortcut (a bare call, no errgroup):\n%s", src2)
+	// A lone runner is supervised like any other: it used to be called
+	// bare, with no recover and no bounded wait.
+	if !strings.Contains(src2, "return servoimpl.Run(ctx, servo.DefaultRunGrace,\n\t\tservoimpl.Call{Node: \"*example.com/soloflush.Solo\", Fn: a.solo.Run},\n\t)") {
+		t.Errorf("expected the lone runner to go through servoimpl.Run:\n%s", src2)
 	}
 	if strings.Contains(src2, "errgroup") {
-		t.Errorf("a single Runner must not pull in errgroup at all:\n%s", src2)
+		t.Errorf("generated code must not import errgroup:\n%s", src2)
 	}
 }
 

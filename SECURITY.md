@@ -21,5 +21,15 @@ This is a single-maintainer project run on a best-effort basis — expect an ini
 
 ## Scope
 
-In scope: `servo`, `servotest`, `cmd/servo`, `cmd/servo-vet`, and the code they generate.
+In scope:
+
+- every package of the module: `servo`, `servotest`, `servoimpl` (the runtime only generated code
+  calls), `conf`, `middleware`, `servovet`, and the internal packages behind them. `middleware`
+  and the generated HTTP server run in users' request paths, and `conf` converts the values of
+  their configuration files, secrets included;
+- `cmd/servo` and `cmd/servo-vet`, and the code they generate;
+- the release archives, their checksums files and their build-provenance attestations
+  ([RELEASING.md](RELEASING.md) says how to verify them), and the workflows in `.github/` that
+  produce them.
+
 Out of scope: `examples/` and `docs/tutorial/` are demonstration code, not deployed services.

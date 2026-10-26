@@ -6,10 +6,10 @@ import "github.com/okian/servo/v3/servotest"
 
 **Who this is for:** anyone writing a test against a generated `App` or `TestApp`.
 
-Seven small helpers, each addressing something that is awkward to check by hand: goroutine leaks
-(two of them, for two different situations), real init/stop ordering, the abandoned-node path, the
-eviction-racing-acquire boundary of a scope's linger window, and giving `gomock` a reporter inside a
-graph that has no `*testing.T` in it.
+Eight small helpers, each addressing something that is awkward to check by hand: goroutine leaks
+(two of them, for two different situations), real init/stop ordering and the names it is asserted
+in, the abandoned-node path, the eviction-racing-acquire boundary of a scope's linger window, and
+giving `gomock` a reporter inside a graph that has no `*testing.T` in it.
 
 This is the only servo package with a third-party dependency —
 [`go.uber.org/goleak`](https://pkg.go.dev/go.uber.org/goleak), used by both leak checks. The core
@@ -27,6 +27,7 @@ This is the only servo package with a third-party dependency —
 | [`NewRecorder`](#newrecorder) | func | Builds a `Recorder` |
 | [`AssertInitOrder`](#assertinitorder-and-assertstoporder) | func | Assert init ordering |
 | [`AssertStopOrder`](#assertinitorder-and-assertstoporder) | func | Assert stop ordering |
+| [`NodeName`](#nodename) | func | The name servo gives a type's node, for those assertions |
 | [`PanicReporter`](#panicreporter) | type | A `gomock.TestReporter` with no `*testing.T` |
 
 ## `NoLeaks`
@@ -107,10 +108,21 @@ deliberately blocks in `Stop` would otherwise cost the real 5-second budget per 
 servotest.Timeout(t, 50*time.Millisecond)
 ```
 
-**Tests using it must not run in parallel** — with each other, or with any test that depends on the
-real default. The budget is a package variable, so `t.Parallel()` plus `Timeout` is a data race and a
-flake. That's the cost of the budget being a variable rather than configuration, and it's a fair
-trade for tests that would otherwise take seconds each.
+**Tests using it cannot run in parallel, and Go enforces it.** The budget is a package variable, so a
+parallel test changing it races every test reading it. `Timeout` calls `t.Setenv` before it touches
+the budget (setting `SERVOTEST_TIMEOUT`, which nothing reads), and the testing package refuses that
+in a test that has called `t.Parallel` — or whose parent has — and refuses `t.Parallel` after it,
+both with a panic:
+
+```
+testing: test using t.Setenv, t.Chdir, or cryptotest.SetGlobalRandom can not use t.Parallel
+```
+
+It used to be a sentence in this page and nothing else, and `go test -race` found the race it
+described. Subtests of a test that calls `Timeout` may still be parallel with each other: the budget
+is set before they start and restored after they finish. That's the cost of the budget being a
+variable rather than configuration, and it's a fair trade for tests that would otherwise take
+seconds each.
 
 ## `Linger`
 
@@ -137,9 +149,9 @@ func TestEvictionRacingAcquire(t *testing.T) {
 eviction-racing-acquire path gets exercised deliberately instead of by luck.
 
 Generated code reads the override once per scope, inside `New`, so **call this before constructing
-the app**. Since the underlying setting is a package variable, tests using `Linger` must not run in
-parallel with each other or with tests that depend on a scope's real declared window — the same
-constraint `Timeout` carries, for the same reason.
+the app**. The underlying setting is a package variable, so `Linger` carries the constraint
+`Timeout` does, enforced the same way: it calls `t.Setenv` (`SERVOTEST_LINGER`), and Go panics
+rather than let a parallel test change the window under another one.
 
 ## `Recorder`
 
@@ -179,7 +191,10 @@ Fail `t` unless `want` appears, **in order, as a subsequence** of what actually 
 may be interspersed:
 
 ```go
-servotest.AssertStopOrder(t, rec, "*api.Server", "*postgres.DB")
+servotest.AssertStopOrder(t, rec,
+    servotest.NodeName[*api.Server](),
+    servotest.NodeName[*postgres.DB](),
+)
 ```
 
 That asserts the server stopped before the database. It does not assert that nothing else stopped
@@ -188,18 +203,53 @@ between them, and it does not require naming every node — which is the point. 
 true when you add an unrelated component to the graph. On failure:
 
 ```
-stop order [*api.Server *postgres.DB *logger.Logger] does not contain [*postgres.DB *api.Server] as a subsequence
+stop order [*example.com/app/api.Server *example.com/app/postgres.DB *example.com/app/logger.Logger] does not contain [*example.com/app/postgres.DB *example.com/app/api.Server] as a subsequence
 ```
 
-Names are the node's full type string — the same identity used everywhere else. In a real module
-that's the fully qualified form, `*example.com/app/api.Server`; `servo graph` or the generated file's
-header comment is the quickest way to copy the exact strings.
+Names are the node's full type string — the same identity used everywhere else, so the import path
+is part of it: `*example.com/app/api.Server`, never the `*api.Server` source code spells. A short
+name never matches, and the assertion fails an order that was right, which is why the example takes
+its names from [`NodeName`](#nodename) instead of spelling them.
 
 `AssertInitOrder` reads `Recorder.Init` (from `App.Report()`), `AssertStopOrder` reads
 `Recorder.Shutdown`. Two caveats for init ordering: only nodes implementing `Initializer` appear at
 all, and nodes sharing a [level](resolution.md#construction-order-and-levels) ran concurrently, so
 their relative order is completion order and must not be asserted. Assert across levels, not within
 one.
+
+## `NodeName`
+
+```go
+func NodeName[T any]() string
+```
+
+The name servo gives `T`'s node — the string a generated `App`'s `Report`, `StartupReport` and
+`Graph` use for it, and so what `AssertStopOrder` and `AssertInitOrder` match:
+
+```go
+servotest.NodeName[*api.Server]() // "*example.com/app/api.Server"
+```
+
+**The naming rule.** A node is named by its type, as `go/types` spells it with full import paths:
+
+- a defined type is its package's import path, a dot, and its name — `example.com/app/config.Config`;
+- a pointer keeps its star — `*example.com/app/api.Server`, never `*api.Server`;
+- a generic instantiation spells its type arguments the same way, separated by `, ` —
+  `*example.com/app/repo.Repo[example.com/app/model.User]`;
+- aliases are resolved: a node provided as `*UserRepo`, an alias of `*Repo[model.User]`, is named
+  for the latter.
+
+`NodeName` computes that at run time from `T` itself, so a renamed or moved type keeps its assertion
+in step with no edit. Two cases differ, both outside what a test usually names. Run time keeps no
+parameter names, so a `func` or interface literal among a generic's type arguments is spelled
+without any its source gave. And a binary built from `package main` calls that package `main` at run
+time, where servo uses its import path; under `go test`, the package being tested carries its import
+path, so a test's own types come out as servo names them.
+
+`servo graph`, `servo explain` and the generated file's header comment print the same names. Two
+kinds of report entry are not a type at all, and `NodeName` has nothing to say about them: a scope
+instance is `scope <key type>[<key>]` — `scope example.com/app/chat.RoomKey[lobby]` — and an
+emitted HTTP server is `http`, or `http:<group>` for a named group.
 
 ## `PanicReporter`
 
@@ -215,7 +265,8 @@ structurally — without `servotest` importing gomock at all. Both methods panic
 message.
 
 It exists because `gomock.NewController` needs a reporter and there is no `*testing.T` reachable from
-inside a generated graph. A gomock adapter's constructor supplies one:
+inside a generated graph. A gomock adapter's constructor supplies one — `servo new mock-adapter
+gomock` prints the whole file:
 
 ```go
 func NewMockStoreForServo() *MockStoreForServo {
@@ -228,8 +279,9 @@ func NewMockStoreForServo() *MockStoreForServo {
 test runner still reports which test failed before the panic propagates, but the process exits —
 unlike a clean, isolated failure. And `ctrl.Finish` must be called directly by the test with a plain
 `defer`, never routed through servo's cleanup-func shape, which would run it inside
-[`servo.RunStop`](servo-package.md#runstop)'s goroutine during `Shutdown` where nothing can recover
-the panic.
+[`servo.RunStop`](servo-package.md#runstop)'s goroutine during `Shutdown`: `RunStop` recovers the
+panic into the node's result, so an unmet expectation lives only in the shutdown report, and a test
+that never reads the report passes.
 
 For strict expectation-count verification, construct and drive the mock directly in an isolated unit
 test with a real `gomock.NewController(t)` instead of going through `servo.Override`. Graph injection
@@ -261,6 +313,9 @@ func TestApp(t *testing.T) {
 	}
 
 	rec := servotest.NewRecorder(app.Report(), app.Shutdown(ctx))
-	servotest.AssertStopOrder(t, rec, "*api.Server", "*mockstore.Store")
+	servotest.AssertStopOrder(t, rec,
+		servotest.NodeName[*api.Server](),
+		servotest.NodeName[*mockstore.StoreMock](),
+	)
 }
 ```

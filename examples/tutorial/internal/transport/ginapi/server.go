@@ -138,7 +138,8 @@ func (s *Server) MetricsHandler() http.Handler {
 }
 
 // Run must return once ctx is cancelled, on its own — servo's generated
-// App.Run waits for every Runner via errgroup, and only calls Shutdown
+// App.Run waits for every Runner (at most servo.DefaultRunGrace once its
+// context is cancelled), and only calls Shutdown
 // after every Runner has returned. ListenAndServe never observes ctx
 // cancellation by itself. See api/server.go for the longer version.
 func (s *Server) Run(ctx context.Context) error {

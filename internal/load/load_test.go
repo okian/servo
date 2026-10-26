@@ -1,6 +1,7 @@
 package load
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -111,14 +112,22 @@ func Wire() {
 	}
 }
 
-// TestLoadReturnsErrorForInvalidDir covers the packages.Load hard-error
-// path: a Dir the go command can't even chdir into fails before any
-// package-level errors would apply, and Load must wrap and surface that
-// rather than panic or return a nil, nil zero value.
+// TestLoadReturnsErrorForInvalidDir covers a Dir the go command can't even
+// chdir into. Left to the go command, it failed as `fork/exec
+// /usr/local/go/bin/go: no such file or directory`, naming the go binary —
+// which exists — rather than the directory, which does not; the directory
+// is checked first, and named.
 func TestLoadReturnsErrorForInvalidDir(t *testing.T) {
-	_, err := Load(Config{Dir: "/nonexistent/path/that/should/never/exist"})
-	if err == nil || !strings.Contains(err.Error(), "load:") {
-		t.Fatalf("got err=%v, want a wrapped load error", err)
+	const missing = "/nonexistent/path/that/should/never/exist"
+	_, err := Load(Config{Dir: missing})
+	if err == nil || !strings.Contains(err.Error(), "directory "+missing+" does not exist — check --dir") || strings.Contains(err.Error(), "fork/exec") {
+		t.Fatalf("got err=%v, want the missing directory named", err)
+	}
+
+	file := filepath.Join(t.TempDir(), "go.mod")
+	mustWriteFile(t, filepath.Dir(file), "go.mod", "module example.com/x\n")
+	if _, err := Load(Config{Dir: file}); err == nil || !strings.Contains(err.Error(), "is a file, not a directory") {
+		t.Fatalf("Load(Dir: a file) = %v, want it called a file", err)
 	}
 }
 

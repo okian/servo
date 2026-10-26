@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -9,45 +10,55 @@ import (
 	"time"
 
 	"example.com/servoscoped/chat"
+	"github.com/okian/servo/v3/servo"
 )
 
-// shutdownTimeout bounds the whole teardown. servo.RunStop already caps each
-// node at servo.DefaultStopBudget, but nothing caps their sum, and a container
-// runtime sends SIGKILL when its grace period expires whether or not the
-// process has finished unwinding.
-const shutdownTimeout = 30 * time.Second
+// shutdownTimeout bounds the whole teardown. servo.DefaultStopBudget caps
+// each node, but nothing caps their sum, and a container runtime sends
+// SIGKILL when its grace period runs out whether or not the process has
+// finished unwinding: 25 seconds stays inside the 30 Kubernetes allows by
+// default.
+const shutdownTimeout = 25 * time.Second
 
-func main() {
+// main drives the App by hand — a few posts, then a look at the scope —
+// instead of running it until a signal, so it is the one example that does
+// not hand itself to servo.Main. It ends the way servo.Main does: Shutdown
+// under a deadline of its own, then servo.ExitCode, so a failed post or an
+// unclean Shutdown exits 1.
+func main() { os.Exit(run()) }
+
+func run() int {
+	// A scoped instance needs a context that can end — Acquire refuses
+	// context.Background — so the posts run under the signal's.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	app, err := New(ctx)
 	if err != nil {
-		log.Fatal(err)
+		log.Print(err)
+		return 1
 	}
 
 	// Two callers presenting the same key share one room; the third gets
 	// its own. In a real service this context comes from middleware at the
 	// transport edge, not from main.
-	if err := app.server.Post(chat.WithRoom(ctx, "general"), "hello"); err != nil {
-		log.Print(err)
-	}
-	if err := app.server.Post(chat.WithRoom(ctx, "general"), "still here"); err != nil {
-		log.Print(err)
-	}
-	if err := app.server.Post(chat.WithRoom(ctx, "random"), "elsewhere"); err != nil {
+	err = errors.Join(
+		app.server.Post(chat.WithRoom(ctx, "general"), "hello"),
+		app.server.Post(chat.WithRoom(ctx, "general"), "still here"),
+		app.server.Post(chat.WithRoom(ctx, "random"), "elsewhere"),
+	)
+	if err != nil {
 		log.Print(err)
 	}
 	log.Printf("rooms: %+v", app.rooms.Stats())
 
-	// Shutdown gets a fresh context: the one above is already cancelled — that
-	// cancellation is what started the shutdown — so a teardown inheriting it
-	// would abort before it began. It carries a deadline rather than being a
-	// bare context.Background(), so the unwind cannot outlast the grace period
-	// it is running inside.
+	// A fresh context with a deadline, not ctx: a signal cancels ctx, and a
+	// teardown inheriting that would abandon every node before it began.
 	sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	if r := app.Shutdown(sctx); !r.Clean() {
+	r := app.Shutdown(sctx)
+	if !r.Clean() {
 		log.Print(r)
 	}
+	return servo.ExitCode(err, r)
 }

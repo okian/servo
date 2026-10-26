@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -138,14 +139,215 @@ func TestRunFlagParseError(t *testing.T) {
 }
 
 // TestRunFlagParseErrorsForEverySubcommand covers every subcommand's own
-// flag.FlagSet.Parse error branch individually: each case in run's switch
-// constructs its own FlagSet, so TestRunFlagParseError above (generate
-// only) leaves the other eight as separate, untested basic blocks.
+// parse error, read off the command table rather than a list written
+// beside it: the hand-written list this replaced claimed to cover every
+// subcommand and had quietly missed config.
 func TestRunFlagParseErrorsForEverySubcommand(t *testing.T) {
-	for _, cmd := range []string{"generate", "check", "graph", "explain", "why", "list", "init", "doctor", "migrate"} {
-		t.Run(cmd, func(t *testing.T) {
-			if err := run([]string{cmd, "--not-a-real-flag"}); err == nil {
-				t.Fatalf("run(%q, --not-a-real-flag) = nil error, want a flag-parse error", cmd)
+	for _, c := range commands {
+		if c.setup == nil {
+			continue // help is answered before any command is parsed
+		}
+		t.Run(c.name, func(t *testing.T) {
+			err := run([]string{c.name, "--not-a-real-flag"})
+			if err == nil {
+				t.Fatalf("run(%q, --not-a-real-flag) = nil error, want a flag-parse error", c.name)
+			}
+			// The error names the bad flag once and carries the usage line,
+			// rather than the flag package's dump of every default.
+			if !strings.Contains(err.Error(), "-not-a-real-flag") || !strings.Contains(err.Error(), "usage: servo "+c.name) {
+				t.Errorf("parse error should name the flag and give %s's usage:\n%v", c.name, err)
+			}
+		})
+	}
+}
+
+// TestEveryCommandAnswersHelp holds the help contract for every command
+// in the table: `servo <cmd> -h` and `--help` print the command's own
+// usage to stdout and exit 0, exactly as `servo help <cmd>` does, and the
+// general list names it. Each used to end in "flag: help requested" and
+// exit 1, `servo new -h` said `unknown kind "-h"`, and nothing checked
+// that a new command reached the list at all.
+func TestEveryCommandAnswersHelp(t *testing.T) {
+	var listErr error
+	list := captureStdout(t, func() { listErr = run([]string{"help"}) })
+	if listErr != nil {
+		t.Fatalf("servo help: %v", listErr)
+	}
+	for _, c := range commands {
+		t.Run(c.name, func(t *testing.T) {
+			if !strings.Contains(list, "    "+c.name+" ") {
+				t.Errorf("servo help does not list %s:\n%s", c.name, list)
+			}
+			var err error
+			want := captureStdout(t, func() { err = run([]string{"help", c.name}) })
+			if err != nil {
+				t.Fatalf("servo help %s: %v", c.name, err)
+			}
+			if !strings.HasPrefix(want, "usage: servo "+c.name) || !strings.Contains(want, c.summary) {
+				t.Errorf("servo help %s should start with its usage line and give its summary:\n%s", c.name, want)
+			}
+			if c.setup == nil {
+				return
+			}
+			for _, flag := range []string{"-h", "--help"} {
+				got := captureStdout(t, func() { err = run([]string{c.name, flag}) })
+				if err != nil {
+					t.Fatalf("servo %s %s = %v, want help and a nil error", c.name, flag, err)
+				}
+				if got != want {
+					t.Errorf("servo %s %s printed something other than servo help %s:\n%s", c.name, flag, c.name, got)
+				}
+			}
+		})
+	}
+}
+
+// TestUsageLinesNameEveryFlagTheParserAccepts: the usage line is built
+// from the flag set the parser uses, so a flag a command takes cannot be
+// missing from it — which is how `servo explain [--json] <type>` came to
+// omit --dir.
+func TestUsageLinesNameEveryFlagTheParserAccepts(t *testing.T) {
+	for _, c := range commands {
+		usage := c.usage()
+		c.flagSet().VisitAll(func(f *flag.Flag) {
+			if !strings.Contains(usage, "["+flagSpelling(f.Name)) {
+				t.Errorf("servo %s's usage does not mention %s:\n%s", c.name, flagSpelling(f.Name), usage)
+			}
+		})
+	}
+	if usage := lookupCommand("explain").usage(); !strings.Contains(usage, "[--dir path]") || !strings.HasSuffix(usage, "<type>") {
+		t.Errorf("explain's usage = %q, want --dir among its flags and <type> last", usage)
+	}
+}
+
+// TestRunAcceptsFlagsAfterArguments: `servo explain api.Server --json`
+// and `--dir` after the type used to be a usage error, the order the help
+// text itself advertised.
+func TestRunAcceptsFlagsAfterArguments(t *testing.T) {
+	dir := writeAppModule(t, "example.com/flagsafter", true, "")
+	var err error
+	out := captureStdout(t, func() { err = run([]string{"explain", "api.Server", "--dir", dir, "--json"}) })
+	if err != nil {
+		t.Fatalf("explain <type> --dir --json: %v", err)
+	}
+	if !strings.Contains(out, `"type": "*example.com/flagsafter/api.Server"`) {
+		t.Errorf("--json after the type was not honoured:\n%s", out)
+	}
+	out = captureStdout(t, func() { err = run([]string{"why", "logger.Logger", "--dir=" + dir}) })
+	if err != nil {
+		t.Fatalf("why <type> --dir=: %v", err)
+	}
+	if !strings.Contains(out, "logger.Logger") {
+		t.Errorf("why with --dir after the type printed:\n%s", out)
+	}
+	// "--" still ends the flags, so a query can begin with a dash.
+	err = run([]string{"explain", "--dir", dir, "--", "-api.Server"})
+	if err == nil || !strings.Contains(err.Error(), `"-api.Server"`) {
+		t.Errorf("explain -- -api.Server = %v, want the dash-led query looked up, not parsed as a flag", err)
+	}
+}
+
+// TestRunNewHelpIsNotAScaffold: `servo new component --help` printed a
+// component named --help.
+func TestRunNewHelpIsNotAScaffold(t *testing.T) {
+	for _, args := range [][]string{{"new", "-h"}, {"new", "component", "--help"}, {"new", "mock-adapter", "-h"}} {
+		var err error
+		out := captureStdout(t, func() { err = run(args) })
+		if err != nil {
+			t.Fatalf("servo %s = %v, want help", strings.Join(args, " "), err)
+		}
+		if !strings.HasPrefix(out, "usage: servo new component") || strings.Contains(out, "type --help") {
+			t.Errorf("servo %s should print new's help:\n%s", strings.Join(args, " "), out)
+		}
+	}
+	var err error
+	out := captureStdout(t, func() { err = run([]string{"new", "component", "Widget", "--package", "parts"}) })
+	if err != nil || !strings.HasPrefix(out, "package parts\n") {
+		t.Errorf("servo new component Widget --package parts = %v:\n%s", err, out)
+	}
+}
+
+// TestRunWarnsAboutIgnoredArguments: generate takes no arguments, and
+// `servo generate ./cmd/app` — what a wire user types — regenerated every
+// injector in silence. The exit status is unchanged, since scripts rely
+// on it; the run now says what it ignored and what to type instead.
+func TestRunWarnsAboutIgnoredArguments(t *testing.T) {
+	dir := writeAppModule(t, "example.com/ignoredargs", true, "")
+	var err error
+	stderr := captureStderr(t, func() { err = run([]string{"generate", "./cmd/app", "--dir", dir}) })
+	if err != nil {
+		t.Fatalf("generate with a stray argument: %v", err)
+	}
+	for _, want := range []string{`ignoring "./cmd/app"`, "generate takes no arguments", "pass --dir ./cmd/app"} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("warning missing %q:\n%s", want, stderr)
+		}
+	}
+	// The flag after the argument was honoured: the generation ran in dir.
+	if _, statErr := os.Stat(filepath.Join(dir, "cmd", "app", generatedFileName)); statErr != nil {
+		t.Errorf("--dir after the argument was not honoured: %v", statErr)
+	}
+
+	stderr = captureStderr(t, func() { err = run([]string{"check", "--dir", dir, "./..."}) })
+	if err != nil || !strings.Contains(stderr, "already covers everything below it") {
+		t.Errorf("check ./... = %v, want a note that --dir already covers it:\n%s", err, stderr)
+	}
+}
+
+func TestRunVersionFlag(t *testing.T) {
+	for _, arg := range []string{"--version", "-version"} {
+		var err error
+		out := captureStdout(t, func() { err = run([]string{arg}) })
+		if err != nil {
+			t.Fatalf("servo %s: %v", arg, err)
+		}
+		if !strings.HasPrefix(out, "servo ") || !strings.Contains(out, runtime.Version()) || strings.Count(out, "\n") != 1 {
+			t.Errorf("servo %s printed %q, want the one version line", arg, out)
+		}
+	}
+}
+
+// TestVersionOfAReplacedBuild: `go tool servo` in a module that replaces
+// servo records the requirement as the main module's version, so
+// examples/variants — which requires v3.0.0 and builds ../.. — said
+// v3.0.0. The replacement is what was built.
+func TestVersionOfAReplacedBuild(t *testing.T) {
+	cases := []struct {
+		name          string
+		main          debug.Module
+		settings      []debug.BuildSetting
+		want, release string
+	}{
+		{
+			name: "a released build",
+			main: debug.Module{Path: "github.com/okian/servo/v3", Version: "v3.4.1"},
+			want: "v3.4.1", release: "v3.4.1",
+		},
+		{
+			name: "a directory replacement",
+			main: debug.Module{Path: "github.com/okian/servo/v3", Version: "v3.0.0", Replace: &debug.Module{Path: "../..", Version: "(devel)"}},
+			want: "(devel, replaced by ../..)",
+		},
+		{
+			name: "a module replacement",
+			main: debug.Module{Path: "github.com/okian/servo/v3", Version: "v3.4.1", Replace: &debug.Module{Path: "github.com/fork/servo/v3", Version: "v3.4.2"}},
+			want: "v3.4.2 (github.com/fork/servo/v3)",
+		},
+		{
+			name:     "a working-tree build",
+			main:     debug.Module{Path: "github.com/okian/servo/v3", Version: "(devel)"},
+			settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "71f44864ed6c0123"}, {Key: "vcs.modified", Value: "true"}},
+			want:     "(devel, 71f44864ed6c, dirty)",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			info := &debug.BuildInfo{Main: c.main, Settings: c.settings}
+			if got := versionOf(info); got != c.want {
+				t.Errorf("versionOf = %q, want %q", got, c.want)
+			}
+			if got := releaseVersionOf(info); got != c.release {
+				t.Errorf("releaseVersionOf = %q, want %q", got, c.release)
 			}
 		})
 	}

@@ -29,14 +29,16 @@ func TestExampleDiagnosticAmbiguousProvider(t *testing.T) {
 		t.Fatal("expected generation to fail")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "no provider for example.com/servodiagnostics/ambiguous.Store") {
-		t.Errorf("got %v, want a missing-provider diagnostic for Store", err)
+	if !strings.Contains(msg, "ambiguous provider for example.com/servodiagnostics/ambiguous.Store") {
+		t.Errorf("got %v, want the ambiguity headed as one", err)
 	}
-	if !strings.Contains(msg, "2 types implement example.com/servodiagnostics/ambiguous.Store") {
+	if !strings.Contains(msg, "2 types in this module implement Store") {
 		t.Errorf("got %v, want a 2-candidate ambiguity list", err)
 	}
-	if !strings.Contains(msg, "Postgres") || !strings.Contains(msg, "Redis") {
-		t.Errorf("got %v, want both Postgres and Redis suggested", err)
+	// The spec file is in package ambiguous itself, so the lines to paste
+	// name the types bare — exactly as that file would write them.
+	if !strings.Contains(msg, "servo.Bind[Store, *Postgres]()") || !strings.Contains(msg, "servo.Bind[Store, *Redis]()") {
+		t.Errorf("got %v, want both Postgres and Redis suggested as paste-ready lines", err)
 	}
 }
 

@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"flag"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
@@ -250,8 +254,8 @@ func TestGenerateReportsResolutionErrors(t *testing.T) {
 	dir := writeAppModule(t, "example.com/ambiguous", false, "")
 
 	err := runGenerate(cfg(dir))
-	if err == nil || !strings.Contains(err.Error(), "no provider for") {
-		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous provider for") {
+		t.Fatalf("got err=%v, want a 'ambiguous provider for' ambiguity diagnostic", err)
 	}
 }
 
@@ -307,8 +311,8 @@ func TestCheckReportsResolutionErrors(t *testing.T) {
 	dir := writeAppModule(t, "example.com/ambiguous2", false, "")
 
 	err := runCheck(cfg(dir))
-	if err == nil || !strings.Contains(err.Error(), "no provider for") {
-		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous provider for") {
+		t.Fatalf("got err=%v, want a 'ambiguous provider for' ambiguity diagnostic", err)
 	}
 }
 
@@ -341,8 +345,8 @@ func TestCheckOneFailsWhenGeneratedFileIsADirectory(t *testing.T) {
 	}
 }
 
-// TestCheckOneFailsWhenEmitFails and TestGenerateOneFailsWhenEmitFails
-// cover checkOne/generateOne's own emit.Emit error branches directly: a
+// TestCheckOneFailsWhenEmitFails and TestPlanOneFailsWhenEmitFails
+// cover checkOne/planOne's own emit.Emit error branches directly: a
 // hand-built *pipeline with an illegal package name ("type", a Go keyword)
 // and an empty graph (so p.resolve(nil) trivially succeeds with zero
 // nodes) reaches the same "package type" formatting failure
@@ -359,7 +363,7 @@ func TestCheckOneFailsWhenEmitFails(t *testing.T) {
 	}
 }
 
-func TestGenerateOneFailsWhenEmitFails(t *testing.T) {
+func TestPlanOneFailsWhenEmitFails(t *testing.T) {
 	spec := &load.Spec{InjectorPkg: &packages.Package{Name: "type", PkgPath: "example.com/badpkgname2"}}
 	p := &pipeline{spec: spec, caps: graph.EmptyCapabilities(), scope: map[string]bool{}}
 
@@ -367,16 +371,16 @@ func TestGenerateOneFailsWhenEmitFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	_, _, err = generateOne(p, resolved)
+	_, err = planOne(p, resolved)
 	if err == nil || !strings.Contains(err.Error(), "failed to format") {
 		t.Fatalf("got err=%v, want a 'failed to format' error", err)
 	}
 }
 
-// TestGenerateOneFailsWhenOutputDirIsReadOnly covers writeFileAtomic's
-// error propagating out of generateOne: os.CreateTemp cannot create the
-// temp file at all when the target directory itself isn't writable.
-func TestGenerateOneFailsWhenOutputDirIsReadOnly(t *testing.T) {
+// TestGenerateFailsWhenOutputDirIsReadOnly covers writeFileAtomic's error
+// propagating out of the write: os.CreateTemp cannot create the temp file
+// at all when the target directory itself isn't writable.
+func TestGenerateFailsWhenOutputDirIsReadOnly(t *testing.T) {
 	dir := writeAppModule(t, "example.com/genreadonlydir", true, "")
 	p, err := buildPipeline(cfg(dir))
 	if err != nil {
@@ -392,23 +396,34 @@ func TestGenerateOneFailsWhenOutputDirIsReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if _, _, err := generateOne(p, resolved); err == nil {
+	out, err := planOne(p, resolved)
+	if err != nil {
+		t.Fatalf("planOne: %v", err)
+	}
+	if err := newFileWriter(io.Discard, false).apply(out); err == nil {
 		t.Fatal("expected writeFileAtomic to fail against a read-only directory")
 	}
 }
 
-// TestGenerateOneFailsWhenOverrideResolutionFails covers generateOne's
+// TestGenerateWritesNothingWhenTheOverrideGraphFails covers generate's
 // second, override-scoped resolve call failing independently of the
 // first: the primary Bind (to Mem) resolves fine, but the servotest
 // Override names a concrete type with no provider anywhere, so only the
 // second resolve — never the first — fails.
-func TestGenerateOneFailsWhenOverrideResolutionFails(t *testing.T) {
+//
+// That second resolve used to run after servo_gen.go was written, leaving
+// a rewritten production file beside a missing test variant, and its
+// diagnostic read like a production one, though the production graph
+// resolved fine. Now nothing is written and the message says which graph.
+func TestGenerateWritesNothingWhenTheOverrideGraphFails(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
 	mustWriteFile(t, dir, "go.mod", "module example.com/badoverride\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+root+"\n")
 	mustWriteFile(t, dir, "store/store.go", "package store\n\ntype Store interface{ Get(key string) string }\n")
 	mustWriteFile(t, dir, "memory/memory.go", "package memory\n\ntype Mem struct{}\n\nfunc (m *Mem) Get(key string) string { return \"\" }\n\nfunc New() *Mem { return &Mem{} }\n")
-	mustWriteFile(t, dir, "missing/missing.go", "package missing\n\ntype Ghost struct{}\n")
+	// Ghost implements Store, so the Override is well-formed; it just has
+	// no constructor.
+	mustWriteFile(t, dir, "missing/missing.go", "package missing\n\ntype Ghost struct{}\n\nfunc (g *Ghost) Get(key string) string { return \"\" }\n")
 	mustWriteFile(t, dir, "api/api.go", `package api
 
 import "example.com/badoverride/store"
@@ -443,6 +458,20 @@ func wire() {
 	if err == nil || !strings.Contains(err.Error(), "no provider for *example.com/badoverride/missing.Ghost") {
 		t.Fatalf("got err=%v, want a 'no provider' error naming the override's dangling target", err)
 	}
+	for _, want := range []string{"in the NewTestApp graph (servo.Override at ", "spec.go:17:3)"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error does not say which graph failed — want %q in:\n%v", want, err)
+		}
+	}
+	for _, name := range []string{generatedFileName, generatedTestFileName} {
+		if _, statErr := os.Stat(filepath.Join(dir, "cmd", "app", name)); !os.IsNotExist(statErr) {
+			t.Errorf("%s was written by a generation whose override graph failed (stat err = %v)", name, statErr)
+		}
+	}
+
+	if err := runCheck(cfg(dir)); err == nil || !strings.Contains(err.Error(), "in the NewTestApp graph (servo.Override at ") {
+		t.Errorf("check = %v, want the same failure, labelled the same way", err)
+	}
 }
 
 // TestGeneratedCodeCompilesWithComponentsNamedLikeNewsOwnLocals covers
@@ -467,7 +496,7 @@ func TestGeneratedCodeCompilesWithComponentsNamedLikeNewsOwnLocals(t *testing.T)
 
 	mustWriteFile(t, dir, "go.mod", `module example.com/localsapp
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -558,7 +587,7 @@ func TestGeneratedCodeCompilesWhenANodeIsNamedAfterItsPackage(t *testing.T) {
 
 	mustWriteFile(t, dir, "go.mod", `module example.com/shadowapp
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -632,7 +661,7 @@ func scratchModule(t *testing.T, module, importPath, root string) string {
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "go.mod", "module "+module+`
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -774,17 +803,21 @@ func NewWidget(f *Factory) *widget.Widget { return &widget.Widget{} }
 // that text an already-cancelled ctx was.
 //
 // Every main in the docs and the examples passes New the signal context, so
-// a SIGTERM arriving mid-startup cancels it. servo.RunStop derives its
-// budget from whatever it is given, so a cancelled parent means Done is
-// closed before the select runs and every node is reported abandoned with
-// its Drain, Flush and Stop never getting a chance to do anything.
+// a SIGTERM arriving mid-startup cancels it. RunStop derives its budget from
+// whatever it is given, so a cancelled parent means Done is closed before
+// the select runs and every node is reported abandoned with its Drain, Flush
+// and Stop never getting a chance to do anything.
+//
+// The signal arrives inside B's Init here, as it would in production: New
+// must fail with the interruption, and B's own failure must survive beside
+// it rather than be buried under the unwind.
 func TestRollbackSurvivesACancelledStartupContext(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
 
 	mustWriteFile(t, dir, "go.mod", `module example.com/rollback
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -811,24 +844,34 @@ func (a *A) Stop(ctx context.Context) error {
 	return nil
 }
 
-// B initialises after A and fails, which is what triggers the rollback.
+// Signal stands in for the SIGTERM: main sets it to the cancel func of the
+// context New was given, and B's Init fires it, mid-startup.
+var Signal func()
+
+// B initialises after A, while the signal arrives, and fails, which is
+// what triggers the rollback.
 type B struct{}
 
 func NewB(a *A) *B { return &B{} }
 
-func (b *B) Init(ctx context.Context) error { return errors.New("B cannot reach its backend") }
+func (b *B) Init(ctx context.Context) error {
+	Signal()
+	return errors.New("B cannot reach its backend")
+}
 `)
 	mustWriteFile(t, dir, "cmd/app/main.go", `package main
 
 import (
 	"context"
 	"fmt"
+
+	"example.com/rollback/comp"
 )
 
 func main() {
 	// Exactly the state a SIGTERM during startup leaves New in.
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	comp.Signal = cancel
 
 	if _, err := New(ctx); err != nil {
 		fmt.Println("New failed:", err)
@@ -866,9 +909,14 @@ var _ = servo.Build(
 		t.Errorf("the rollback did not stop the already-initialised node — it was handed a dead context:\n%s", got)
 	}
 	// And the failure that caused the unwind has to survive it, not be
-	// buried under a node-by-node wall of "abandoned: context canceled".
+	// buried under a node-by-node wall of "abandoned: context canceled" —
+	// beside the interruption, which New reports because its context ended
+	// before startup finished.
 	if !strings.Contains(got, "B cannot reach its backend") {
 		t.Errorf("the real startup error did not survive the rollback:\n%s", got)
+	}
+	if !strings.Contains(got, "startup interrupted") {
+		t.Errorf("New did not report that its context ended mid-startup:\n%s", got)
 	}
 	if strings.Contains(got, "abandoned") {
 		t.Errorf("a node was abandoned during a rollback that had a full budget:\n%s", got)
@@ -884,7 +932,7 @@ func TestInitFailureWithACleanRollbackReturnsTheBareError(t *testing.T) {
 
 	mustWriteFile(t, dir, "go.mod", `module example.com/joined
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -939,8 +987,10 @@ var _ = servo.Build(
 	if err != nil {
 		t.Fatalf("go run: %v\n%s", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != `"connection refused"` {
-		t.Errorf("New returned %s, want the bare error with no trailing newline from the clean report", got)
+	// The node is named — an Init failure is a *servo.NodeError — and nothing
+	// trails it.
+	if got := strings.TrimSpace(string(out)); got != `"*example.com/joined/comp.A: Init: connection refused"` {
+		t.Errorf("New returned %s, want the node-named error with no trailing newline from the clean report", got)
 	}
 }
 
@@ -1069,5 +1119,414 @@ func TestGenerateRemovesALeftoverTestVariant(t *testing.T) {
 	}
 	if _, err := os.Stat(testGen); err != nil {
 		t.Fatalf("generate removed a file it did not write: %v", err)
+	}
+}
+
+// captureStderr is captureStdout for os.Stderr, where generate's notes,
+// warnings and -v listing go.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	copied := make(chan []byte, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		copied <- buf.Bytes()
+	}()
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return string(<-copied)
+}
+
+// TestGenerateAndCheckReportAnImportTheCompilerRefuses: a provider under
+// another tree's internal/ directory makes the generated file import a
+// package its own package may not. That is go list's error, not the type
+// checker's, and the compile check kept type errors only: generate exited
+// 0, check said current, and `go build` failed inside servo_gen.go.
+//
+// Which stage stops it — the compile check, or resolution once it knows
+// the internal/ rule — is not this test's concern. That both commands fail,
+// name the package, and no longer call it a bug in servo, is.
+func TestGenerateAndCheckReportAnImportTheCompilerRefuses(t *testing.T) {
+	dir := scratchModule(t, "example.com/visapp", "example.com/visapp/svc", "*svc.Service")
+	mustWriteFile(t, dir, "svc/svc.go", `package svc
+
+import "example.com/visapp/svc/internal/db"
+
+type Service struct{}
+
+func NewService(d *db.DB) *Service { return &Service{} }
+`)
+	mustWriteFile(t, dir, "svc/internal/db/db.go", "package db\n\ntype DB struct{}\n\nfunc NewDB() *DB { return &DB{} }\n")
+	runGoModTidy(t, dir)
+
+	err := runGenerate(cfg(dir))
+	if err == nil {
+		t.Fatal("generate = nil, want a failure: the generated file cannot import svc/internal/db")
+	}
+	if !strings.Contains(err.Error(), "svc/internal/db") {
+		t.Errorf("generate error does not name the internal package:\n%v", err)
+	}
+	if strings.Contains(err.Error(), "rather than in your code") {
+		t.Errorf("generate still calls this a bug in servo:\n%v", err)
+	}
+	if err := runCheck(cfg(dir)); err == nil {
+		t.Error("check = nil, want a failure: the module cannot build")
+	}
+}
+
+// TestCheckCompilesTheFilesItFindsCurrent pins check's compile step on its
+// own. A generated file byte-identical to a fresh generation can still not
+// compile — a Bind to a mock whose interface has since grown a method
+// generates the same broken file every time — and comparing bytes alone
+// called that current, doctor too, while `go build` failed.
+func TestCheckCompilesTheFilesItFindsCurrent(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module example.com/broken\n\ngo 1.23\n")
+	mustWriteFile(t, dir, "cmd/app/main.go", "package main\n\nfunc main() { _ = New() }\n")
+	content := "package main\n\nfunc New() int { return \"not an int\" }\n"
+	mustWriteFile(t, dir, "cmd/app/"+generatedFileName, content)
+
+	c := newChecker(invocation{flags: []string{"--dir=" + dir}})
+	gen := filepath.Join(dir, "cmd", "app", generatedFileName)
+	c.current[gen] = []byte(content)
+	c.pkgs = []string{"example.com/broken/cmd/app"}
+	err := c.verify(cfg(dir))
+	if err == nil {
+		t.Fatal("verify = nil for a generated file that does not compile")
+	}
+	for _, want := range []string{
+		"servo check: the generated code does not compile",
+		gen + ":3:",
+		"a servo.Bind or servo.Override type that no longer implements its interface",
+		"then run `servo generate --dir=" + dir + "` again",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("verify error does not contain %q:\n%v", want, err)
+		}
+	}
+}
+
+// writeMovableConfigModule is a module whose one //servo:config type lives
+// in package cfgold and is consumed by svc.New, so the type can be moved to
+// another package the way a refactor moves it.
+func writeMovableConfigModule(t *testing.T, module string) string {
+	t.Helper()
+	dir := scratchModule(t, module, module+"/svc", "*svc.Service")
+	writeConfigPackage(t, dir, "cfgold")
+	mustWriteFile(t, dir, "svc/svc.go", "package svc\n\nimport \""+module+"/cfgold\"\n\ntype Service struct{}\n\nfunc New(c cfgold.Config) *Service { return &Service{} }\n")
+	runGoModTidy(t, dir)
+	return dir
+}
+
+func writeConfigPackage(t *testing.T, dir, pkg string) {
+	t.Helper()
+	mustWriteFile(t, dir, pkg+"/config.go", "package "+pkg+"\n\n//servo:config prefix=APP\ntype Config struct {\n\tdsn string `config:\"dsn,default=x\"`\n}\n")
+}
+
+// TestGenerateRemovesAnOrphanedCompanion: moving a //servo:config type to
+// another package left its generated loader behind — still compiled into
+// every build, naming a type no longer there. go build failed with
+// "undefined: Config" while check and doctor reported the module current,
+// because they compared only the companions a graph still used.
+func TestGenerateRemovesAnOrphanedCompanion(t *testing.T) {
+	const module = "example.com/movedcfg"
+	dir := writeMovableConfigModule(t, module)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	old := filepath.Join(dir, "cfgold", "servo_config_gen.go")
+	if _, err := os.Stat(old); err != nil {
+		t.Fatalf("expected the companion beside cfgold.Config: %v", err)
+	}
+
+	// The move: cfgold keeps nothing but its companion, which the
+	// servoinject load cannot see at all.
+	if err := os.Remove(filepath.Join(dir, "cfgold", "config.go")); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigPackage(t, dir, "cfgnew")
+	mustWriteFile(t, dir, "svc/svc.go", "package svc\n\nimport \""+module+"/cfgnew\"\n\ntype Service struct{}\n\nfunc New(c cfgnew.Config) *Service { return &Service{} }\n")
+	// Two files generate must leave alone: one with servo's name but not
+	// its header, and a real companion in a package this configuration
+	// cannot see, which holds other files — whether its type still exists
+	// is a question for the configuration that can.
+	mustWriteFile(t, dir, "handwritten/servo_config_gen.go", "package handwritten\n")
+	mustWriteFile(t, dir, "gated/gated.go", "//go:build prod\n\npackage gated\n")
+	mustWriteFile(t, dir, "gated/servo_config_gen.go", "//go:build !servoinject\n\n// Code generated by servo generate. DO NOT EDIT.\n\npackage gated\n")
+
+	err := runCheck(cfg(dir))
+	if err == nil || !strings.Contains(err.Error(), old+" is left over from a //servo:config type its package no longer declares") {
+		t.Fatalf("check = %v, want the orphaned companion reported", err)
+	}
+
+	var genErr error
+	stderr := captureStderr(t, func() { genErr = runGenerate(cfg(dir)) })
+	if genErr != nil {
+		t.Fatalf("generate after the move: %v", genErr)
+	}
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Fatalf("the orphaned companion is still there (stat err = %v)", err)
+	}
+	if !strings.Contains(stderr, "servo generate: removed "+old+" — its package no longer declares a //servo:config type") {
+		t.Errorf("the removal was not reported:\n%s", stderr)
+	}
+	for _, kept := range []string{"handwritten/servo_config_gen.go", "gated/servo_config_gen.go"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Errorf("generate removed %s, which it has no grounds to: %v", kept, err)
+		}
+	}
+	if err := runCheck(cfg(dir)); err != nil {
+		t.Errorf("check after the removal: %v", err)
+	}
+	runGoBuild(t, dir, "")
+}
+
+// TestGenerateRemovesACompanionWhoseDirectiveWasDropped is the other shape
+// of the same orphan: the package stays, with its files, but no longer
+// declares a //servo:config type — so the load sees it, and finds none.
+func TestGenerateRemovesACompanionWhoseDirectiveWasDropped(t *testing.T) {
+	const module = "example.com/droppedcfg"
+	dir := writeMovableConfigModule(t, module)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	mustWriteFile(t, dir, "cfgold/config.go", "package cfgold\n\ntype Config struct{ DSN string }\n\nfunc New() Config { return Config{} }\n")
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate after dropping the directive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "cfgold", "servo_config_gen.go")); !os.IsNotExist(err) {
+		t.Fatalf("the companion of a dropped directive is still there (stat err = %v)", err)
+	}
+	runGoBuild(t, dir, "")
+}
+
+// TestGenerateLeavesUnchangedFilesAlone: rewriting identical bytes still
+// moves a file's mtime, and a watcher running `servo generate && go build`
+// on every change rebuilt on its own output forever — eighteen rebuilds in
+// twenty-five seconds with nothing edited.
+func TestGenerateLeavesUnchangedFilesAlone(t *testing.T) {
+	dir := writeOverrideModule(t, true)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	past := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	files := []string{filepath.Join(dir, "cmd", "app", generatedFileName), filepath.Join(dir, "cmd", "app", generatedTestFileName)}
+	for _, path := range files {
+		if err := os.Chtimes(path, past, past); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate again: %v", err)
+	}
+	for _, path := range files {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.ModTime().Equal(past) {
+			t.Errorf("%s was rewritten by a generation that changed nothing (mtime %v)", filepath.Base(path), info.ModTime())
+		}
+	}
+
+	// A file that did change is still rewritten.
+	if err := os.WriteFile(files[0], []byte("// stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate over a stale file: %v", err)
+	}
+	if err := runCheck(cfg(dir)); err != nil {
+		t.Errorf("check after regenerating the stale file: %v", err)
+	}
+}
+
+// TestFileWriterListsWhatItDid is -v: every file named once, as written,
+// unchanged or removed — and a removal named even without -v, since
+// deleting a file nobody named should never be silent.
+func TestFileWriterListsWhatItDid(t *testing.T) {
+	dir := t.TempDir()
+	a, b, gone := filepath.Join(dir, "a.go"), filepath.Join(dir, "b.go"), filepath.Join(dir, "gone.go")
+	mustWriteFile(t, dir, "b.go", "same")
+	mustWriteFile(t, dir, "gone.go", "old")
+
+	var log bytes.Buffer
+	w := newFileWriter(&log, true)
+	shared := &injectorOutput{files: map[string][]byte{a: []byte("new"), b: []byte("same")}, leftover: gone}
+	if err := w.apply(shared); err != nil {
+		t.Fatal(err)
+	}
+	// A second injector sharing a companion: handled, and listed, once.
+	if err := w.apply(&injectorOutput{files: map[string][]byte{a: []byte("new")}}); err != nil {
+		t.Fatal(err)
+	}
+	want := "servo generate: wrote " + a + "\n" +
+		"servo generate: unchanged " + b + "\n" +
+		"servo generate: removed " + gone + " — the spec no longer declares servo.Override\n"
+	if log.String() != want {
+		t.Errorf("-v listing =\n%s\nwant\n%s", log.String(), want)
+	}
+
+	log.Reset()
+	mustWriteFile(t, dir, "gone.go", "old")
+	quiet := newFileWriter(&log, false)
+	if err := quiet.apply(&injectorOutput{files: map[string][]byte{a: []byte("newer")}, leftover: gone}); err != nil {
+		t.Fatal(err)
+	}
+	if want := "servo generate: removed " + gone + " — the spec no longer declares servo.Override\n"; log.String() != want {
+		t.Errorf("without -v, output =\n%s\nwant only the removal", log.String())
+	}
+}
+
+// TestCheckAcceptsACRLFCheckout: Git for Windows checks text files out
+// with CRLF line endings by default, and check compared raw bytes — every
+// generated file was stale on every Windows checkout, with a diff of
+// identical-looking lines and a note blaming another servo version.
+func TestCheckAcceptsACRLFCheckout(t *testing.T) {
+	dir := writeOverrideModule(t, true)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	gen := filepath.Join(dir, "cmd", "app", generatedFileName)
+	lf, err := os.ReadFile(gen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	crlf := bytes.ReplaceAll(lf, []byte("\n"), []byte("\r\n"))
+	if err := os.WriteFile(gen, crlf, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runCheck(cfg(dir)); err != nil {
+		t.Fatalf("check on a CRLF checkout = %v, want current", err)
+	}
+
+	// A real change in a CRLF file is still stale, and the diff shows that
+	// change alone rather than every line.
+	edited := bytes.Replace(crlf, []byte("// Code generated by servo generate. DO NOT EDIT.\r\n"), []byte("// Code generated by servo generate. DO NOT EDIT. (edited)\r\n"), 1)
+	if err := os.WriteFile(gen, edited, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err = runCheck(cfg(dir))
+	if err == nil || !strings.Contains(err.Error(), "is stale") {
+		t.Fatalf("check = %v, want stale", err)
+	}
+	changed := 0
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if (strings.HasPrefix(line, "-") || strings.HasPrefix(line, "+")) && !strings.HasPrefix(line, "---") && !strings.HasPrefix(line, "+++") {
+			changed++
+		}
+	}
+	if changed != 2 {
+		t.Errorf("the diff shows %d changed lines, want 2 (one out, one in):\n%v", changed, err)
+	}
+}
+
+// TestCheckSuggestsTheFlagsItWasRunWith: the stale and missing messages
+// named a bare `servo generate`, which run where CI ran — the repository
+// root, with --dir — fails with "run `servo init`".
+func TestCheckSuggestsTheFlagsItWasRunWith(t *testing.T) {
+	dir := writeVariantModule(t, "example.com/suggestflags")
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("generate (default): %v", err)
+	}
+	err := run([]string{"check", "--dir", dir, "--tags", "prod"})
+	if want := "`servo generate --dir=" + dir + " --tags=prod`"; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("check = %v, want the remediation %s", err, want)
+	}
+}
+
+func TestInvocationOf(t *testing.T) {
+	parse := func(args ...string) invocation {
+		t.Helper()
+		fs := flag.NewFlagSet("check", flag.ContinueOnError)
+		fs.String("dir", ".", "")
+		registerBuildFlags(fs)
+		fs.Bool("v", false, "")
+		if err := fs.Parse(args); err != nil {
+			t.Fatal(err)
+		}
+		return invocationOf(fs)
+	}
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "`servo generate`"},
+		{[]string{"--dir", "."}, "`servo generate`"},
+		{[]string{"-v", "--tags=dev"}, "`servo generate --tags=prod`"},
+		{[]string{"--dir=svc/api", "--mod=vendor"}, "`servo generate --dir=svc/api --mod=vendor --tags=prod`"},
+		{[]string{"--dir", "my app"}, "`servo generate --dir='my app' --tags=prod`"},
+	} {
+		tags := []string{"prod"}
+		if len(c.args) == 0 || c.args[0] == "--dir" && c.args[1] == "." {
+			tags = nil
+		}
+		if got := parse(c.args...).command("generate", tags); got != c.want {
+			t.Errorf("args %q: command = %s, want %s", c.args, got, c.want)
+		}
+	}
+}
+
+// TestGenerateNotesAnEmptyGraph: `servo init` scaffolds an empty
+// servo.Build(), which generates and builds cleanly into a program whose
+// Run returns the moment it starts — with nothing to say why.
+func TestGenerateNotesAnEmptyGraph(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module example.com/empty\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+repoRoot(t)+"\n")
+	mustWriteFile(t, dir, "cmd/app/main.go", "package main\n\nfunc main() {}\n")
+	mustWriteFile(t, dir, "cmd/app/spec.go", "//go:build servoinject\n\npackage main\n\nimport \"github.com/okian/servo/v3/servo\"\n\nfunc wire() {\n\tservo.Build()\n}\n")
+	runGoModTidy(t, dir)
+
+	var err error
+	stderr := captureStderr(t, func() { err = runGenerate(cfg(dir)) })
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !strings.Contains(stderr, "example.com/empty/cmd/app declares no servo.Root and no servo.HTTP()") {
+		t.Errorf("no note for an empty graph:\n%s", stderr)
+	}
+
+	full := writeOverrideModule(t, false)
+	stderr = captureStderr(t, func() { err = runGenerate(cfg(full)) })
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if stderr != "" {
+		t.Errorf("generate of a graph with roots printed:\n%s", stderr)
+	}
+}
+
+// TestGenerateWarnsWhenItCannotCompileItsOutput: the first generated
+// import of a config decoder lands in a module that does not require it
+// yet. The compile check cannot judge that package — `go mod tidy` is the
+// fix — and it used to skip it in silence, so generate succeeded on a file
+// `go build` then rejected. It still succeeds, but says so.
+func TestGenerateWarnsWhenItCannotCompileItsOutput(t *testing.T) {
+	dir := writeMovableConfigModule(t, "example.com/yamlcfg")
+	spec := readFile(t, filepath.Join(dir, "cmd", "app", "spec.go"))
+	mustWriteFile(t, dir, "cmd/app/spec.go", strings.Replace(spec, "servo.Root[", "servo.ConfigFile(\"config.yaml\"),\n\tservo.Root[", 1))
+
+	var err error
+	stderr := captureStderr(t, func() { err = runGenerate(cfg(dir)) })
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	for _, want := range []string{
+		"servo generate: warning: could not compile the generated code in example.com/yamlcfg/cmd/app: ",
+		"gopkg.in/yaml.v3",
+		"run `go mod tidy`, then `servo generate` again",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr does not contain %q:\n%s", want, stderr)
+		}
 	}
 }

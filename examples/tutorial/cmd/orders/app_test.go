@@ -30,7 +30,7 @@ func TestFullAPIFlowWithMockedInfrastructure(t *testing.T) {
 	// still is — the notifier takes natsbroker.Config and isn't overridden
 	// — and JWT_SECRET matters for real, since auth.Issuer is unmocked.
 	t.Setenv("NATS_URL", "unused-in-this-test")
-	t.Setenv("JWT_SECRET", "test-secret")
+	t.Setenv("JWT_SECRET", "test-secret-of-at-least-32-bytes")
 
 	app, err := NewTestApp(context.Background())
 	if err != nil {

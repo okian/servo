@@ -181,9 +181,13 @@ actually behaves the same way outside a test. Start everything, log in, create a
 Redis mid-session:
 
 ```
-$ make up
+$ docker compose -f deploy/docker-compose.yml up -d postgres redis nats
 $ POSTGRES_DSN=... REDIS_ADDR=... NATS_URL=... JWT_SECRET=... go run ./cmd/orders
 ```
+
+(The dependencies by name, not `make up`, which would also start a containerized copy of the
+service on the ports this one needs; the four values are the ones
+[chapter 10](10-api-layer.md#try-the-whole-thing) uses.)
 ```
 $ docker stop <redis container>
 $ curl -s -w " [%{http_code}]\n" http://localhost:8080/orders/<id> -H "Authorization: Bearer $TOKEN"
@@ -200,8 +204,9 @@ each cost a real, logged connection failure:
 
 Keep making requests and those log lines stop appearing well before Redis comes back — the breaker
 has opened, and every subsequent attempt is now a `cache.ErrMiss` returned immediately, with no
-network call and nothing to log. `/healthz` still correctly reports `redis.Cache` as `"failed"`
-the whole time: the breaker and the health check are deliberately independent signals. The breaker
+network call and nothing to log. `/healthz` on the admin port still correctly reports
+`redis.Cache` as `"failed"` the whole time, while `/readyz` and `/livez` stay green: the breaker
+and the health check are deliberately independent signals. The breaker
 answers "should I bother trying," measured across the cache's own calls; `Health` answers "is this
 dependency actually up right now," checked directly. A cache that's down should show up as
 unhealthy regardless of how well the breaker is protecting the request path from it.

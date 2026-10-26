@@ -72,6 +72,50 @@ func TestToGraphShape(t *testing.T) {
 	if len(server.Deps) != 1 || server.Deps[0] != "*example.com/app.Logger" {
 		t.Errorf("Server.Deps = %v, want [*example.com/app.Logger]", server.Deps)
 	}
+	// The provider is named by its function, which is what the generated
+	// header and App.Graph() carry in place of a position.
+	if server.Provider != "app.NewServer" {
+		t.Errorf("Server.Provider = %q, want app.NewServer", server.Provider)
+	}
+	if !strings.HasPrefix(server.Pos, "app.go:") {
+		t.Errorf("Server.Pos = %q: `servo graph` keeps the live position", server.Pos)
+	}
+}
+
+// TestCommittedIsToGraphWithoutPositions: the generated App.Graph() is
+// printed from Committed, `servo graph` from ToGraph, and the two may
+// differ in positions alone — every other field, nil slices included, is
+// the same value.
+func TestCommittedIsToGraphWithoutPositions(t *testing.T) {
+	resolved := buildTestResolved(t)
+	live, committed := ToGraph(resolved, nil), Committed(resolved)
+	for i := range live.Nodes {
+		if committed.Nodes[i].Pos != "" {
+			t.Errorf("Committed node %s carries a position: %q", committed.Nodes[i].Type, committed.Nodes[i].Pos)
+		}
+		live.Nodes[i].Pos = ""
+	}
+	a, err := JSON(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := JSON(committed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Errorf("Committed differs from ToGraph by more than positions:\n%s\n---\n%s", b, a)
+	}
+}
+
+// TestTextNamesTheProvider: the text format prints the provider beside the
+// binding that chose it, with the position after both.
+func TestTextNamesTheProvider(t *testing.T) {
+	out := Text(ToGraph(buildTestResolved(t), nil))
+	want := "      binding: sole candidate\n      provider: app.NewServer\n      pos: app.go:"
+	if !strings.Contains(out, want) {
+		t.Errorf("text output missing %q:\n%s", want, out)
+	}
 }
 
 func TestJSONRoundTrips(t *testing.T) {
@@ -119,6 +163,14 @@ func TestDOTIncludesCapabilitiesInLabel(t *testing.T) {
 	out := DOT(g)
 	if !strings.Contains(out, "Startable, Stoppable") {
 		t.Errorf("DOT output missing capabilities in label:\n%s", out)
+	}
+	// The line break is DOT's \n escape, written once. A doubled backslash
+	// is a literal backslash to dot, which then drew "\n" in the box.
+	if !strings.Contains(out, `app.Server\nStartable, Stoppable"`) {
+		t.Errorf("DOT label does not break the line with a single \\n escape:\n%s", out)
+	}
+	if strings.Contains(out, `\\n`) {
+		t.Errorf("DOT output carries a doubled \\\\n escape:\n%s", out)
 	}
 }
 

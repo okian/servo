@@ -50,8 +50,16 @@ func GeneratedConstraint(file *ast.File, tags []string) (string, error) {
 	// part of the next spec-file scan. Before this change the header was
 	// the literal !servoinject, so the guarantee was structural; now it has
 	// to be checked.
-	if satisfiableWith(expr, BuildTag, true) {
+	//
+	// "Can't tell" is a refusal, not a pass. It used to read as "not
+	// satisfiable", so a constraint naming more tags than the enumeration
+	// ceiling skipped the check entirely and emitted exactly the
+	// self-reading mirror image it exists to catch.
+	switch satisfiableWith(expr, BuildTag, true) {
+	case sometimesTrue:
 		return "", fmt.Errorf("spec file's build constraint does not require %[1]s in every case it allows, so the generated file's mirror image would still compile with %[1]s set and servo would read its own output — gate the spec with %[1]s as a conjunct, as `//go:build %[1]s && ...`", BuildTag)
+	case cantTell:
+		return "", fmt.Errorf("spec file's build constraint names %[2]d distinct build tags without gating on %[1]s as a top-level conjunct, so servo cannot prove the generated file's mirror image stays false with %[1]s set — it checks such a constraint by trying every combination of its tags, and stops at %[3]d. Gate the spec with %[1]s as a conjunct, as `//go:build %[1]s && ...`, or name fewer tags", BuildTag, len(tagsIn(expr)), enumerationCeiling)
 	}
 	for _, tag := range tags {
 		// A spec gated `servoinject && prod` generated under -tags=prod
@@ -72,14 +80,15 @@ func GeneratedConstraint(file *ast.File, tags []string) (string, error) {
 // Decided exactly rather than syntactically, by enumerating the tags expr
 // actually mentions: `!servoinject && (prod || dev)` mentions prod without
 // requiring it, and must still gain the conjunct. Expressions in a spec
-// file's constraint are small; the ceiling only exists so a pathological
-// one degrades to emitting a redundant conjunct instead of hanging.
+// file's constraint are small; past the ceiling the answer is false, which
+// is the safe direction here — it costs a redundant conjunct, never a
+// missing one.
 func implies(expr constraint.Expr, tag string) bool {
 	names := tagsIn(expr)
 	if !slices.Contains(names, tag) {
 		return false
 	}
-	if len(names) > 16 {
+	if len(names) > enumerationCeiling {
 		return false
 	}
 	for mask := 0; mask < 1<<len(names); mask++ {
@@ -103,25 +112,59 @@ func implies(expr constraint.Expr, tag string) bool {
 	return true
 }
 
+// satisfiability is a three-way answer, because "no" and "could not tell"
+// lead to opposite decisions and a bool can only say one of them.
+type satisfiability int
+
+const (
+	neverTrue satisfiability = iota
+	sometimesTrue
+	cantTell
+)
+
 // satisfiableWith reports whether expr is true in at least one build
-// configuration that pins tag to value, by enumerating every other tag expr
-// mentions. Constraint expressions name a handful of tags, so the
-// enumeration is tiny; the ceiling only exists so a pathological one
-// answers "can't tell" instead of hanging.
-func satisfiableWith(expr constraint.Expr, tag string, value bool) bool {
-	names := tagsIn(expr)
+// configuration that pins tag to value.
+//
+// A conjunction with a top-level term that pins tag the other way is false
+// on its face. That is the shape every generated constraint has — the
+// mirror of `servoinject && ...` is `!servoinject && ...` — so the common
+// case is decided without enumerating anything, however many tags it
+// names. Anything else is decided by enumerating every other tag expr
+// mentions; constraint expressions name a handful, so that is tiny, and
+// past the ceiling the answer is undecided rather than a guess.
+func satisfiableWith(expr constraint.Expr, tag string, value bool) satisfiability {
+	if pinsTag(expr, tag, !value) {
+		return neverTrue
+	}
+	names := slices.DeleteFunc(tagsIn(expr), func(name string) bool { return name == tag })
 	if len(names) > enumerationCeiling {
-		return false
+		return cantTell
 	}
 	for mask := range 1 << len(names) {
-		vals := make(map[string]bool, len(names))
+		vals := make(map[string]bool, len(names)+1)
 		for i, name := range names {
 			vals[name] = mask&(1<<i) != 0
 		}
 		vals[tag] = value
 		if expr.Eval(func(t string) bool { return vals[t] }) {
-			return true
+			return sometimesTrue
 		}
+	}
+	return neverTrue
+}
+
+// pinsTag reports whether expr is a conjunction one of whose top-level
+// terms is tag itself (want true) or its negation (want false) — which
+// makes expr false whenever tag has the other value.
+func pinsTag(expr constraint.Expr, tag string, want bool) bool {
+	switch e := expr.(type) {
+	case *constraint.AndExpr:
+		return pinsTag(e.X, tag, want) || pinsTag(e.Y, tag, want)
+	case *constraint.TagExpr:
+		return want && e.Tag == tag
+	case *constraint.NotExpr:
+		inner, ok := e.X.(*constraint.TagExpr)
+		return ok && !want && inner.Tag == tag
 	}
 	return false
 }
@@ -160,8 +203,12 @@ func ParseConstraint(line string) (constraint.Expr, error) {
 
 // enumerationCeiling bounds every satisfiability walk in this file. A spec
 // constraint naming more than this many distinct tags is not something
-// servo can reason about cheaply, and every caller degrades to a safe
-// answer rather than to a wrong one.
+// servo can reason about cheaply, and each caller picks, explicitly, what
+// "can't tell" means for it: implies says no, which costs a redundant
+// conjunct; ConstraintsOverlap says no, because its yes is a refusal and a
+// real overlap still fails loudly in the compiler; GeneratedConstraint
+// refuses, because there the wrong answer is a generated file servo reads
+// back as input, which nothing downstream would ever catch.
 const enumerationCeiling = 16
 
 // tagsIn is every distinct tag named anywhere in expr, sorted so the

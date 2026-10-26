@@ -86,6 +86,12 @@ func (e *emitter) planScopes() {
 		for _, ident := range eagerStdlibIdents {
 			entryNames.AllocateName(ident)
 		}
+		// And the two servo packages: its Init and Run phases call
+		// servoimpl and read servo's budgets, so a member type named
+		// Servoimpl would otherwise take the local that hides the package
+		// from every line below it.
+		entryNames.AllocateName(e.servoAlias)
+		entryNames.AllocateName(e.runtimeImpl())
 		// A member's local shadows a package a later member's constructor is
 		// still qualified with, exactly as a node's local does in New, so the
 		// same guard qualifies it by package: `roomRoom := room.NewRoom(e.key)`
@@ -373,7 +379,7 @@ func (e *emitter) writeScopeType(b *strings.Builder, se *scopeEmit) {
 	fmt.Fprintf(b, "\t\ttearing: map[*%s]struct{}{},\n", se.EntryName)
 	b.WriteString("\t\tquit:  make(chan struct{}),\n")
 	b.WriteString("\t\tbase:  context.WithoutCancel(ctx),\n")
-	fmt.Fprintf(b, "\t\tlinger: %s.LingerWindow(%s),\n", e.servoAlias, durationLiteral(se.S.Linger))
+	fmt.Fprintf(b, "\t\tlinger: %s.LingerWindow(%s),\n", e.runtimeImpl(), durationLiteral(se.S.Linger))
 	fmt.Fprintf(b, "\t\tmax:    %d,\n", se.S.Max)
 	b.WriteString("\t}\n}\n\n")
 }
@@ -627,34 +633,43 @@ func (e *emitter) writeMemberRollback(b *strings.Builder, m *memberEmit) {
 	}
 }
 
+// writeScopeInitPhase emits the entry's Init phase through the same
+// servoimpl.Init the App's own New calls, so a scoped Init behaves exactly
+// as a singleton's does: a context of its own per call, cancelled when the
+// call returns; a panic recovered into that member's failure, which takes
+// the rollback below like any Init error; a *servo.NodeError naming the
+// member; and servo.DefaultInitBudget, when set, bounding each call. The
+// errgroup this replaced recovered a panic on a level of several and let
+// one on a lone level unwind into start's recover instead — the same
+// outcome by two different routes, and the only Init in a generated file
+// whose errors named nobody.
+//
+// The parent context is the entry's own, not the acquirer's: it carries
+// New's values and no cancellation, because every caller waiting on this
+// key is waiting for this same Init, and the first of them disconnecting
+// must not fail it for the rest. A waiter that gives up stops waiting —
+// its Acquire returns its own context's error — while the Init carries on.
 func (e *emitter) writeScopeInitPhase(b *strings.Builder, se *scopeEmit) {
 	nodes := make([]*resolve.Node, 0, len(se.Members))
 	for _, m := range se.Members {
 		nodes = append(nodes, m.N)
 	}
 	groups := scopeLevelGroups(nodes, func(n *resolve.Node) bool { return hasCapability(n, "Initializer") })
-	for _, level := range groups {
-		if len(level) == 1 {
-			fmt.Fprintf(b, "\tif err := e.%s.Init(e.ctx); err != nil {\n", e.memberField[level[0]])
-			e.writeInitRollback(b, se)
-			b.WriteString("\t\treturn err\n\t}\n")
-			continue
-		}
-		e.imports.Add("golang.org/x/sync/errgroup", "errgroup")
-		b.WriteString("\t{\n\t\tg, gctx := errgroup.WithContext(e.ctx)\n")
-		b.WriteString("\t\t// Recovered inside the goroutine: errgroup does not, and a\n")
-		b.WriteString("\t\t// panic escaping here would take the process down from a\n")
-		b.WriteString("\t\t// goroutine no caller can recover — where the same panic on a\n")
-		b.WriteString("\t\t// single-node level would simply fail this one acquire.\n")
-		for _, n := range level {
-			fmt.Fprintf(b, "\t\tg.Go(func() (err error) {\n")
-			fmt.Fprintf(b, "\t\t\tdefer func() {\n\t\t\t\tif r := recover(); r != nil {\n\t\t\t\t\terr = fmt.Errorf(%q, r)\n\t\t\t\t}\n\t\t\t}()\n", "servo: panic in Init of "+n.Key.String()+": %v")
-			fmt.Fprintf(b, "\t\t\treturn e.%s.Init(gctx)\n\t\t})\n", e.memberField[n])
-		}
-		b.WriteString("\t\tif err := g.Wait(); err != nil {\n")
-		e.writeInitRollback(b, se)
-		b.WriteString("\t\t\treturn err\n\t\t}\n\t}\n")
+	if len(groups) == 0 {
+		return
 	}
+	impl := e.runtimeImpl()
+	fmt.Fprintf(b, "\tif err := %s.Init(e.ctx, %s.DefaultInitBudget, nil,\n", impl, e.servoAlias)
+	for _, level := range groups {
+		fmt.Fprintf(b, "\t\t[]%s.Call{\n", impl)
+		for _, n := range level {
+			fmt.Fprintf(b, "\t\t\t{Node: %q, Fn: e.%s.Init},\n", n.Key.String(), e.memberField[n])
+		}
+		b.WriteString("\t\t},\n")
+	}
+	b.WriteString("\t); err != nil {\n")
+	e.writeInitRollback(b, se)
+	b.WriteString("\t\treturn err\n\t}\n")
 }
 
 // writeInitRollback stops every member, in reverse construction order.
@@ -676,17 +691,23 @@ func (e *emitter) writeScopeRunLaunch(b *strings.Builder, se *scopeEmit) {
 	if len(runners) == 0 {
 		return
 	}
+	impl := e.runtimeImpl()
 	b.WriteString("\n\t// One goroutine per running instance, on the entry's own context. A\n")
 	b.WriteString("\t// Run that returns because that context was cancelled is a normal\n")
-	b.WriteString("\t// teardown, not a failure, and is not reported as one.\n")
+	b.WriteString("\t// teardown, not a failure, and is not reported as one. A panic is a\n")
+	b.WriteString("\t// failure like any other: Guard recovers it into this instance's\n")
+	b.WriteString("\t// Run error, which teardown reports. Unrecovered, it came from a\n")
+	b.WriteString("\t// goroutine nothing could reach, and took every other key's\n")
+	b.WriteString("\t// instance — the whole process — down with this one.\n")
 	for _, m := range runners {
-		fmt.Fprintf(b, "\te.runWG.Add(1)\n\tgo func() {\n\t\tdefer e.runWG.Done()\n\t\tif err := e.%s.Run(e.ctx); err != nil && !errors.Is(err, context.Canceled) {\n", m.Field)
+		fmt.Fprintf(b, "\te.runWG.Add(1)\n\tgo func() {\n\t\tdefer e.runWG.Done()\n\t\tif err := %s.Guard(e.ctx, \"Run\", %s.Call{Node: %q, Fn: e.%s.Run}); err != nil && !errors.Is(err, context.Canceled) {\n", impl, impl, m.N.Key.String(), m.Field)
 		b.WriteString("\t\t\te.runMu.Lock()\n\t\t\te.runErrs = append(e.runErrs, err)\n\t\t\te.runMu.Unlock()\n\t\t}\n\t}()\n")
 	}
 	b.WriteString("\n")
 }
 
 func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
+	impl := e.runtimeImpl()
 	// Per-member stop, mirroring the App's own stop methods, so the
 	// rollback paths above have something to call.
 	for _, m := range se.Members {
@@ -696,22 +717,22 @@ func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
 		label := m.N.Key.String()
 		if hasCapability(m.N, "Drainer") {
 			fmt.Fprintf(b, "func (e *%s) drain%s(ctx context.Context) []%s.NodeResult {\n", se.EntryName, capitalize(m.Field), e.servoAlias)
-			fmt.Fprintf(b, "\treturn []%s.NodeResult{%s.RunStop(ctx, %s.DefaultStopBudget, %q, e.%s.Drain)}\n}\n\n", e.servoAlias, e.servoAlias, e.servoAlias, label, m.Field)
+			fmt.Fprintf(b, "\treturn []%s.NodeResult{%s.RunStop(ctx, %s.DefaultStopBudget, %q, e.%s.Drain)}\n}\n\n", e.servoAlias, impl, e.servoAlias, label, m.Field)
 		}
 		fmt.Fprintf(b, "func (e *%s) stop%s(ctx context.Context) []%s.NodeResult {\n", se.EntryName, capitalize(m.Field), e.servoAlias)
 		fmt.Fprintf(b, "\tvar results []%s.NodeResult\n", e.servoAlias)
 		if hasCapability(m.N, "Flusher") {
-			fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, e.%s.Flush))\n", e.servoAlias, e.servoAlias, label, m.Field)
+			fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, e.%s.Flush))\n", impl, e.servoAlias, label, m.Field)
 		}
 		if hasCapability(m.N, "Finalizer") {
-			fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, e.%s.Stop))\n", e.servoAlias, e.servoAlias, label, m.Field)
+			fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, e.%s.Stop))\n", impl, e.servoAlias, label, m.Field)
 		}
 		if m.N.Provider.HasCleanup {
 			// Nil-guarded for the same reason the App-level teardown is:
 			// a provider returning a nil cleanup func is legitimate, and
 			// calling it panicked in a goroutine nothing could recover.
 			fmt.Fprintf(b, "\tif e.%sCleanup != nil {\n", m.Field)
-			fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { e.%sCleanup(); return nil }))\n", e.servoAlias, e.servoAlias, label, m.Field)
+			fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { e.%sCleanup(); return nil }))\n", impl, e.servoAlias, label, m.Field)
 			b.WriteString("\t}\n")
 		}
 		b.WriteString("\treturn results\n}\n\n")
@@ -748,7 +769,7 @@ func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
 	b.WriteString("// teardown runs on a fresh context, for the same reason main hands\n")
 	b.WriteString("// Shutdown one: the drain has to survive the cancellation that triggered\n")
 	b.WriteString("// it. No deadline is set here because there is no caller to take one\n")
-	b.WriteString("// from — a linger timer can fire this — and servo.RunStop bounds every\n")
+	b.WriteString("// from — a linger timer can fire this — and RunStop bounds every\n")
 	b.WriteString("// call below at servo.DefaultStopBudget either way. Drain comes first so\n")
 	b.WriteString("// a streaming consumer unblocks before its context is pulled out from\n")
 	b.WriteString("// under it; Flush comes after the Run goroutines have returned, so\n")
@@ -766,7 +787,7 @@ func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
 		}
 	}
 	b.WriteString("\te.cancel()\n")
-	fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, e.name(), e.waitRun))\n", e.servoAlias, e.servoAlias)
+	fmt.Fprintf(b, "\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, e.name(), e.waitRun))\n", impl, e.servoAlias)
 	for i := len(se.Members) - 1; i >= 0; i-- {
 		m := se.Members[i]
 		if !e.needsStopMethod(m.N) {
@@ -774,13 +795,13 @@ func (e *emitter) writeEntryTeardown(b *strings.Builder, se *scopeEmit) {
 		}
 		fmt.Fprintf(b, "\tresults = append(results, e.stop%s(ctx)...)\n", capitalize(m.Field))
 	}
-	fmt.Fprintf(b, "\treturn %s.MergeNodeResults(e.name(), results...)\n}\n\n", e.servoAlias)
+	fmt.Fprintf(b, "\treturn %s.MergeNodeResults(e.name(), results...)\n}\n\n", impl)
 
 	fmt.Fprintf(b, "func (e *%s) waitRun(context.Context) error {\n", se.EntryName)
 	b.WriteString("\te.runWG.Wait()\n\te.runMu.Lock()\n\tdefer e.runMu.Unlock()\n\treturn errors.Join(e.runErrs...)\n}\n\n")
 
 	b.WriteString("// waitTorn blocks until this entry has finished tearing down. Shutdown\n")
-	b.WriteString("// calls it through servo.RunStop so the wait is bounded.\n")
+	b.WriteString("// calls it through RunStop so the wait is bounded.\n")
 	fmt.Fprintf(b, "func (e *%s) waitTorn(ctx context.Context) error {\n", se.EntryName)
 	b.WriteString("\tselect {\n\tcase <-e.torn:\n\t\treturn nil\n\tcase <-ctx.Done():\n\t\treturn ctx.Err()\n\t}\n}\n\n")
 }
@@ -862,11 +883,12 @@ func (e *emitter) writeAcquire(b *strings.Builder, se *scopeEmit, re *rootEmit) 
 }
 
 // writeStart emits the guarded construction path. It exists as its own
-// method for the defer: a panic in a user constructor or Init would
-// otherwise unwind straight past both abandon and `go e.loop()`, leaving
-// the entry in the map with nobody to tear it down — every later acquire
-// of that key blocks until its own context dies, and Shutdown waits for a
-// torn channel that will never close.
+// method for the defer: a panic in a user constructor would otherwise
+// unwind straight past both abandon and `go e.loop()`, leaving the entry
+// in the map with nobody to tear it down — every later acquire of that key
+// blocks until its own context dies, and Shutdown waits for a torn channel
+// that will never close. An Init panic never gets this far: servoimpl.Init
+// has already made it that member's Init error, rolled back inline.
 func (e *emitter) writeStart(b *strings.Builder, se *scopeEmit) {
 	fmt.Fprintf(b, "func (s *%s) start(entry *%s) (err error) {\n", se.TypeName, se.EntryName)
 	b.WriteString("\tstarted := false\n")
@@ -943,6 +965,7 @@ func (e *emitter) scopeAppFields() string {
 func (e *emitter) scopeStopMethods() string {
 	var b strings.Builder
 	for _, se := range e.scopes {
+		impl := e.runtimeImpl()
 		fmt.Fprintf(&b, "func (a *%s) %s(ctx context.Context) %s.NodeResult {\n", e.appType(), se.StopMethod, e.servoAlias)
 		fmt.Fprintf(&b, "\ta.%sStopOnce.Do(func() {\n", se.Field)
 		fmt.Fprintf(&b, "\t\ts := a.%s\n", se.Field)
@@ -962,10 +985,10 @@ func (e *emitter) scopeStopMethods() string {
 		b.WriteString("\t\t// the whole shutdown open past the deadline its caller passed. The\n")
 		fmt.Fprintf(&b, "\t\t// multiplier is the number of budgeted calls one teardown makes\n\t\t// (%d here): a single budget would time out on an entry that was\n\t\t// tearing down perfectly correctly, and report it abandoned.\n", se.teardownPhases())
 		b.WriteString("\t\tfor _, e := range entries {\n")
-		fmt.Fprintf(&b, "\t\t\tif res := %s.RunStop(ctx, %d*%s.DefaultStopBudget, e.name(), e.waitTorn); res.Status != %s.StatusOK {\n", e.servoAlias, se.teardownPhases(), e.servoAlias, e.servoAlias)
+		fmt.Fprintf(&b, "\t\t\tif res := %s.RunStop(ctx, %d*%s.DefaultStopBudget, e.name(), e.waitTorn); res.Status != %s.StatusOK {\n", impl, se.teardownPhases(), e.servoAlias, e.servoAlias)
 		b.WriteString("\t\t\t\tresults = append(results, res)\n\t\t\t\tcontinue\n\t\t\t}\n")
 		b.WriteString("\t\t\tresults = append(results, e.stopResult)\n\t\t}\n")
-		fmt.Fprintf(&b, "\t\ta.%sStopResult = %s.MergeNodeResults(%q, results...)\n", se.Field, e.servoAlias, se.S.Name)
+		fmt.Fprintf(&b, "\t\ta.%sStopResult = %s.MergeNodeResults(%q, results...)\n", se.Field, impl, se.S.Name)
 		b.WriteString("\t})\n")
 		fmt.Fprintf(&b, "\treturn a.%sStopResult\n}\n\n", se.Field)
 	}

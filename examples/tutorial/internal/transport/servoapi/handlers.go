@@ -85,11 +85,18 @@ func ListOrders(ctx context.Context, req *ListOrdersReq, claims auth.Claims, ord
 // is the storage, and the accessor is how a per-request instance reaches a
 // generated, refcounted one.
 //
+// Acquire's error goes back unwrapped. A session scope at its Max cap, or
+// one already shut down, refuses with servo.ErrScopeFull or
+// servo.ErrScopeClosed, and the generated adapter answers those with a 503
+// and Retry-After — load being shed, which a client should retry — where
+// wrapping them in a status of our own would have made every refusal a
+// 500 and an error in the log.
+//
 //servo:get /me/recent
 func Recent(ctx context.Context, claims auth.Claims, sessions session.Sessions) (servo.Json[*RecentResp], error) {
 	sess, release, err := sessions.Acquire(ctx)
 	if err != nil {
-		return nil, servo.Status.INTERNAL_SERVER_ERROR.Wrap(err)
+		return nil, err
 	}
 	defer release()
 	return servo.JSON(&RecentResp{Recent: sess.Recent()}), nil

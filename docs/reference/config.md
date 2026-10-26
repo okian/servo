@@ -60,7 +60,7 @@ Four words, deliberately: `config:"name"` plus `required`, `default=<value>`, an
 | option | meaning |
 |---|---|
 | *name* | `lower_snake`. Env var is `PREFIX_NAME`; file key is `section.name`. |
-| `required` | Missing from every source is a startup error. Mutually exclusive with `default=`. |
+| `required` | Missing from every source is a startup error. *Missing* means not set at all: an environment variable set to the empty string is present and satisfies it (see below). Mutually exclusive with `default=`. |
 | `default=v` | Applied first, before file and env. Validated **at generate time** against the field's type — a bad default is a `servo generate` error, never a 3 a.m. one. |
 | `secret` | No generated error path ever echoes the value. A malformed `POSTGRES_PASSWORD` reports "value redacted: secret" where any other field would quote what it saw. |
 
@@ -69,15 +69,39 @@ and `time.Duration`. A defined type (`type Port int`) is rejected rather than co
 structs are a "not yet supported" diagnostic, and an untagged field is simply not loaded —
 derived state a constructor fills in later is an ordinary thing for a config struct to carry.
 
-Anything smarter than these four words — ranges, cross-field rules — belongs in the constructor
-that receives the struct. It already returns an error at exactly the right moment in the
-lifecycle, so servo does not grow a validation DSL.
+Anything smarter than these four words — non-empty values, minimum lengths, ranges, cross-field
+rules — belongs in the constructor that receives the struct. It already returns an error at
+exactly the right moment in the lifecycle, so servo does not grow a validation DSL.
+
+`required` in particular means *present*, never *non-empty*. An unset Helm value rendered with
+`| quote`, or a compose `${VAR}` whose variable isn't exported, both arrive as an empty string —
+present, so `required` is satisfied. If an empty value is wrong, the constructor says so. The
+tutorial's JWT issuer is the model, because an empty HMAC key signs and verifies happily:
+
+```go
+func New(cfg Config) (*Issuer, error) {
+	if len(cfg.Secret) < 32 {
+		return nil, fmt.Errorf("auth: JWT_SECRET is %d bytes; HS256 needs a key of at least 32", len(cfg.Secret))
+	}
+	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}, nil
+}
+```
+
+The error gives the length, never the value: a constructor's error ends up in logs exactly like
+the loader's, and the `secret` tag only governs the loader's own messages.
 
 ## Precedence: default, then file, then environment
 
 The environment always wins. That order exists so an operator can override any file value in a
 deployment without editing the file — and it is per *setting*, not per section, so a file can set
 `max_conns` while the environment sets `dsn`.
+
+"Wins" includes an environment variable set to the empty string: `POSTGRES_DSN=` replaces the
+file's `postgres.dsn` with `""`. That is the same rule as above — set means present — and it is
+deliberate, since clearing a value from the environment is a legitimate override. Keys in the file
+that no field reads are ignored rather than refused, so one file can serve several services; a
+misspelled key therefore reads as absent, and the field falls back to its default or, if
+`required`, to the missing-configuration error.
 
 A required setting is satisfied by either source; missing from both, it lands in one startup
 error that names every spelling that would fix it:
@@ -187,7 +211,7 @@ file: config.yaml (override the path with CONFIG_FILE; environment always wins)
 
 | message contains | cause | fix |
 |---|---|---|
-| `unrecognized servo directive` | `//servo:` followed by anything but `config` | fix the spelling |
+| `unknown //servo: directive "confg"` | `//servo:` followed by a word no directive claims (generate and servo-vet both report it) | fix the spelling |
 | `needs prefix=UPPER_SNAKE` / `must be UPPER_SNAKE` | missing or malformed prefix option | give the directive a prefix |
 | `second //servo:config type in package` | two directives in one package | merge the structs or split the package |
 | `unsupported type` | a field type outside the closed set | use a supported type, or load a string and convert in the constructor |

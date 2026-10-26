@@ -1,6 +1,7 @@
 package graph
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/token"
@@ -24,20 +25,6 @@ import (
 // unexported type in another package, and keeping the prefix on the struct
 // keeps everything about one config in one place.
 const ConfigDirective = "config"
-
-// directivePrefix is what every servo comment directive starts with. The
-// space of names after it is closed: config, read here off type
-// declarations, and the route verbs, read by internal/route off function
-// declarations. The generator and servovet both flag anything else, so a
-// typo'd directive fails in the editor instead of silently doing nothing.
-const directivePrefix = "//servo:"
-
-// RouteVerbList spells the //servo: route verbs internal/route owns, for
-// the diagnostics that name them. It lives beside the config directive
-// rather than in internal/route because graph cannot import route, and a
-// directive on a type that is not config is reported from here; route's
-// own table is checked against it by TestRouteVerbListMatchesMethods.
-const RouteVerbList = "get, post, put, patch, delete, head, options"
 
 // ConfigTagKey is the struct tag key a //servo:config type's fields carry:
 // `config:"name,required,default=10,secret"`.
@@ -154,117 +141,103 @@ var (
 // are never scanned, because the companion file is written into the
 // declaring package's directory and nothing should ever write into the
 // module cache.
+//
+// It reads only the lines Directive.IsConfig claims. Every other //servo:
+// line — a misspelled name, a config directive on a var, a route verb on a
+// type — is reported by the one pass that sees them all, in
+// internal/route's Scan, which runs over the same packages first.
+//
+// Every malformed declaration is reported, not just the first, and in
+// source order: the packages arrive in whatever order the loader's import
+// walk produced, so stopping at the first one found made the reported
+// error differ from run to run whenever there were two.
 func ScanConfigs(pkgs []*packages.Package) ([]*ConfigDecl, error) {
-	var decls []*ConfigDecl
-	byPkg := map[string]*ConfigDecl{}
+	order := NewSourceOrder(pkgs)
+	var found []*ConfigDecl
+	var problems []positionedError
 	for _, pkg := range pkgs {
 		if pkg.Module == nil || !pkg.Module.Main || pkg.Types == nil {
 			continue
 		}
 		for _, file := range pkg.Syntax {
-			found, err := configsInFile(pkg, file)
-			if err != nil {
-				return nil, err
-			}
-			for _, d := range found {
-				// One config type per package keeps the generated loader's
-				// exported name fixed (ServoConfig) instead of derived, and
-				// matches how packages actually use configs — one struct of
-				// settings per component package.
-				if prior, dup := byPkg[d.PkgPath]; dup {
-					return nil, fmt.Errorf("%s: second //servo:%s type in package %s — %s at %s already carries the directive, and a package's generated loader (ServoConfig) can only load one type; merge them or split the package", d.Pos, ConfigDirective, d.PkgPath, prior.TypeName, prior.Pos)
-				}
-				byPkg[d.PkgPath] = d
-				decls = append(decls, d)
-			}
+			decls, errs := configsInFile(pkg, file)
+			found = append(found, decls...)
+			problems = append(problems, errs...)
 		}
 	}
-	sort.Slice(decls, func(i, j int) bool { return ComparePos(decls[i].Pos, decls[j].Pos) < 0 })
+	sort.SliceStable(found, func(i, j int) bool { return order.Compare(found[i].Pos, found[j].Pos) < 0 })
+
+	var decls []*ConfigDecl
+	byPkg := map[string]*ConfigDecl{}
+	for _, d := range found {
+		// One config type per package keeps the generated loader's
+		// exported name fixed (ServoConfig) instead of derived, and
+		// matches how packages actually use configs — one struct of
+		// settings per component package.
+		if prior, dup := byPkg[d.PkgPath]; dup {
+			problems = append(problems, positionedError{d.Pos, fmt.Errorf("%s: second //servo:%s type in package %s — %s at %s already carries the directive, and a package's generated loader (ServoConfig) can only load one type; merge them or split the package", d.Pos, ConfigDirective, d.PkgPath, prior.TypeName, prior.Pos)})
+			continue
+		}
+		byPkg[d.PkgPath] = d
+		decls = append(decls, d)
+	}
+	if len(problems) > 0 {
+		sort.SliceStable(problems, func(i, j int) bool {
+			if c := order.Compare(problems[i].pos, problems[j].pos); c != 0 {
+				return c < 0
+			}
+			return problems[i].err.Error() < problems[j].err.Error()
+		})
+		errs := make([]error, len(problems))
+		for i, p := range problems {
+			errs[i] = p.err
+		}
+		return nil, errors.Join(errs...)
+	}
 	return decls, nil
 }
 
-// configsInFile parses every //servo:config directive in file. Directives
-// are read from the type's doc comment — either the TypeSpec's own or, for
-// the common single-type `type foo struct{...}` declaration, the GenDecl's.
-func configsInFile(pkg *packages.Package, file *ast.File) ([]*ConfigDecl, error) {
+// positionedError is a scan error with the position it is ordered by.
+type positionedError struct {
+	pos token.Position
+	err error
+}
+
+// configsInFile parses every //servo:config directive in file — the lines
+// Directive.IsConfig claims, which are read from a type's doc comment:
+// either the TypeSpec's own or, for the common single-type
+// `type foo struct{...}` declaration, the GenDecl's.
+func configsInFile(pkg *packages.Package, file *ast.File) ([]*ConfigDecl, []positionedError) {
 	var out []*ConfigDecl
-	for _, decl := range file.Decls {
-		gen, ok := decl.(*ast.GenDecl)
-		if !ok || gen.Tok != token.TYPE {
+	var problems []positionedError
+	first := map[*ast.TypeSpec]token.Position{}
+	for _, d := range FileDirectives(file) {
+		if !d.IsConfig() {
 			continue
 		}
-		for _, s := range gen.Specs {
-			ts, ok := s.(*ast.TypeSpec)
-			if !ok {
-				continue
-			}
-			doc := ts.Doc
-			if doc == nil && len(gen.Specs) == 1 {
-				doc = gen.Doc
-			}
-			line, pos, ok, err := configDirectiveIn(pkg.Fset, doc)
-			if err != nil {
-				return nil, err
-			}
-			if !ok {
-				continue
-			}
-			d, err := buildConfigDecl(pkg, ts, line, pos)
-			if err != nil {
-				return nil, err
-			}
-			out = append(out, d)
-		}
-	}
-	return out, nil
-}
-
-// configDirectiveIn finds the one //servo:config line in doc. Unknown
-// //servo: directives are an error here too, not only in servovet: the
-// generator is the tool that must never silently skip one, since a typo'd
-// directive means a config the author believes exists and doesn't.
-func configDirectiveIn(fset *token.FileSet, doc *ast.CommentGroup) (line string, pos token.Position, found bool, err error) {
-	if doc == nil {
-		return "", token.Position{}, false, nil
-	}
-	for _, c := range doc.List {
-		name, rest, ok := DirectiveLine(c.Text)
-		if !ok {
+		pos := pkg.Fset.Position(d.Comment.Pos())
+		if prior, dup := first[d.Type]; dup {
+			problems = append(problems, positionedError{pos, fmt.Errorf("%s: duplicate //servo:%s directive — first at %s", pos, ConfigDirective, prior)})
 			continue
 		}
-		p := fset.Position(c.Pos())
-		if name != ConfigDirective {
-			return "", token.Position{}, false, fmt.Errorf("%s: unrecognized servo directive //servo:%s on a type declaration — the directives are //servo:%s on a type and the route verbs (%s) on a function", p, name, ConfigDirective, RouteVerbList)
+		first[d.Type] = pos
+		decl, err := buildConfigDecl(pkg, d.Type, d.Args, pos)
+		if err != nil {
+			problems = append(problems, positionedError{pos, err})
+			continue
 		}
-		if found {
-			return "", token.Position{}, false, fmt.Errorf("%s: duplicate //servo:%s directive — first at %s", p, ConfigDirective, pos)
-		}
-		line, pos, found = rest, p, true
+		out = append(out, decl)
 	}
-	return line, pos, found, nil
+	return out, problems
 }
 
-// DirectiveLine splits a comment line of the form "//servo:name rest..."
-// into its directive name and the text after it. Exported so servovet can
-// recognize directives with the identical rule the generator uses.
-func DirectiveLine(comment string) (name, rest string, ok bool) {
-	if !strings.HasPrefix(comment, directivePrefix) {
-		return "", "", false
-	}
-	body := strings.TrimPrefix(comment, directivePrefix)
-	name, rest, _ = strings.Cut(body, " ")
-	if name == "" {
-		return "", "", false
-	}
-	return name, strings.TrimSpace(rest), true
-}
-
-// ParseConfigDirectiveOptions parses the option list after //servo:config:
-// space-separated key=value pairs, of which prefix= is required and key= is
-// the optional file-section override. Exported so servovet can validate a
-// directive in the editor with the same rules the generator enforces.
-func ParseConfigDirectiveOptions(rest string) (prefix, section string, err error) {
-	for opt := range strings.FieldsSeq(rest) {
+// ParseConfigDirectiveOptions parses the option list after //servo:config,
+// as ParseDirective tokenized it: key=value pairs, of which prefix= is
+// required and key= is the optional file-section override. Exported so
+// servovet can validate a directive in the editor with the same rules the
+// generator enforces.
+func ParseConfigDirectiveOptions(args []string) (prefix, section string, err error) {
+	for _, opt := range args {
 		k, v, ok := strings.Cut(opt, "=")
 		if !ok {
 			return "", "", fmt.Errorf("//servo:%s option %q is not key=value", ConfigDirective, opt)
@@ -293,8 +266,8 @@ func ParseConfigDirectiveOptions(rest string) (prefix, section string, err error
 	return prefix, section, nil
 }
 
-func buildConfigDecl(pkg *packages.Package, ts *ast.TypeSpec, rest string, dirPos token.Position) (*ConfigDecl, error) {
-	prefix, section, err := ParseConfigDirectiveOptions(rest)
+func buildConfigDecl(pkg *packages.Package, ts *ast.TypeSpec, args []string, dirPos token.Position) (*ConfigDecl, error) {
+	prefix, section, err := ParseConfigDirectiveOptions(args)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", dirPos, err)
 	}

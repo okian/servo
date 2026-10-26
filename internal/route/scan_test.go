@@ -5,6 +5,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -548,6 +549,56 @@ func Order(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
 			want: `unknown //servo: directive "pots"`,
 		},
 		{
+			name: "empty directive",
+			src: header + `
+//servo:
+func Order(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+`,
+			want: "empty //servo: directive",
+		},
+		{
+			name: "config directive on a function",
+			src: header + `
+//servo:config prefix=APP
+func Order(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }
+`,
+			want: "//servo:config must be the doc comment of a type declaration",
+		},
+		{
+			name: "config directive on a var",
+			src: header + `
+//servo:config prefix=APP
+var settings = struct{ dsn string }{}
+`,
+			want: "//servo:config must be the doc comment of a type declaration",
+		},
+		{
+			name: "misspelled directive on a var",
+			src: header + `
+//servo:confg prefix=APP
+var settings = 1
+`,
+			want: `unknown //servo: directive "confg"`,
+		},
+		{
+			name: "misspelled directive on a type",
+			src: header + `
+//servo:confg prefix=APP
+type settings struct{}
+`,
+			want: `unknown //servo: directive "confg"`,
+		},
+		{
+			name: "directive inside a function body",
+			src: header + `
+func Order(ctx context.Context) (servo.Json[*Resp], error) {
+	//servo:get /inside
+	return nil, nil
+}
+`,
+			want: "//servo:get must be the doc comment of a top-level function",
+		},
+		{
 			name: "missing pattern",
 			src: header + `
 //servo:post
@@ -1089,6 +1140,98 @@ func TestRouteVerbListMatchesMethods(t *testing.T) {
 	for v := range methods {
 		if !listed[v] {
 			t.Errorf("method %q is parsed but missing from graph.RouteVerbList", v)
+		}
+	}
+}
+
+// The route scan and servovet tokenize with graph.ParseDirective, so a tab
+// between the tokens, or a space after the colon, is a route to both —
+// generate used to serve the first while servovet called it unrecognized,
+// and the second while servovet skipped it.
+func TestScanTokenizesLikeServovet(t *testing.T) {
+	src := "package app\n\n" +
+		"import (\n\t\"context\"\n\n\t\"github.com/okian/servo/v3/servo\"\n)\n\n" +
+		"type Resp struct{}\n\n" +
+		"//servo:get\t/tab\n" +
+		"func Tab(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }\n\n" +
+		"//servo: get /spaced  telemetry\n" +
+		"func Spaced(ctx context.Context) (servo.Json[*Resp], error) { return nil, nil }\n"
+	routes, diags := scanOn(t, src)
+	if len(diags) != 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	got := map[string]string{}
+	for _, rt := range routes {
+		got[rt.Method+" "+rt.Pattern] = rt.Group
+	}
+	if group, ok := got["GET /tab"]; !ok || group != "" {
+		t.Errorf("routes = %v, want GET /tab on the default group", got)
+	}
+	if group, ok := got["GET /spaced"]; !ok || group != "telemetry" {
+		t.Errorf("routes = %v, want GET /spaced on telemetry", got)
+	}
+}
+
+// A //servo:config on a type is the config scan's to read, so the route
+// scan neither reports it nor mistakes it for a route.
+func TestScanLeavesConfigDirectivesAlone(t *testing.T) {
+	const src = `package app
+
+//servo:config prefix=APP
+type settings struct {
+	dsn string ` + "`config:\"dsn\"`" + `
+}
+
+var _ = settings{}
+`
+	routes, diags := scanOn(t, src)
+	if len(routes) != 0 || len(diags) != 0 {
+		t.Fatalf("routes = %v, diags = %v, want neither", routes, diags)
+	}
+}
+
+// Several problems share one position — every request-struct problem is
+// reported against the directive line — so the report is ordered by the
+// message after the position, and the pattern's segments are walked in
+// order rather than out of a map. Two runs print the same thing.
+func TestScanDiagnosticsAreDeterministic(t *testing.T) {
+	const src = `package app
+
+import (
+	"context"
+
+	"github.com/okian/servo/v3/servo"
+)
+
+type Resp struct{}
+
+type Req struct {
+	Q string ` + "`query:\"q\"`" + `
+	Z string ` + "`path:\"zz\"`" + `
+}
+
+//servo:get /a/{x}/{y}/{z}
+func Many(ctx context.Context, req *Req) (servo.Json[*Resp], error) { return nil, nil }
+`
+	var first []string
+	for i := range 20 {
+		_, diags := scanOn(t, src)
+		var got []string
+		for _, d := range diags {
+			got = append(got, d.Message)
+		}
+		if i == 0 {
+			first = got
+			if len(got) != 4 {
+				t.Fatalf("got %d diagnostics, want 4 (zz has no segment; x, y, z have no field): %v", len(got), got)
+			}
+			if !slices.IsSorted(got) {
+				t.Fatalf("same-position diagnostics are not ordered by message: %v", got)
+			}
+			continue
+		}
+		if !slices.Equal(got, first) {
+			t.Fatalf("run %d reported\n%v\nwant\n%v", i, got, first)
 		}
 	}
 }

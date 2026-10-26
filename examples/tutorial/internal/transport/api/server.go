@@ -129,12 +129,14 @@ func (s *Server) MetricsHandler() http.Handler {
 }
 
 // Run must return once ctx is cancelled, on its own — servo's generated
-// App.Run waits for every Runner via errgroup, and only calls Shutdown
+// App.Run waits for every Runner (at most servo.DefaultRunGrace once its
+// context is cancelled), and only calls Shutdown
 // (which calls Stop, which calls http.Server.Shutdown) after every Runner
 // has already returned. ListenAndServe never observes ctx cancellation by
-// itself, so without the select below, Run would block forever and
-// Shutdown would never be reached at all. Stop still does the actual
-// socket close; Run's job here is only to stop waiting once told to.
+// itself, so without the select below Run would hold App.Run for the whole
+// grace period, reported as a runner still running, and Shutdown would
+// start late. Stop still does the actual socket close; Run's job here is
+// only to stop waiting once told to.
 func (s *Server) Run(ctx context.Context) error {
 	// Bound explicitly rather than through ListenAndServe, so there is a
 	// precise moment at which this server is accepting connections — which
@@ -166,10 +168,12 @@ func (s *Server) Run(ctx context.Context) error {
 // Ready reports whether this server is accepting connections yet.
 //
 // It answers a different question from Health, and the difference decides
-// what an orchestrator does to you. Health means "this process is not
-// broken" — a failure gets the container restarted. Ready means "send me
-// traffic" — a failure only takes the instance out of the load balancer,
-// and it is expected to be temporary.
+// what an orchestrator does to you. Health reports the dependencies, for
+// dashboards and people; it is never a liveness probe, because a database
+// failover would then restart every replica at once (the admin server's
+// /livez checks only the process). Ready means "send me traffic" — a
+// failure only takes the instance out of the load balancer, and it is
+// expected to be temporary.
 //
 // Here the gap between the two is the window between the graph finishing
 // construction and Run binding the port. The process is perfectly healthy

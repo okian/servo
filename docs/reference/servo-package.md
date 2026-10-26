@@ -4,15 +4,18 @@
 import "github.com/okian/servo/v3/servo"
 ```
 
-**Who this is for:** anyone reading a generated file's calls into the runtime, or handling a
-`Report` in their own code.
+**Who this is for:** anyone writing a `main` around a generated App, reading a generated file's
+calls into the runtime, or handling a `Report` in their own code.
 
 This package is two unrelated halves. The **markers** (`Build`, `Root`, `Bind`, `Override`,
 `Scoped`, `HTTP`, `Value`, `Include`, `ConfigFile`, and the two scope options) are read as syntax by
 `servo generate` and panic if they ever execute. The **runtime** is what generated code — and, for
-the HTTP types, your handlers — actually calls at run time. It imports nothing outside the standard
+the HTTP types, your handlers, and for [`Main`](#main), your `main` — actually calls at run time.
+It imports nothing outside the standard
 library, and neither it nor any generated output imports `reflect` for servo's own wiring
 (`encoding/json`, used by emitted HTTP servers, reflects internally like it does for everyone).
+Helpers that only generated code calls live in a separate package,
+[`servoimpl`](#servoimpl), which is not for direct use.
 
 Your components never import this package. Capability interfaces are satisfied structurally, by
 having the method.
@@ -43,14 +46,21 @@ having the method.
 | [`ErrNoScopeKey`](#scope-errors) … [`ErrScopeClosed`](#scope-errors) | vars | The four scope errors |
 | [`ScopeStats`](#scopestats) | type | A point-in-time view of one scope |
 | [`LingerOverride`](#lingeroverride-and-lingerwindow) | var | Test hook for the linger window |
-| [`LingerWindow`](#lingeroverride-and-lingerwindow) | func | Reads that hook; called by generated code |
+| [`LingerWindow`](#lingeroverride-and-lingerwindow) | func | Reads that hook; deprecated, for files generated before v3.5.0 |
 | [`Initializer`](#capability-interfaces) … [`Readier`](#capability-interfaces) | types | The seven capability interfaces |
+| [`Main`](#main) | func | The whole of a service's `main`: build, run, stop on a signal, exit with a status |
+| [`MainOption`](#mainoption-shutdowntimeout-and-logger) | type | `ShutdownTimeout`/`Logger`'s return type |
+| [`ShutdownTimeout`](#mainoption-shutdowntimeout-and-logger), [`Logger`](#mainoption-shutdowntimeout-and-logger) | funcs | `Main`'s shutdown deadline and logger |
+| [`ExitCode`](#exitcode) | func | The exit status a `Run` error and a `Shutdown` report add up to |
 | [`Report`](#report) | type | Every node's outcome for one pass |
 | [`NodeResult`](#noderesult) | type | One node's outcome |
 | [`NodeStatus`](#nodestatus) | type | `ok`, `failed`, or `abandoned` |
-| [`MergeNodeResults`](#mergenoderesults) | func | Combines a node's per-phase results |
-| [`RunStop`](#runstop) | func | Runs a stop call under a budget |
+| [`NodeError`](#nodeerror) | type | One node's `Init` or `Run` failure, naming the node |
+| [`MergeNodeResults`](#mergenoderesults) | func | Combines a node's per-phase results; deprecated, for files generated before v3.5.0 |
+| [`RunStop`](#runstop) | func | Runs a stop call under a budget; deprecated, for files generated before v3.5.0 |
 | [`DefaultStopBudget`](#defaultstopbudget) | var | The budget every stop call gets |
+| [`DefaultInitBudget`](#defaultinitbudget-and-defaultrungrace) | var | The budget each `Init` call gets; zero, meaning none, by default |
+| [`DefaultRunGrace`](#defaultinitbudget-and-defaultrungrace) | var | How long `Run` waits for its runners once its context ends |
 | [`Graph`](#graph-and-graphnode), [`GraphNode`](#graph-and-graphnode), [`GraphScope`](#graphscope) | types | The resolved graph as data |
 | [`GraphHTTP`](#graphhttp), [`GraphRoute`](#graphhttp), [`GraphUse`](#graphhttp), [`GraphExtractor`](#graphhttp) | types | The emitted HTTP plan as data |
 | [`StartupReport`](#startupreport-and-startupnode), [`StartupNode`](#startupreport-and-startupnode) | types | Per-node `Init` timings |
@@ -61,6 +71,7 @@ having the method.
 | [`WriteResponse`](#the-response-family) | func | Writes any Response; called by generated adapters |
 | [`HTTPStatus`](#httpstatus-and-status) | type | One HTTP status, usable as an error |
 | [`Status`](#httpstatus-and-status) | var | The table of statuses (`Status.NOT_FOUND`, …) |
+| [`StatusFor`](#httpstatus-and-status) | func | The status for any code, the table's entry when it has one |
 | [`HTTPConfig`](#httpconfig) | type | The emitted servers' listen/TLS/limit config |
 | [`HTTPListener`](#httpconfig) | type | One named group's listener inside `HTTPConfig.Groups` |
 
@@ -135,7 +146,8 @@ func Extract[T any]() Marker
 generate` emits one server per served group — router, typed request decoding, middleware chain,
 lifecycle — into the generated file. The graph must provide a [`*HTTPConfig`](#httpconfig).
 `Group` declares a named listener group (and, inside `Use`, selects one); `Use[T]` attaches a
-middleware node (`Middleware(next http.Handler) http.Handler`) server-, group- or route-wide;
+middleware node — one with a `Middleware(next http.Handler) http.Handler` method, or one that is
+itself a `func(http.Handler) http.Handler` — server-, group- or route-wide;
 `Route` selects one route inside a `Use`; `Extract[T]` declares an extractor node
 (`Extract(r *http.Request) (V, error)`) that turns handler parameters of type `V` into per-request
 values. All panic if they ever run.
@@ -156,8 +168,7 @@ diagnostic rather than a struct field every caller keeps supplying and the app n
 
 Declaring at least one changes the generated API additively: the injector keeps `New(ctx)` and gains
 `type Values struct{…}` and `func NewWith(ctx context.Context, v Values) (*App, error)`. See
-[Generated API](generated-api.md#values-and-newwith), and [Spec file and
-markers](spec.md#value) for the full contract.
+[Generated API](generated-api.md#values-and-newwith), and [Spec file and markers](spec.md#value) for the full contract.
 
 ### `Include`
 
@@ -306,16 +317,148 @@ Every one of these is optional and independent. Implement three and exactly thos
 When each runs, in what order, and under what budget:
 [Lifecycle](lifecycle.md#the-seven-capabilities).
 
+## Main
+
+### `Main`
+
+```go
+func Main[A interface {
+	Run(context.Context) error
+	Shutdown(context.Context) Report
+}](newApp func(context.Context) (A, error), opts ...MainOption)
+```
+
+The whole of a service's `main`:
+
+```go
+func main() { servo.Main(New) }
+```
+
+It builds the App with `newApp`, runs it until the process is told to stop, shuts it down under a
+deadline, logs every failure on the way, and exits with [`ExitCode`](#exitcode)'s status. A graph
+that declares a [`servo.Value`](spec.md#value) passes a closure calling `NewWith`, and so does a
+`main` with work of its own between `New` and `Run`:
+
+```go
+servo.Main(func(ctx context.Context) (*App, error) {
+	return NewWith(ctx, Values{Target: migrator.Target(*target)})
+})
+```
+
+`newApp` is normally the generated `New`; anything with the generated `Run` and `Shutdown` will do.
+`Main` never returns.
+
+| What happens | `Main` | Exit status |
+| --- | --- | --- |
+| `newApp` fails | logs `servo: startup failed` at ERROR | 1 |
+| A signal interrupts `newApp` | nothing: `New` rolled back and said so | 0, or 1 if the rollback was not clean |
+| `Run` returns a failure | logs `servo: run failed`, then shuts down | 1 |
+| `Run` returns `nil`, or the signal's cancellation | shuts down | 0 |
+| `Shutdown`'s report is not clean | logs `servo: shutdown was not clean` | 1 |
+| A second signal | one line on stderr, then exits at once | 128 plus the signal's number |
+
+**Signals.** SIGINT, SIGTERM and SIGHUP each ask for a graceful stop: they cancel the context
+`newApp` and `Run` were given, with a cause that reads like `signal.NotifyContext`'s (`terminated
+signal received`) and matches `context.Canceled` under `errors.Is`. SIGHUP is on the list because
+Go's default for it ends the process on the spot, and it is what a closed terminal or a dropped ssh
+session sends: a service started from one would die mid-request, its connections cut and nothing
+flushed. SIGQUIT is left alone — its default dumps every goroutine's stack, which is what a stop
+that seems stuck calls for. Main subscribes before calling `newApp`, so a signal during startup is
+never met by Go's default instead.
+
+**A second signal** ends the process at once, with one line on stderr and the status a shell
+reports for a process a signal killed — 130 for SIGINT, 143 for SIGTERM, 129 for SIGHUP:
+
+```
+servo: terminated signal received during shutdown, exiting with status 143 without finishing it
+```
+
+Main watches for it from the first signal until `Shutdown` begins — while the runners wind down, or
+while an interrupted startup rolls back — where a second signal used to be swallowed by the first
+one's subscription. From then on the generated `Shutdown`'s own watcher answers SIGINT and SIGTERM,
+with the same line, and Main unsubscribes from those two first, so exactly one of them answers. It
+keeps SIGHUP, which that watcher does not cover.
+
+**Logging.** Each failure is one ERROR record, the error under `err`, through the
+[`Logger`](#mainoption-shutdowntimeout-and-logger) option's logger or, without one, through
+`slog.Default()` as it is when the record is written — so a logger the App installs as the default
+while `New` builds it is the one that says why the process stopped. A record that logger would
+drop, because its handler is not enabled for ERROR or fails to write, goes to stderr instead, as
+`servo: startup failed: <err>`. The `main` this replaces used `log.Fatal`, which an App's
+`slog.SetDefault` routes through the installed handler at INFO: behind a WARN-level logger, a failed
+start exited 1 with nothing in the log at all.
+
+**The shutdown deadline.** `Shutdown` gets a context of its own whose deadline is
+[`ShutdownTimeout`](#mainoption-shutdowntimeout-and-logger) after the first signal, or after `Run`
+returned when it returned without one. It is not `Run`'s context: that one is already cancelled —
+its cancellation is what started the stop — and a teardown handed it would report every node
+abandoned before asking any of them to stop. It is not an unbounded `context.Background()` either:
+a supervisor sends SIGKILL when its grace period runs out whether or not the unwind has finished.
+Counting from the signal keeps `Run`'s own wind-down, up to
+[`DefaultRunGrace`](#defaultinitbudget-and-defaultrungrace), inside the same budget. Sizing it
+against an orchestrator's grace period:
+[Lifecycle](lifecycle.md#sizing-the-grace-period).
+
+### `MainOption`, `ShutdownTimeout` and `Logger`
+
+```go
+type MainOption struct{ /* unexported */ }
+
+func ShutdownTimeout(d time.Duration) MainOption
+func Logger(l *slog.Logger) MainOption
+```
+
+**`ShutdownTimeout`** sets how long `Main` gives a stop: from the first signal, or from `Run`
+returning on its own, to the end of `Shutdown`. It is the deadline of the context `Shutdown`
+receives, so every node still to stop when it passes is reported abandoned rather than waited for,
+and the process exits 1. The default, 25 seconds, fits inside the 30 Kubernetes gives a pod by
+default; whatever it is set to, keep it below the supervisor's grace period with a margin. Zero or
+less keeps the default: `Main` never shuts down without a deadline.
+
+**`Logger`** sets the logger `Main` reports failures through. Without it, or given nil, `Main` uses
+`slog.Default()` as it is when each line is written.
+
+### `ExitCode`
+
+```go
+func ExitCode(runErr error, r Report) int
+```
+
+The status a process should exit with once `Run` has returned and `Shutdown` has reported: **0**
+when `Run` returned `nil` or nothing but the cancellation of its context, and every node stopped
+cleanly; **1** otherwise — a runner failed, panicked or would not stop, or a node failed or was
+abandoned during `Shutdown`. `Main` exits with it, and a [hand-written `main`](lifecycle.md#writing-your-own-main) ends with it:
+
+```go
+os.Exit(servo.ExitCode(err, report))
+```
+
+It exists because the obvious `main` logs a failure and falls off the end, and returning from `main`
+exits 0: a supervisor told to restart on failure never restarts the process, and a batch job that
+failed reports success. 1 is what `log.Fatal` exits with, so a failure in `New` and one in `Run`
+agree.
+
+Only a cancellation counts as clean: `context.Canceled`, an error wrapping it, or a join of nothing
+else. A join with anything else is a failure — `errors.Is` would find the cancellation and miss the
+failure beside it — and so is `context.DeadlineExceeded`, since a deadline is not a shutdown signal.
+So is a [`*NodeError`](#nodeerror), whatever it wraps: the generated `Run` wraps only failures in
+one, and hands back the cancellation a runner returns on an ordinary stop unchanged.
+
+The flip side is worth knowing for batch work: a job stopped by SIGTERM part-way through exits 0
+like any other stopped service, and a scheduler may count that as a completed run. A job that must
+report an interrupted run as a failure checks for the signal itself, in its own `main`.
+
 ## Reports
 
 ### `Report`
 
 ```go
 type Report struct {
-	Nodes []NodeResult
+	Nodes []NodeResult `json:"nodes"`
 }
 
 func (r Report) Clean() bool
+func (r Report) Err() error
 func (r Report) Error() string
 func (r Report) Unwrap() []error
 ```
@@ -327,6 +470,10 @@ it assertable rather than assumed.
 **`Clean`** reports whether every node reached `StatusOK`. An empty report is clean — a graph with
 nothing to stop stopped fine.
 
+**`Err`** is the report as an `error` when it is not clean, and `nil` when it is — the form that
+answers `if err != nil` honestly (see the trap below): `if err := app.Shutdown(sctx).Err(); err !=
+nil { … }`.
+
 **`Error`** renders every non-OK node as one message, `; `-separated:
 `*api.Server: failed: connection reset; *postgres.DB: abandoned: context deadline exceeded`. For a
 clean report it returns the empty string.
@@ -334,11 +481,9 @@ clean report it returns the empty string.
 **`Unwrap`** returns one wrapped error per node that carried one, so `errors.Is` and `errors.As`
 traverse into them normally.
 
-`Report` satisfies `error` **by value**, which composes nicely with `errors.Join` — the generated
-`New` uses exactly that to combine an `Init` failure with the shutdown it triggered, *when that
-shutdown had something to say*. When the rollback comes out clean it returns the bare error instead,
-because joining a clean report appends its empty `Error()` as a trailing newline. It also means one
-trap worth naming:
+`Report` satisfies `error` **by value**, so it composes with `errors.Join` and `%w`, and the error a
+failed `New` returns carries the rollback's report when that had something to say — retrieved with
+`errors.As(err, &report)`; see [Lifecycle](lifecycle.md#init). It also means one trap worth naming:
 
 ```go
 // Always non-nil, even on a completely clean shutdown.
@@ -348,9 +493,20 @@ var err error = app.Shutdown(ctx)
 if r := app.Shutdown(ctx); !r.Clean() {
 	log.Print(r)
 }
+
+// Also correct.
+if err := app.Shutdown(ctx).Err(); err != nil {
+	log.Print(err)
+}
 ```
 
-A `Report` value in an `error` interface is never nil. Check `Clean()`.
+A `Report` value in an `error` interface is never nil. Check `Clean()`, or use `Err()`.
+
+**As JSON**, a report is `{"nodes": [...]}`, each node `{"name": …, "status": "failed", "err":
+"…"}` with `err` omitted when there is none — so a report served from a health endpoint or written
+to a structured log says which node, what happened and why. The default encoding wrote the status
+as a bare number and every error as `{}`. Decoding reads the same shape back; an error comes back as
+its message only, since its type did not survive the encoding.
 
 ### `NodeResult`
 
@@ -366,6 +522,10 @@ One node's outcome. `Name` is the node's full type string — the same string us
 everywhere else, so it lines up with `servo explain`, `servo graph`, and `GraphNode.Type`. `Err` is
 nil when `Status` is `StatusOK`.
 
+`MarshalJSON` writes `{"name": …, "status": …, "err": …}`, `err` being the error's message and
+omitted when `Err` is nil; `UnmarshalJSON` reads it back, the error as an `errors.New` of its
+message.
+
 ### `NodeStatus`
 
 ```go
@@ -378,16 +538,50 @@ const (
 )
 
 func (s NodeStatus) String() string
+func (s NodeStatus) MarshalText() ([]byte, error)
+func (s *NodeStatus) UnmarshalText(text []byte) error
+func (s *NodeStatus) UnmarshalJSON(data []byte) error
 ```
 
 | Constant | `String()` | Meaning |
 | --- | --- | --- |
 | `StatusOK` | `ok` | Returned nil within its budget |
-| `StatusFailed` | `failed` | Returned an error within its budget |
-| `StatusAbandoned` | `abandoned` | Didn't return in time; the goroutine was left running |
+| `StatusFailed` | `failed` | Returned an error, or panicked, within its budget |
+| `StatusAbandoned` | `abandoned` | Didn't return in time, and the goroutine was left running — or was never started, because its context was already done |
 
 Any other value stringifies as `unknown`. `Health` and `Ready` never produce `StatusAbandoned` —
 they apply no budget.
+
+A status encodes as its `String()` form, in JSON and as text (a map key, a flag, a YAML scalar),
+and decodes from the three names; anything else is refused. `UnmarshalJSON` also accepts the bare
+number a status was encoded as before v3.5.0, so stored reports keep decoding — `encoding/json`
+would otherwise refuse a number for a type with a text form.
+
+### `NodeError`
+
+```go
+type NodeError struct {
+	Node  string
+	Phase string
+	Err   error
+}
+
+func (e *NodeError) Error() string // "<node>: <phase>: <err>"
+func (e *NodeError) Unwrap() error // Err
+```
+
+One node's failure in one lifecycle phase. The generated `New` returns one (or several, joined)
+when an `Init` fails, and `Run` when a runner fails, panics, or is still running after
+[`DefaultRunGrace`](#defaultinitbudget-and-defaultrungrace). `Node` is the node's type string —
+the same identity `Report`, `GraphNode.Type` and `servo explain` use, or `"http"`/`"http:<group>"`
+for an emitted server — and `Phase` is `"Init"` or `"Run"`. For a panic, `Err` carries the panic
+value and the stack it was raised on.
+
+It exists so a startup failure names its node: `dial tcp 127.0.0.1:5432: connect: connection
+refused` does not say which of several components dialled. `errors.Is` and `errors.As` see through
+it to `Err`, so code matching on a component's own errors keeps working; match the `*NodeError`
+itself with `errors.As` when the node is what you need. A constructor's error is not wrapped — the
+[construction phase](lifecycle.md#construct) returns it undiluted.
 
 ### `MergeNodeResults`
 
@@ -397,8 +591,10 @@ func MergeNodeResults(name string, results ...NodeResult) NodeResult
 
 Combines one node's per-phase results (`Drain`, `Flush`, `Stop`, cleanup) into the single per-node
 outcome a `Report` enumerates. **Abandoned outranks failed outranks OK**, and every phase error is
-joined with `errors.Join`. Called by generated code; exported because generated code is in your
-package, not servo's.
+joined with `errors.Join`.
+
+**Deprecated:** generated code calls [`servoimpl`](#servoimpl)'s copy since v3.5.0. This one
+remains, unchanged, for files generated earlier.
 
 ## Scopes
 
@@ -452,13 +648,18 @@ var LingerOverride time.Duration = -1
 func LingerWindow(declared time.Duration) time.Duration
 ```
 
-Generated code calls `LingerWindow` exactly once per scope, inside `New`, to decide that scope's
+Generated code reads the override exactly once per scope, inside `New`, to decide that scope's
 window. `LingerOverride` replaces every declared window when it is non-negative — which is why the
 "no override" sentinel is `-1` and not `0`: zero is a real policy.
+
+**`LingerWindow` is deprecated:** generated code calls [`servoimpl`](#servoimpl)'s copy since
+v3.5.0, which reads the same `LingerOverride`. This one remains for files generated earlier.
 
 Set it through [`servotest.Linger`](servotest-package.md#linger) rather than directly. Like
 `DefaultStopBudget`, it is a package variable, so tests that use it must not run in parallel with
 each other or with tests that depend on a scope's real window, and must set it before `New`.
+`servotest.Linger` enforces the first half: it calls `t.Setenv`, so Go refuses it in a parallel
+test.
 
 ## HTTP
 
@@ -495,6 +696,16 @@ the user's package, where the sealed method is unreachable. The typed constructo
 `JSON`/`XML` because Go permits one identifier per name per package, and the types own
 `Json`/`Xml`.
 
+`JSON` and `XML` encode the whole payload before writing the status, and `Stream` owns its reader,
+closing it (when it is an `io.Closer`) once the copy ends. What an error from `WriteResponse` means
+depends on how far the write got. If it failed before anything was written — a payload that did
+not encode, or a code outside 100–999 — `WriteResponse` has already answered with a `500` and the
+standard `{"error": "Internal Server Error"}` body, and the error carries
+`Status.INTERNAL_SERVER_ERROR`, so `errors.As` tells the caller the exchange is complete. Any other
+error means the status line is out and the body is not whole — a failed write, or a `Stream`
+whose reader failed partway — and the generated adapter breaks the connection so the client cannot
+mistake the truncated body for a complete one.
+
 ### `HTTPStatus` and `Status`
 
 ```go
@@ -508,14 +719,30 @@ func (s HTTPStatus) Wrap(err error) error
 func (s HTTPStatus) Wrapf(format string, args ...any) error
 
 var Status = struct{ CONTINUE, OK, CREATED, /* … the full RFC 9110 + IANA set */ HTTPStatus }{…}
+
+func StatusFor(code int) HTTPStatus
 ```
 
-`Status`'s fields are the only `HTTPStatus` values, named as the registry spells them
-(`NOT_FOUND`, `UNPROCESSABLE_CONTENT`, `CONTENT_TOO_LARGE`). An `HTTPStatus` is an error, and the
-constructors return errors carrying both the status and your message, so `errors.As` recovers the
-code and `errors.Is` still finds a `%w`-wrapped cause — and `errors.Is(err, Status.NOT_FOUND)`
-holds too. A bare 2xx entry returned in a handler's error position is the deliberate way to pick a
-success code other than 200. `Wrap(nil)` returns the bare status.
+`Status`'s fields are named as the registry spells them (`NOT_FOUND`, `UNPROCESSABLE_CONTENT`,
+`CONTENT_TOO_LARGE`). It is a table to read, never to assign to: Go cannot make a struct variable
+read-only, so assigning to a field compiles and changes what that name means to every handler in
+the process. `StatusFor` covers the codes the table leaves out — nginx's 499, a status an upstream
+answered — returning the table's own entry when there is one (`StatusFor(404) ==
+Status.NOT_FOUND`) and a status carrying the bare code otherwise, whose text is `HTTP <code>`. The
+zero `HTTPStatus`, like any code outside 100–999, is no status: a generated adapter answers `500`
+for it.
+
+An `HTTPStatus` is an error, and the constructors return errors carrying both the status and your
+message, so `errors.As` recovers the code and `errors.Is` still finds a `%w`-wrapped cause — and
+`errors.Is(err, Status.NOT_FOUND)` holds too. A bare 2xx entry returned in a handler's error
+position is the deliberate way to pick a success code other than 200. `Wrap(nil)` returns the bare
+status.
+
+Under a 4xx status the response body is the error's whole `Error()`, every wrapped layer included,
+so `Wrap` and `%w` belong only around errors written for the API's caller; answer anything else
+with `New` or `Newf` in words of your own. Under a 5xx status the body is the canonical text alone
+and the error is logged, so wrapping there is always safe. The full list of what a client can read
+is on [HTTP routes](http.md#exactly-what-the-client-reads).
 
 ### `HTTPConfig`
 
@@ -527,12 +754,15 @@ type HTTPConfig struct {
 	CertFile string // both set → TLS
 	KeyFile  string
 
-	MaxBodyBytes int64 // <= 0 = the generated 1 MiB default
+	MaxBodyBytes   int64 // <= 0 = the generated 1 MiB default
+	MaxHeaderBytes int   // 0 = http.DefaultMaxHeaderBytes
 
 	ReadHeaderTimeout time.Duration // zero = none, matching net/http.Server
 	ReadTimeout       time.Duration
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
+
+	ShutdownDelay time.Duration // keep serving this long after readiness drops
 
 	Groups map[string]HTTPListener // one listener per declared group
 }
@@ -542,16 +772,23 @@ type HTTPListener struct {
 	Port uint16
 	CertFile, KeyFile string
 	MaxBodyBytes int64
+	MaxHeaderBytes int
 	ReadHeaderTimeout, ReadTimeout, WriteTimeout, IdleTimeout time.Duration
+	ShutdownDelay time.Duration
 }
 ```
 
 The emitted servers' configuration node: the flat fields are the default group's listener, and
 each group declared with `servo.Group("name")` needs an entry in `Groups` — missing one fails
-`New` with an error naming the group. servo never constructs one — you write an ordinary provider
+`New` with an error naming the group, and so does a TLS key pair that does not load. servo never
+constructs one — you write an ordinary provider
 (`func NewHTTPConfig() (*servo.HTTPConfig, error)`) and it resolves like any other dependency,
 which is also why it is a struct and not options: where the values come from is your module's
-business.
+business. A group's listener does not inherit the flat fields' values. Zero timeouts mean what
+they mean on `net/http.Server`; the server warns when it starts with nothing bounding its header
+read. `ShutdownDelay` is how long a server goes on answering after `Shutdown` drops its readiness,
+while load balancers stop routing to it — see
+[HTTP routes: Lifecycle](http.md#lifecycle).
 
 ## Stop budget
 
@@ -570,6 +807,29 @@ Note that it applies **per phase call**, not per node: a component implementing 
 [`servotest.Timeout`](servotest-package.md#timeout) shrinks it for a single test and restores it via
 `t.Cleanup`.
 
+### `DefaultInitBudget` and `DefaultRunGrace`
+
+```go
+var DefaultInitBudget time.Duration      // zero: no budget
+var DefaultRunGrace = 5 * time.Second
+```
+
+Package variables like `DefaultStopBudget`, read by generated code at call time — set them before
+`New` and `Run`, and keep tests that change them out of parallel with tests that build an app.
+
+**`DefaultInitBudget`** bounds each `Init` call during `New`, and every scoped instance's `Init`.
+Zero, the default, means no bound: `New` waits for every `Init` it started. Above zero it is the
+deadline of the context each `Init` receives and the limit on waiting for it — an `Init` that
+respects its context fails at the deadline with an error naming the budget, and one that ignores
+it is abandoned at the same moment, left running, while `New` rolls back. See
+[Lifecycle](lifecycle.md#init).
+
+**`DefaultRunGrace`** is how long the generated `Run` keeps waiting for its runners once its
+context is done — the shutdown signal, or another runner failing. A runner still running past it
+is left running, and `Run` returns a [`*NodeError`](#nodeerror) naming it, so `main`'s `Shutdown`
+can begin. Five seconds matches `DefaultStopBudget`; a deployment sizing its termination grace
+period should count it alongside the shutdown deadline. See [Lifecycle](lifecycle.md#run).
+
 ### `RunStop`
 
 ```go
@@ -583,6 +843,10 @@ returns:
 - `StatusFailed`, with the error, if it returned an error in time
 - `StatusFailed`, with the panic value and the stack, if it panicked
 - `StatusAbandoned`, with the context's error, if it didn't return
+- `StatusAbandoned`, without calling `fn` at all, if `ctx` was already done — the error says the
+  stop was not attempted and wraps the context's own. Starting it anyway started it in the
+  background, abandoned the same instant, so once a shutdown deadline had passed every node still
+  to come began stopping at once and out of order while `main` exited.
 
 The result channel is buffered, so a goroutine that outlives its budget can still send without
 leaking — but it does keep running. That is the honest trade: servo reports an abandoned node rather
@@ -601,8 +865,35 @@ panic here: unrecovered, one panicking `Stop` kills the process mid-unwind, leav
 behind it running and no `Report` to say which. Turning it into a `StatusFailed` result lets the
 rest of the teardown finish and names the culprit.
 
-Generated code calls this once per phase per node. You'd call it directly only when writing your own
-teardown around a graph.
+Generated code calls a stop helper once per phase per node. You'd call this one directly only when
+writing your own teardown around a graph.
+
+**Deprecated:** generated code calls [`servoimpl`](#servoimpl)'s copy since v3.5.0. This one
+remains for files generated earlier, and carries the same not-attempted fix.
+
+## `servoimpl`
+
+```go
+import "github.com/okian/servo/v3/servoimpl"
+```
+
+The half of the runtime that only generated code calls: the `Init` phase and `Run` supervisor, the
+stop helpers, the scope linger hook, the second-signal exit. **It is not for direct use**, and it
+is exempt from servo's compatibility promise — its signatures and behaviour change with the
+generator that calls them, since a generated file is regenerated, never edited, and always calls
+the `servoimpl` of the servo version that wrote it. Reading it to understand a generated file is
+exactly what it is for.
+
+It exists because generated code lives in your package, so whatever it calls must be exported, and
+exporting it from `servo` froze it as public API — which is why `RunStop`, `MergeNodeResults` and
+`LingerWindow` are still here, deprecated. `servoimpl` imports `servo`, never the reverse, and
+nothing beyond the standard library.
+
+The exception to the exemption is its `ContractN` constants. Every generated file names the
+contract it was written against, so a file that needs a newer runtime than your `go.mod` pins
+fails to compile on that line — next to a comment naming the servo version it needs — rather than
+somewhere inside a helper whose signature moved. A constant is never removed within a major
+version.
 
 ## Graph data
 

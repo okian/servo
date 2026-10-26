@@ -92,6 +92,25 @@ func Me2(ctx context.Context, u *User) (servo.Json[*OrderResp], error) { return 
 
 //servo:get /healthz telemetry
 func Healthz(ctx context.Context) (servo.Json[*OrderResp], error) { return nil, nil }
+
+// Settings is a graph singleton that happens to carry json tags, which is
+// all it takes for the second handler parameter to be decoded from the
+// request instead of injected.
+type Settings struct {
+	Admin bool ` + "`json:\"admin\"`" + `
+}
+
+func NewSettings() *Settings { return &Settings{} }
+
+//servo:post /settings
+func UpdateSettings(ctx context.Context, s *Settings) (servo.Json[*OrderResp], error) {
+	return nil, nil
+}
+
+//servo:get /twoctx
+func TwoCtx(ctx context.Context, again context.Context) (servo.Json[*OrderResp], error) {
+	return nil, nil
+}
 `
 
 func checkHTTPFixture(t *testing.T) (*types.Package, *token.FileSet, []*packages.Package, []*graph.Provider, []*route.Route, *types.Package) {
@@ -258,6 +277,78 @@ func TestResolveHTTPMissingHandlerDep(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("diagnostics missing %q:\n%s", want, text)
 		}
+	}
+}
+
+// A request struct is decoded from the request, so a type the graph
+// provides must never be one: an injected *Settings in the second position
+// was replaced by whatever the client posted — {"admin":true} included —
+// while the same type third got the singleton. Refused, with the provider
+// named and the fix shown, whether a constructor or a servo.Value provides
+// it; a request type nothing provides is still decoded as before.
+func TestResolveHTTPRefusesAProvidedRequestStruct(t *testing.T) {
+	pkg, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	input := func(candidates ...string) Input {
+		var cands []*graph.Provider
+		for _, c := range candidates {
+			cands = append(cands, findHTTPProvider(t, all, c))
+		}
+		return Input{
+			Spec:       &load.Spec{},
+			Candidates: cands,
+			Caps:       graph.EmptyCapabilities(),
+			Scope:      map[string]bool{"example.com/httpapp": true},
+			Fset:       fset,
+			Pkgs:       pkgs,
+			HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.UpdateSettings")),
+		}
+	}
+
+	_, diags := Resolve(input("NewHTTPConfig", "NewSettings"))
+	text := diagText(diags)
+	for _, want := range []string{
+		"servo: handler httpapp.UpdateSettings (POST /settings) takes *example.com/httpapp.Settings as its request struct, but the graph provides that type: httpapp.NewSettings constructs it",
+		"would get\n  whatever the client sent",
+		"func UpdateSettings(ctx context.Context, req *UpdateSettingsRequest, settings *Settings) ...",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("diagnostics missing %q:\n%s", want, text)
+		}
+	}
+
+	in := input("NewHTTPConfig")
+	in.Spec.Values = []load.ValueDecl{{Key: ptrKey(pkg, "Settings"), Type: ptrType(pkg, "Settings"), Pos: token.Position{Filename: "spec.go", Line: 14}}}
+	_, diags = Resolve(in)
+	if text := diagText(diags); !strings.Contains(text, "servo.Value[*example.com/httpapp.Settings]() supplies it (spec.go:14)") {
+		t.Errorf("a request struct supplied by servo.Value was not refused:\n%s", text)
+	}
+
+	resolved, diags := Resolve(input("NewHTTPConfig"))
+	if len(diags) != 0 {
+		t.Fatalf("a request struct nothing provides was refused:\n%s", diagText(diags))
+	}
+	if rt := resolved.HTTP.Routes[0]; rt.Route.Req == nil || len(rt.Args) != 0 {
+		t.Errorf("UpdateSettings should decode *Settings from the request and take nothing else: %+v", rt)
+	}
+}
+
+// A handler's first parameter is the request's context; a context.Context
+// after it would be the construction context — New's ctx, captured once
+// when the server is built — and is refused.
+func TestResolveHTTPRefusesASecondContext(t *testing.T) {
+	_, fset, pkgs, all, routes, servoTypes := checkHTTPFixture(t)
+	in := Input{
+		Spec:       &load.Spec{},
+		Candidates: []*graph.Provider{findHTTPProvider(t, all, "NewHTTPConfig")},
+		Caps:       graph.EmptyCapabilities(),
+		Scope:      map[string]bool{"example.com/httpapp": true},
+		Fset:       fset,
+		Pkgs:       pkgs,
+		HTTP:       httpInput(servoTypes, routesNamed(t, routes, "httpapp.TwoCtx")),
+	}
+	_, diags := Resolve(in)
+	if text := diagText(diags); !strings.Contains(text, "servo: handler httpapp.TwoCtx (GET /twoctx) takes a second context.Context") {
+		t.Errorf("diagnostics = %s, want the second context refused", text)
 	}
 }
 

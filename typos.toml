@@ -17,10 +17,14 @@
 # canonical example of the typo'd directive servovet exists to catch — a
 # misspelled comment directive compiles and silently does nothing — so the
 # docs, the analyzer's tests, and the README all write it on purpose.
+# `Buidl` is deliberate the same way: `servo.Buidl(...)` is the example of a
+# spec whose Build call itself does not type-check, in the loader's comments,
+# its tests, and the diagnostics reference.
 [default.extend-words]
 Healther = "Healther"
 unparseable = "unparseable"
 confg = "confg"
+Buidl = "Buidl"
 geneate = "geneate"
 # "pre-empted" is a real word the checker splits on the hyphen, then
 # reports the "empted" fragment as "emptied".

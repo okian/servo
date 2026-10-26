@@ -27,6 +27,10 @@ func TestBuildPanics(t *testing.T) {
 	expectPanic(t, "servo: Build executed at runtime", func() { Build() })
 }
 
+func TestConfigFilePanics(t *testing.T) {
+	expectPanic(t, "servo: ConfigFile executed at runtime", func() { ConfigFile("config.yaml") })
+}
+
 func TestRootPanics(t *testing.T) {
 	expectPanic(t, "servo: Root executed at runtime", func() { Root[int]() })
 }

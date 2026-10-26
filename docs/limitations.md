@@ -74,10 +74,15 @@ servo: servo.Value[*testing.T]() is declared, but nothing in the graph depends o
 So mocking libraries still need a small hand-written adapter. The README's Mocking section walks
 through the pattern for `moq`, `mockery`, and `gomock`.
 
-`context.Context` is the related half-case. It still gets no special treatment, so a constructor
-asking for one has no provider by default; `servo.Value[context.Context]()` gives it one, but the
-value is whatever the caller hands `NewWith` — not the `ctx` the generated `New` was called with,
-and not a per-request context.
+`context.Context` is the related half-case, and this page used to say it had no provider. It now
+has one with no declaration at all: a constructor parameter of type `context.Context` receives the
+ctx `New`, `NewWith` or `NewTestApp` was called with. That is a construction-time context — right
+for a dial or a ping, wrong for anything kept past the call, which is what `Run`'s context is for —
+and not a per-request one. Only constructors `New` calls can take it: a scoped constructor runs
+inside `Acquire`, after `New` returned, and is refused with a pointer to `Init(ctx)`. A declared
+`servo.Value[context.Context]()` still overrides it, and then the context is whatever the caller
+puts in `Values` — a plain `New(ctx)` puts none — so leave that declaration out unless you need a
+different context than the one `New` receives.
 
 *What to do instead:* declare the per-app values. For a per-call one, make it a method parameter,
 or a struct field set after construction, or test that component directly instead of through the
@@ -103,10 +108,27 @@ configuration — one shared spec can't do it, because a marker naming a type th
 `servo generate --tags=prod` records `prod` in the generated file's build constraint, so the wrong
 variant can never be selected. `GOOS=linux servo generate` resolves the Linux graph — servo inherits
 the environment like any go tool — but nothing in the output records that, so a graph that differs
-across platforms has no variant mechanism to keep it straight.
+across platforms has no variant mechanism to keep it straight. With servo pinned as a tool, run the
+binary `go tool` built rather than `go tool servo` itself, which would build servo for Linux and
+fail to execute it: `GOOS=linux "$(go tool -n servo)" generate`.
 
 This only bites if your providers actually differ by platform, which is rare for the kind of
 component servo wires. If yours do, gate them on a build tag of your own and use that.
+
+### A `go.work` sibling is not part of your module unless you say so
+
+With a `go.work` listing several modules, the go command treats all of them as main modules, and
+servo used to as well: an interface could auto-bind to a sibling module's implementation, and a
+`//servo:config` type declared in a sibling had its loader written into the sibling's directory.
+Neither survives the build CI usually runs, `GOWORK=off`, where the sibling is an ordinary
+dependency — so the committed file stopped matching what a fresh checkout regenerates.
+
+Now an injector's main module is its own module, and nothing else, unless you pass
+[`--scope=workspace`](reference/cli.md#--scope). Under the default, a sibling's types are as
+invisible to interface search as any dependency's, its routes and config types are not your graph's,
+and servo never writes into it; a sibling that needs a provider gets one the way a dependency does —
+a constructor in your module, or a `Bind`. `--scope=workspace` keeps the old reading for a workspace
+that really is one program, at the price above: generate committed files with the scope CI uses.
 
 ### Your spec file is read, never run
 
@@ -126,13 +148,23 @@ This is also why the file carries the `servoinject` build tag: it's excluded fro
 `servo.Build` panics if it ever actually runs — which would mean the tag went missing. An included
 marker set must carry the tag for the same reason, and `servo generate` refuses one that doesn't.
 
+Markers are recognized by their qualified spelling. A dot import of the servo package makes them
+bare identifiers that `servo generate` does not look for, so it reports no spec at all — import the
+package by name. `servo-vet` does recognize the bare spelling, so an untagged file dot-importing
+`Build` is still caught before it can panic.
+
 ### Normal Go tooling never checks your spec file
 
 Because it sits behind an inactive build tag, `go build ./...`, `go vet ./...`, and `go test ./...`
 all skip it. Your editor will grey it out unless you configure the `servoinject` build flag.
 
 The practical consequence: a type error in your spec file shows up when you run `servo generate`,
-not while you're writing it.
+not while you're writing it — and only one that keeps servo from reading a marker. Servo reads
+markers through the type checker, so a mistyped type name or a package the file forgot to import
+leaves a marker with nothing to read, and servo reports the type checker's own errors for the spec
+file, in its words (`undefined: api.Sever`). A type error that keeps no marker from being read — an
+unused import, say — is never reported, since nothing compiles the file. The everyday cause is a rename: `gopls` does not
+see the tagged file either, so renaming a type leaves the spec naming the old one.
 
 ### A cycle is always a build failure
 
@@ -236,12 +268,13 @@ does, in about thirty lines, keyed off the same `ScopeKey` method the real acces
 ### A panicking constructor fails the acquire, it does not panic the caller
 
 If a scoped type's constructor or `Init` panics, servo recovers it, rolls back whatever was built,
-and returns it from `Acquire` as an error. It does not reach your handler as a panic.
+and returns it from `Acquire` as an error — for an `Init`, a `*servo.NodeError` naming the member,
+carrying the panic value and the stack. It does not reach your handler as a panic.
 
-That is a deliberate trade. A panic during a *concurrent* `Init` comes from a goroutine no caller
-can recover, so letting it through would take the process down for what is otherwise one failed
-request — while the same panic on a single-node level would merely fail that acquire. Converting
-uniformly is the only way both behave the same.
+That is a deliberate trade. An `Init` runs on a goroutine no caller can recover, so letting the
+panic through would take the process down for what is otherwise one failed request. Converting it
+is the only way a bug in one key's instance stays one failed acquire. Singletons follow the same
+rule: a panicking `Init` fails `New`, rolled back, and a panicking `Run` fails `Run`.
 
 *What to do instead:* if a constructor can fail, return an error from it. The panic path exists so
 a bug does not become an outage, not as a control-flow mechanism.
@@ -257,9 +290,10 @@ health behind whatever your own component already exposes.
 ### A scoped Run failure surfaces at eviction, not when it happens
 
 Each instance's `Run` goes into its own goroutine. If it returns an error other than its context
-being cancelled, that error is attached to the instance's stop result — which you see when the
-instance is evicted, possibly a long time later. Nothing evicts an instance because its `Run`
-failed.
+being cancelled — or panics — that error is attached to the instance's stop result, which you see
+when the instance is evicted, possibly a long time later. Nothing evicts an instance because its
+`Run` failed. A panic is recovered rather than ending the process: one tenant's bug used to take
+every other tenant's instance down with it.
 
 *What to do instead:* if a component needs to react to its own `Run` failing, it has to do that
 itself. `Stats().Failures` counts evictions whose teardown did not come out clean, which is the
@@ -352,7 +386,22 @@ A function with type parameters can't be a constructor, whatever its shape.
 ### Only top-level functions count
 
 Methods, function-typed package variables, and struct literals can never provide. It has to be a
-top-level `func` declaration.
+top-level `func` declaration. A "no provider" diagnostic names such a near miss when it would have
+produced the type — `rejected: app.NewPool … — a package-level variable of function type, not a
+function` — so it no longer has to be found by elimination.
+
+### A constructor has to be one the injector can refer to
+
+The generated code calls the constructor from the injector's package and keeps the result in a
+field of the `App`, so both have to be nameable there. A constructor under another tree's
+`internal/` directory, one returning an unexported type from another package, and one whose
+package imports the injector's own package (an adapter importing the core package that holds the
+spec) are set aside for that injector, with the reason in the diagnostic and in
+`servo list --rejected`.
+
+*What to do instead:* return an exported type (or an exported interface the unexported type
+implements), keep the injector inside the `internal/` tree it needs, and put `servo.Build` in a
+package nothing imports — a `cmd/` main is the usual home.
 
 ### The result type must be named, a pointer to a named type, or a non-empty interface
 

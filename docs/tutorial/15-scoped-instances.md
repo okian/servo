@@ -277,8 +277,9 @@ transport/api/server.go:49:6: servo: *example.com/servoorders/internal/session.S
 ```
 
 (Absolute paths shortened. `examples/diagnostics/widening` is the same mistake as a permanently
-broken fixture, if you'd rather see it without editing this module:
-`go run ./cmd/servo generate --dir examples/diagnostics/widening`.)
+broken fixture, if you'd rather see it without editing this module — from the root of a servo
+checkout, where the generator is part of the module: `go run ./cmd/servo generate --dir
+examples/diagnostics/widening`.)
 
 That is the reason this feature is in the generator rather than in a library you import. A
 hand-written registry beside servo gives you the map and the timer; nothing gives you this.
@@ -385,8 +386,12 @@ kill a session someone else is still in.
 
 ```
 cd examples/tutorial
-make up                       # postgres, redis, nats
-go run ./cmd/orders
+docker compose -f deploy/docker-compose.yml up -d postgres redis nats
+POSTGRES_DSN="postgres://orders:orders@localhost:5432/orders?sslmode=disable" \
+  REDIS_ADDR="localhost:6379" \
+  NATS_URL="nats://localhost:4222" \
+  JWT_SECRET="dev-secret-do-not-use-in-production" \
+  go run ./cmd/orders
 ```
 
 In another terminal:

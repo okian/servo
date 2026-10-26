@@ -296,8 +296,8 @@ ok  	example.com/servoorders/internal/service	0.127s
 
 That `ERROR` line in the middle isn't a failure — it's `slog`'s default logger, doing exactly what
 `CreateOrder` told it to do when the mock publisher returned an error. The test still passes,
-because it's checking the return value, not the absence of a log line. [Chapter
-15](16-observability.md) is where that logger stops being the unconfigured default and starts
+because it's checking the return value, not the absence of a log line.
+[Chapter 16](16-observability.md) is where that logger stops being the unconfigured default and starts
 looking like something you'd actually want in production.
 
 ## Diagnostics

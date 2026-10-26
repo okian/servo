@@ -38,6 +38,19 @@ func TestPositionsString(t *testing.T) {
 			GoFiles:         []string{filepath.Join(goroot, "src", "os", "user", "lookup.go")},
 			CompiledGoFiles: []string{filepath.Join(cache, "lookup_unix.cgo1.go")},
 		},
+		{
+			// -mod=vendor: the dependency's files sit under the module
+			// root, and its module has no directory of its own.
+			PkgPath: "github.com/acme/vendored",
+			Module:  &packages.Module{Path: "github.com/acme/vendored", Version: "v1.0.0"},
+			GoFiles: []string{filepath.Join(modRoot, "vendor", "github.com", "acme", "vendored", "v.go")},
+		},
+		{
+			// A nested module the main module replaces to ./tools.
+			PkgPath: "example.com/app/tools/gen",
+			Module:  &packages.Module{Path: "example.com/app/tools", Dir: filepath.Join(modRoot, "tools")},
+			GoFiles: []string{filepath.Join(modRoot, "tools", "gen", "gen.go")},
+		},
 	}
 	p := NewPositions(modRoot, pkgs)
 
@@ -69,6 +82,19 @@ func TestPositionsString(t *testing.T) {
 			name: "a cgo-processed source in the build cache is attributed to its package",
 			pos:  token.Position{Filename: filepath.Join(cache, "lookup_unix.cgo1.go"), Line: 9, Column: 6},
 			want: "$GOROOT/src/os/user/lookup_unix.cgo1.go:9:6",
+		},
+		{
+			// It sits inside the module root, but it is another module's
+			// file: a checkout that vendors and one that does not have to
+			// write the same position for it.
+			name: "a vendored dependency: its import path, not vendor/",
+			pos:  token.Position{Filename: filepath.Join(modRoot, "vendor", "github.com", "acme", "vendored", "v.go"), Line: 4, Column: 6},
+			want: "github.com/acme/vendored/v.go:4:6",
+		},
+		{
+			name: "a nested module inside the root: its import path",
+			pos:  token.Position{Filename: filepath.Join(modRoot, "tools", "gen", "gen.go"), Line: 7, Column: 6},
+			want: "example.com/app/tools/gen/gen.go:7:6",
 		},
 		{
 			name: "a file no loaded package claims is left alone",

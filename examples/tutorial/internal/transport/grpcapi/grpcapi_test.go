@@ -138,7 +138,10 @@ func newTestServer(t *testing.T) *grpcapi.Server {
 	pub.EXPECT().PublishOrderPlaced(gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	users.EXPECT().GetByUsername(gomock.Any(), gomock.Any()).Return(nil, domain.ErrNotFound).AnyTimes()
 
-	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
 	metrics := observability.NewMetrics()
 	tracer, err := observability.NewTracer(observability.Config{})
 	if err != nil {

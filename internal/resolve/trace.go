@@ -85,7 +85,7 @@ func (r *resolver) setupTraces(in Input) {
 // The wrapper is gray while its two dependencies resolve, so a tracer
 // provider that itself depends on the traced interface is reported as the
 // cycle it is.
-func (r *resolver) resolveTraced(decl *load.TraceDecl, k graph.Key, kType types.Type, chain []chainEntry, rootPos token.Position) (*Node, bool) {
+func (r *resolver) resolveTraced(decl *load.TraceDecl, k graph.Key, kType types.Type, chain *chainLink, rootPos token.Position) (*Node, bool) {
 	wk := tracedKey(k)
 	// Checked before the node map, the way resolveUntraced checks its own
 	// failedKey first: a wrapper that failed on one dependency is still in
@@ -94,10 +94,10 @@ func (r *resolver) resolveTraced(decl *load.TraceDecl, k graph.Key, kType types.
 	if r.failedKey[wk] {
 		return nil, false
 	}
+	frame := chainEntry{Key: wk, Label: tracedLabel(k), Pos: decl.Pos}
 	if existing, ok := r.nodes[wk]; ok {
-		frame := chainEntry{Key: wk, Label: tracedLabel(k), Pos: decl.Pos}
 		if r.color[wk] == colorGray {
-			r.diags = append(r.diags, r.cycleDiagnostic(append(append([]chainEntry{}, chain...), frame)))
+			r.diags = append(r.diags, r.cycleDiagnostic(chain.push(frame).entries()))
 			r.failedKey[wk] = true
 			return nil, false
 		}
@@ -109,9 +109,9 @@ func (r *resolver) resolveTraced(decl *load.TraceDecl, k graph.Key, kType types.
 	r.nodes[wk] = node
 	r.color[wk] = colorGray
 
-	newChain := append(append([]chainEntry{}, chain...), chainEntry{Key: wk, Label: tracedLabel(k), Pos: decl.Pos})
+	newChain := chain.push(frame)
 	inner, innerOK := r.resolveUntraced(k, kType, newChain, rootPos)
-	tracer, tracerOK := r.resolveKey(r.traceIn.ProviderKey, r.traceIn.ProviderType, newChain, rootPos)
+	tracer, tracerOK := r.resolveLinked(r.traceIn.ProviderKey, r.traceIn.ProviderType, newChain, rootPos)
 	r.color[wk] = colorBlack
 	if !innerOK || !tracerOK {
 		r.failedKey[wk] = true
@@ -162,11 +162,13 @@ func (r *resolver) checkTraces(decls []load.TraceDecl) {
 
 // sortedTraceNodes orders the wrappers by declaration position, so the
 // emitted types appear in the order the spec file reads rather than the
-// order some root's traversal happened to reach them.
-func sortedTraceNodes(nodes []*Node) []*Node {
-	sorted := append([]*Node(nil), nodes...)
-	sort.Slice(sorted, func(i, j int) bool {
-		return graph.ComparePos(sorted[i].Traced.Decl.Pos, sorted[j].Traced.Decl.Pos) < 0
+// order some root's traversal happened to reach them. A declaration a
+// servo.Include brought in from another module is ordered by that module's
+// path, never by the directory it was read from.
+func (r *resolver) sortedTraceNodes() []*Node {
+	sorted := append([]*Node(nil), r.traceNodes...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return r.srcOrder.Compare(sorted[i].Traced.Decl.Pos, sorted[j].Traced.Decl.Pos) < 0
 	})
 	return sorted
 }

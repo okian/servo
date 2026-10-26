@@ -8,7 +8,7 @@ layout: null
 {%- endcomment -%}
 [
 {%- assign tutorial_pages = site.pages | where_exp: "p", "p.url contains '/tutorial/'" -%}
-{%- assign prose_urls = "/preface.html,/comparison.html,/limitations.html" | split: "," -%}
+{%- assign prose_urls = "/preface.html,/comparison.html,/limitations.html,/coming-from-wire-and-fx.html,/servo-in-ci.html,/running-in-production.html" | split: "," -%}
 {%- assign prose_pages = site.pages | where_exp: "p", "prose_urls contains p.url" -%}
 {%- assign reference_pages = site.pages | where_exp: "p", "p.url contains '/reference/'" -%}
 {%- assign pages = tutorial_pages | concat: prose_pages | concat: reference_pages -%}
@@ -29,7 +29,7 @@ layout: null
     {%- assign nav_section = "Overview" -%}
   {%- endif -%}
   {%- comment -%}
-    The three prose pages are not in nav.yml (they sit outside the tutorial's
+    The prose pages are not in nav.yml (they sit outside the tutorial's
     reading order), so their titles are set here rather than looked up.
   {%- endcomment -%}
   {%- if p.url == '/preface.html' -%}
@@ -43,6 +43,18 @@ layout: null
   {%- if p.url == '/limitations.html' -%}
     {%- assign nav_title = "Limitations" -%}
     {%- assign nav_section = "Start here" -%}
+  {%- endif -%}
+  {%- if p.url == '/coming-from-wire-and-fx.html' -%}
+    {%- assign nav_title = "Coming from wire or fx" -%}
+    {%- assign nav_section = "Guides" -%}
+  {%- endif -%}
+  {%- if p.url == '/servo-in-ci.html' -%}
+    {%- assign nav_title = "servo in CI" -%}
+    {%- assign nav_section = "Guides" -%}
+  {%- endif -%}
+  {%- if p.url == '/running-in-production.html' -%}
+    {%- assign nav_title = "Running in production" -%}
+    {%- assign nav_section = "Guides" -%}
   {%- endif -%}
   {%- comment -%}
     Reference titles come from _data/reference.yml, the same file that drives

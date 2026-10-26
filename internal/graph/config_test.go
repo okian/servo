@@ -162,14 +162,6 @@ type cfg struct {
 	x string ` + "`config:\"x\"`" + `
 }
 `, `no option "mode"`},
-		{"unknown directive", `
-package db
-
-//servo:confg prefix=DB
-type cfg struct {
-	x string ` + "`config:\"x\"`" + `
-}
-`, "unrecognized servo directive"},
 		{"not a struct", `
 package db
 
@@ -293,22 +285,80 @@ type b struct {
 	}
 }
 
-func TestDirectiveLine(t *testing.T) {
-	cases := []struct {
-		comment, name, rest string
-		ok                  bool
-	}{
-		{"//servo:config prefix=DB", "config", "prefix=DB", true},
-		{"//servo:config", "config", "", true},
-		{"//servo:confg x", "confg", "x", true},
-		{"// servo:config prefix=DB", "", "", false}, // a space makes it prose, matching go:generate's rule
-		{"// an ordinary comment", "", "", false},
-		{"//servo:", "", "", false},
+// ScanConfigs reads the lines the directive pass hands it and nothing else:
+// a typo on a type, or a config directive on a var, is not its to report —
+// the route scan reports every unclaimed line — so it must neither fail on
+// them nor mistake one for a config.
+func TestScanConfigsReadsOnlyClaimedLines(t *testing.T) {
+	decls, err := scanOne(t, `
+package db
+
+//servo:confg prefix=TYPO
+type typo struct {
+	x string `+"`config:\"x\"`"+`
+}
+
+//servo:config prefix=VAR
+var v = 1
+
+//servo:config	prefix=DB
+type cfg struct {
+	x string `+"`config:\"x\"`"+`
+}
+`)
+	if err != nil {
+		t.Fatalf("ScanConfigs: %v", err)
 	}
-	for _, tc := range cases {
-		name, rest, ok := DirectiveLine(tc.comment)
-		if name != tc.name || rest != tc.rest || ok != tc.ok {
-			t.Errorf("DirectiveLine(%q) = %q, %q, %v; want %q, %q, %v", tc.comment, name, rest, ok, tc.name, tc.rest, tc.ok)
+	if len(decls) != 1 || decls[0].TypeName != "cfg" || decls[0].Prefix != "DB" {
+		t.Fatalf("decls = %v, want only cfg, prefix DB — read through the tab the one tokenizer allows", decls)
+	}
+}
+
+func TestScanConfigsRefusesADuplicateDirective(t *testing.T) {
+	_, err := scanOne(t, `
+package db
+
+//servo:config prefix=A
+//servo:config prefix=B
+type cfg struct {
+	x string `+"`config:\"x\"`"+`
+}
+`)
+	if err == nil || !strings.Contains(err.Error(), "duplicate //servo:config directive") {
+		t.Fatalf("got err=%v, want the duplicate-directive refusal", err)
+	}
+}
+
+// Every malformed declaration is reported, in source order, whatever order
+// the packages arrive in: stopping at the first one found reported a
+// different error from run to run, because the loader's package order
+// comes from walking import maps.
+func TestScanConfigsReportsEveryErrorInSourceOrder(t *testing.T) {
+	src := func(pkg, prefix string) string {
+		return "package " + pkg + "\n\n//servo:config prefix=" + prefix + " bogus\ntype Cfg struct {\n\tX string `config:\"x\"`\n}\n"
+	}
+	a := mustCheckConfigPkg(t, "example.com/a", "/mod/a/a.go", src("a", "A"))
+	b := mustCheckConfigPkg(t, "example.com/b", "/mod/b/b.go", src("b", "B"))
+	c := mustCheckConfigPkg(t, "example.com/c", "/mod/c/c.go", src("c", "C"))
+	var want string
+	for i, order := range [][]*packages.Package{{a, b, c}, {c, a, b}, {b, c, a}} {
+		_, err := ScanConfigs(order)
+		if err == nil {
+			t.Fatal("expected the three malformed directives to be reported")
+		}
+		got := err.Error()
+		if i == 0 {
+			want = got
+			if !strings.Contains(got, "/mod/a/a.go") || !strings.Contains(got, "/mod/b/b.go") || !strings.Contains(got, "/mod/c/c.go") {
+				t.Fatalf("got %q, want all three directives reported", got)
+			}
+			if strings.Index(got, "/mod/a/a.go") > strings.Index(got, "/mod/b/b.go") || strings.Index(got, "/mod/b/b.go") > strings.Index(got, "/mod/c/c.go") {
+				t.Fatalf("got %q, want them in source order", got)
+			}
+			continue
+		}
+		if got != want {
+			t.Errorf("package order %d reported\n%s\nwant\n%s", i, got, want)
 		}
 	}
 }

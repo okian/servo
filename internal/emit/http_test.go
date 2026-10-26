@@ -7,6 +7,7 @@ import (
 	"go/types"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +25,9 @@ import (
 // package qualifier. It carries one route per feature: typed binding with
 // a dependency, a JSON body, a bare handler, a telemetry-group route, an
 // extracted parameter, a body beside an extracted parameter (which pins
-// that extraction runs first), and middleware at all three levels. Repo
-// has an Init so the servers' place relative to the Init phase is visible.
+// that extraction runs first), and middleware at all three levels — one of
+// them a plain func(http.Handler) http.Handler. Repo has an Init so the
+// servers' place relative to the Init phase is visible.
 const httpAppSrc = `
 package httpapp
 
@@ -93,6 +95,16 @@ type Audit struct{}
 func NewAudit() *Audit { return &Audit{} }
 func (m *Audit) Middleware(next http.Handler) http.Handler { return next }
 
+// Tag is middleware in the shape otelhttp, chi and gorilla/handlers ship:
+// a plain function, attached as itself.
+type Tag func(http.Handler) http.Handler
+func NewTag() Tag { return func(next http.Handler) http.Handler { return next } }
+
+// Explicit is a func type that declares a Middleware method anyway; the
+// method is the explicit form, so it wins.
+type Explicit func(http.Handler) http.Handler
+func (m Explicit) Middleware(next http.Handler) http.Handler { return m(next) }
+
 // Httpapp is an extracted type named after the package its handler lives
 // in: the adapter's local for it must not hide the package the very next
 // line calls the handler through.
@@ -134,6 +146,14 @@ func loadStdPkg(t *testing.T, path string) *packages.Package {
 }
 
 func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
+	t.Helper()
+	return buildHTTPResolvedWith(t, nil)
+}
+
+// buildHTTPResolvedWith is buildHTTPResolved with a chance to change the
+// resolver's input first — fewer groups, other routes, more declarations —
+// given the fixture's own package to look types up in.
+func buildHTTPResolvedWith(t *testing.T, edit func(in *resolve.Input, app *types.Package)) (*resolve.Resolved, *load.Spec) {
 	t.Helper()
 	servoPkg := loadServoPackage(t)
 	httpPkg := loadStdPkg(t, "net/http")
@@ -181,7 +201,8 @@ func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 
 	spec := &load.Spec{InjectorPkg: mainPkg}
 	ck, ct := route.HTTPConfigKey(servoPkg.Types)
-	resolved, diags := resolve.Resolve(resolve.Input{
+	tag := appPkg.Types.Scope().Lookup("Tag").Type()
+	in := resolve.Input{
 		Spec:       spec,
 		Candidates: candidates,
 		Caps:       caps,
@@ -196,6 +217,7 @@ func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 				{Type: key("Guard"), TypeT: ptr("Guard"), Pos: token.Position{Filename: "spec.go", Line: 13}},
 				{Type: key("Auth"), TypeT: ptr("Auth"), Groups: []string{"telemetry"}, Pos: token.Position{Filename: "spec.go", Line: 14}},
 				{Type: key("Audit"), TypeT: ptr("Audit"), Routes: []load.RouteSel{{Pattern: "POST /order/{category}/", Pos: token.Position{Filename: "spec.go", Line: 15}}}, Pos: token.Position{Filename: "spec.go", Line: 15}},
+				{Type: graph.NewKey(tag, ""), TypeT: tag, Pos: token.Position{Filename: "spec.go", Line: 18}},
 			},
 			Extracts: []load.ExtractDecl{
 				{Type: key("UserExtractor"), TypeT: ptr("UserExtractor"), Pos: token.Position{Filename: "spec.go", Line: 16}},
@@ -204,7 +226,11 @@ func buildHTTPResolved(t *testing.T) (*resolve.Resolved, *load.Spec) {
 			ConfigKey:  ck,
 			ConfigType: ct,
 		},
-	})
+	}
+	if edit != nil {
+		edit(&in, appPkg.Types)
+	}
+	resolved, diags := resolve.Resolve(in)
 	if len(diags) > 0 {
 		t.Fatalf("unexpected diagnostics: %v", diags)
 	}
@@ -228,10 +254,15 @@ func TestEmitHTTPServer(t *testing.T) {
 		"func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error)",
 		"a.httpServer = httpServer",
 		"a.httpTelemetryServer = httpTelemetryServer",
-		// The default group reads the flat config fields; a named group
-		// looks itself up and fails construction when missing.
-		`lc, ok := cfg.Groups["telemetry"]`,
-		`missing from HTTPConfig.Groups`,
+		// The runtime picks each group's listener — the flat config fields
+		// for the default group, a Groups entry (or an error naming it) for
+		// the rest — and builds the server from it, key pair and all.
+		`lc, err := servoimpl.Listener(a.hTTPConfig, "")`,
+		`lc, err := servoimpl.Listener(a.hTTPConfig, "telemetry")`,
+		`s.srv, s.cancel, err = servoimpl.NewServer("http", lc, handler)`,
+		`s.srv, s.cancel, err = servoimpl.NewServer("http:telemetry", lc, handler)`,
+		"s.maxBody = servoimpl.BodyLimit(lc)",
+		"cancel context.CancelCauseFunc",
 		// Routes land on their own group's mux.
 		`mux.HandleFunc("GET /health", s.handleHealth)`,
 		`mux.HandleFunc("GET /healthz", s.handleHealthz)`,
@@ -245,43 +276,32 @@ func TestEmitHTTPServer(t *testing.T) {
 		// Extracted parameter: produced per request, failure through the
 		// shared status mapping, then handed to the handler.
 		"user, err := s.app.userExtractor.Extract(r)",
-		`httpWriteFailure(w, "httpapp.Me", "GET /me", err)`,
+		`servoimpl.WriteFailure(w, r, "httpapp.Me", "GET /me", err)`,
 		"httpapp.Me(r.Context(), user)",
-		// The shared helpers exist once, package-level; encoding lives in
-		// the runtime so a new response kind never touches this file.
-		"func httpWriteFailure(w http.ResponseWriter, handler, route string, err error)",
-		`httpWriteError(w, http.StatusInternalServerError, "Internal Server Error")`,
-		"func httpRespond(w http.ResponseWriter, code int, res servo.Response)",
-		"servo.WriteResponse(w, code, res)",
+		// The status contract is the runtime's, one call per adapter, with
+		// the request for its context and the handler and route for its log.
+		`servoimpl.Respond(w, r, "httpapp.Me", "GET /me", res, err)`,
+		`servoimpl.Respond(w, r, "httpapp.Order", "POST /order/{category}/", res, err)`,
 		// An extracted local never takes the name of a package the body
 		// still has to call into — here the handlers' own package.
 		"httpapp2, err := s.app.httpappExtractor.Extract(r)",
 		"httpapp.Shadow(r.Context(), httpapp2)",
-		// Redirect statuses flow through the success path.
-		"errors.As(err, &hs) && hs.Code() < 400",
 		// A body over the limit is a 413, decoded through one helper.
-		"func httpBodyError(w http.ResponseWriter, err error, msg string)",
-		"var tooLarge *http.MaxBytesError",
-		`httpWriteError(w, http.StatusRequestEntityTooLarge, "request body too large")`,
-		`httpBodyError(w, err, "malformed request body")`,
-		// An extractor's sub-400 status is the code alone: nothing carries a body.
-		"if code < 400 {",
-		// Readiness drops before the drain starts, and the header deadline
-		// reaches net/http.
-		"a.httpServer.ready.Store(false)",
-		"ReadHeaderTimeout: lc.ReadHeaderTimeout,",
-		"ReadHeaderTimeout: cfg.ReadHeaderTimeout,",
+		`servoimpl.BodyError(w, err, "malformed request body")`,
+		// The query is parsed for its error, which r.URL.Query() drops.
+		"q, err := url.ParseQuery(r.URL.RawQuery)",
+		`servoimpl.WriteError(w, http.StatusBadRequest, "malformed query string")`,
+		`servoimpl.WriteError(w, http.StatusBadRequest, "query parameter \"page\" is not a valid int")`,
 		// Typed decode and the handler call are unchanged in spirit.
 		`req.Category = r.PathValue("category")`,
 		"strconv.ParseInt(raw, 10, 0)",
 		"httpapp.Order(r.Context(), req, s.app.repo)",
 		// Lifecycle: both servers run, both stop, both report readiness.
-		"g.Go(func() error { return a.httpServer.run(gctx) })",
-		"g.Go(func() error { return a.httpTelemetryServer.run(gctx) })",
-		`servo.RunStop(ctx, servo.DefaultStopBudget, "http", a.httpServer.srv.Shutdown)`,
-		`servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)`,
+		`servoimpl.Call{Node: "http", Fn: a.httpServer.run},`,
+		`servoimpl.Call{Node: "http:telemetry", Fn: a.httpTelemetryServer.run},`,
+		`return servoimpl.Serve(ctx, "http", s.srv, &s.ready)`,
+		`return servoimpl.StopServer(ctx, "http:telemetry", s.srv, &s.ready, s.lc.ShutdownDelay, s.cancel)`,
 		`Name: "http:telemetry"`,
-		"ServeTLS(ln,",
 		// The test seam: each group's wrapped handler, reachable without
 		// binding a listener.
 		"func (a *App) HTTPHandler(group string) http.Handler",
@@ -360,6 +380,207 @@ func TestEmitHTTPShutdownStopsServersFirst(t *testing.T) {
 	}
 	if defStop > repoStop || telStop > repoStop {
 		t.Fatalf("servers stop after their dependencies:\n%s", body)
+	}
+}
+
+// With several groups the first stop Shutdown reaches stops them all at
+// once, so their ShutdownDelays overlap; every group's own stop method only
+// returns what that recorded. The drain itself is servoimpl's, never the
+// deprecated servo.RunStop.
+func TestEmitHTTPStopsEveryGroupTogether(t *testing.T) {
+	resolved, spec := buildHTTPResolved(t)
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+	if !regexp.MustCompile(`\n\thttpServersStopOnce\s+sync\.Once\n`).MatchString(src) {
+		t.Errorf("App has no shared httpServersStopOnce field")
+	}
+	for _, want := range []string{
+		"func (a *App) stopHttpServers(ctx context.Context) {",
+		"a.httpServersStopOnce.Do(func() {",
+		"wg.Go(func() { a.httpServerStopResult = a.httpServer.stop(ctx) })",
+		"wg.Go(func() { a.httpTelemetryServerStopResult = a.httpTelemetryServer.stop(ctx) })",
+		// The nil receiver is the rollback reaching a server New never built.
+		"func (s *httpTelemetryServer) stop(ctx context.Context) servo.NodeResult {\n\tif s == nil {",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated source missing %q", want)
+		}
+	}
+	for _, method := range []string{"stopHttpServer", "stopHttpTelemetryServer"} {
+		start := strings.Index(src, "func (a *App) "+method+"(ctx context.Context) servo.NodeResult {")
+		if start < 0 {
+			t.Fatalf("no %s", method)
+		}
+		body := src[start : start+strings.Index(src[start:], "\n}\n")]
+		if !strings.Contains(body, "a.stopHttpServers(ctx)") {
+			t.Errorf("%s does not defer to the shared stop:\n%s", method, body)
+		}
+	}
+	for _, unwanted := range []string{"httpServerStopOnce", "httpTelemetryServerStopOnce", "srv.Shutdown"} {
+		if strings.Contains(src, unwanted) {
+			t.Errorf("generated source still has %q", unwanted)
+		}
+	}
+	for _, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, "RunStop(") && (strings.Contains(line, `"http"`) || strings.Contains(line, `"http:`)) {
+			t.Errorf("a server still stops through RunStop: %s", strings.TrimSpace(line))
+		}
+	}
+	if t.Failed() {
+		t.Logf("--- generated ---\n%s", src)
+	}
+}
+
+// One group needs no shared stop: its method keeps the once-guarded shape
+// every stoppable node has.
+func TestEmitHTTPSingleGroupStop(t *testing.T) {
+	resolved, spec := buildHTTPResolvedWith(t, func(in *resolve.Input, _ *types.Package) {
+		in.HTTP.Groups = nil
+		var uses []load.UseDecl
+		for _, u := range in.HTTP.Uses {
+			if len(u.Groups) == 0 {
+				uses = append(uses, u)
+			}
+		}
+		in.HTTP.Uses = uses
+	})
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+	want := "func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {\n\ta.httpServerStopOnce.Do(func() { a.httpServerStopResult = a.httpServer.stop(ctx) })\n\treturn a.httpServerStopResult\n}"
+	if !strings.Contains(src, want) {
+		t.Errorf("generated source missing\n%s", want)
+	}
+	if strings.Contains(src, "stopHttpServers") || strings.Contains(src, "httpTelemetryServer") {
+		t.Errorf("a single group still got the shared stop or a second server")
+	}
+	if t.Failed() {
+		t.Logf("--- generated ---\n%s", src)
+	}
+}
+
+// assertImportsBalanced fails for an import the file never uses, and for a
+// package the HTTP code qualifies with but never imports — the emitter
+// registers encoding/json, net/url, strconv and errors only for the routes
+// that need them, and either mistake is a compile error in every app that
+// declares servo.HTTP().
+func assertImportsBalanced(t *testing.T, src string) {
+	t.Helper()
+	f, err := parser.ParseFile(token.NewFileSet(), "servo_gen.go", src, parser.ImportsOnly|parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse imports: %v", err)
+	}
+	full, err := parser.ParseFile(token.NewFileSet(), "servo_gen.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	used := map[string]bool{}
+	ast.Inspect(full, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok {
+				used[id.Name] = true
+			}
+		}
+		return true
+	})
+	imported := map[string]bool{}
+	for _, imp := range f.Imports {
+		p := strings.Trim(imp.Path.Value, `"`)
+		name := p[strings.LastIndex(p, "/")+1:]
+		if imp.Name != nil {
+			name = imp.Name.Name
+		}
+		imported[name] = true
+		if !used[name] {
+			t.Errorf("imports %s without using it", p)
+		}
+	}
+	for _, ident := range []string{"json", "url", "strconv", "errors", "servoimpl", "atomic", "sync", "http"} {
+		if used[ident] && !imported[ident] {
+			t.Errorf("qualifies with %s without importing it", ident)
+		}
+	}
+}
+
+func TestEmitHTTPImportsOnlyWhatItUses(t *testing.T) {
+	t.Run("every feature", func(t *testing.T) {
+		resolved, spec := buildHTTPResolved(t)
+		for _, testMode := range []bool{false, true} {
+			out, err := Emit(resolved, spec, testMode)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			assertImportsBalanced(t, string(out))
+			if !strings.Contains(string(out), `"net/url"`) || !strings.Contains(string(out), `"encoding/json"`) {
+				t.Errorf("a query route and a JSON body need net/url and encoding/json")
+			}
+		}
+	})
+	t.Run("a bare route", func(t *testing.T) {
+		resolved, spec := buildHTTPResolvedWith(t, func(in *resolve.Input, _ *types.Package) {
+			var routes []*route.Route
+			for _, rt := range in.HTTP.Routes {
+				if rt.Name == "httpapp.Health" {
+					routes = append(routes, rt)
+				}
+			}
+			in.HTTP.Routes = routes
+			in.HTTP.Groups = nil
+			in.HTTP.Uses = in.HTTP.Uses[:1] // Guard: server-wide, so it selects nothing that is gone
+			in.HTTP.Extracts = nil
+		})
+		out, err := Emit(resolved, spec, false)
+		if err != nil {
+			t.Fatalf("Emit: %v", err)
+		}
+		src := string(out)
+		assertImportsBalanced(t, src)
+		for _, unwanted := range []string{`"net/url"`, `"encoding/json"`, `"strconv"`} {
+			if strings.Contains(src, unwanted) {
+				t.Errorf("a route with no request struct still imports %s", unwanted)
+			}
+		}
+	})
+}
+
+// A plain func(http.Handler) http.Handler attaches as itself — called, not
+// asked for a Middleware method — so otelhttp's or chi's middleware needs
+// no wrapper type.
+func TestEmitHTTPAcceptsPlainMiddlewareFuncs(t *testing.T) {
+	var app *types.Package
+	resolved, spec := buildHTTPResolvedWith(t, func(_ *resolve.Input, a *types.Package) { app = a })
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+	if !strings.Contains(src, "handler = a.tag(handler)") {
+		t.Errorf("the func middleware is not called as itself:\n%s", src)
+	}
+	if strings.Contains(src, "a.tag.Middleware(") {
+		t.Errorf("the func middleware was asked for a Middleware method it does not have")
+	}
+
+	lookup := func(name string) types.Type { return app.Scope().Lookup(name).Type() }
+	cases := []struct {
+		name string
+		t    types.Type
+		want bool
+	}{
+		{"a defined func type", lookup("Tag"), true},
+		{"an unnamed func type", lookup("Tag").Underlying(), true},
+		{"a Middleware method", types.NewPointer(lookup("Guard")), false},
+		{"a func type with a Middleware method", lookup("Explicit"), false},
+	}
+	for _, c := range cases {
+		if got := httpMiddlewareIsFunc(c.t); got != c.want {
+			t.Errorf("%s: httpMiddlewareIsFunc = %v, want %v", c.name, got, c.want)
+		}
 	}
 }
 
@@ -487,11 +708,11 @@ func TestEmitHTTPServersBuiltBeforeInit(t *testing.T) {
 	body = body[:strings.Index(body, "\n}\n")]
 	lastCtor := strings.Index(body, "repo := httpapp.NewRepo()")
 	server := strings.Index(body, "httpServer, err := newHttpServer(a)")
-	initCall := strings.Index(body, "a.repo.Init(ctx)")
+	initCall := strings.Index(body, "Fn: a.repo.Init}")
 	if lastCtor < 0 || server < 0 || initCall < 0 || lastCtor > server || server > initCall {
 		t.Fatalf("New order wrong (ctor=%d server=%d init=%d):\n%s", lastCtor, server, initCall, body)
 	}
-	if !strings.Contains(body, "report := a.Shutdown(context.WithoutCancel(ctx))") || strings.Contains(body, "report := a.Shutdown(ctx)") {
+	if !strings.Contains(body, "a.Shutdown(context.WithoutCancel(ctx))") || strings.Contains(body, "a.Shutdown(ctx)") {
 		t.Fatalf("server setup must roll back on a context the signal cannot cancel:\n%s", body)
 	}
 }

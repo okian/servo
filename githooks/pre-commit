@@ -1,8 +1,8 @@
 #!/bin/sh
 # Reference pre-commit hook: fails the commit if any injector's committed
-# generated file doesn't match what `servo generate` would produce right
-# now, catching drift (a constructor signature changed, generate wasn't
-# re-run) before it lands instead of in review or CI.
+# generated file doesn't match what `servo generate` would produce from the
+# code being committed, catching drift (a constructor signature changed,
+# generate wasn't re-run) before it lands instead of in review or CI.
 #
 # Install by pointing git at this directory instead of copying the file:
 #   git config core.hooksPath githooks
@@ -14,6 +14,53 @@ set -e
 if ! command -v go >/dev/null 2>&1; then
 	echo "pre-commit: go not found on PATH, skipping servo check" >&2
 	exit 0
+fi
+
+# The check has to see what is being committed, not the working tree. With
+# part of a change staged (`git add -p`), the working tree can be
+# consistent while the commit is not: a constructor change staged without
+# its regenerated servo_gen.go used to pass this hook, and then failed
+# check and build in CI. So whatever is not staged — edits and untracked
+# files alike — is stashed for the check and put back afterwards, however
+# the hook exits. Nothing is stashed when there is nothing to set aside,
+# nor before the first commit or while a merge is being concluded, when
+# git cannot stash; then the working tree is what gets checked.
+stashed=
+restore() {
+	status=$?
+	trap - EXIT
+	if [ -n "$stashed" ]; then
+		# The working tree goes back exactly as it was: tracked files from
+		# the stash's working-tree commit, untracked ones from its third
+		# parent. Not `git stash pop`, which merges, and a merge cannot tell
+		# an unstaged edit that undoes a staged one from no edit at all: it
+		# would leave the staged version in the working tree. The stash is
+		# dropped only if it is still on top, never someone else's.
+		if git restore --source="$stashed" --worktree -- . &&
+			{ ! git rev-parse -q --verify "$stashed^3" >/dev/null ||
+				git restore --overlay --source="$stashed^3" --worktree -- .; }; then
+			if [ "$(git rev-parse -q --verify refs/stash)" = "$stashed" ]; then
+				git stash drop --quiet
+			fi
+		else
+			echo "pre-commit: could not put your unstaged changes back; they are kept in the stash as $stashed (git stash list)" >&2
+			status=1
+		fi
+	fi
+	exit "$status"
+}
+trap restore EXIT
+trap 'exit 1' HUP INT TERM
+
+if git rev-parse -q --verify HEAD >/dev/null &&
+	! git rev-parse -q --verify MERGE_HEAD >/dev/null &&
+	{ ! git diff --quiet || [ -n "$(git ls-files --others --exclude-standard)" ]; }; then
+	before=$(git rev-parse -q --verify refs/stash || true)
+	git stash push --quiet --keep-index --include-untracked --message "servo pre-commit hook: unstaged changes"
+	after=$(git rev-parse -q --verify refs/stash || true)
+	if [ "$after" != "$before" ]; then
+		stashed=$after
+	fi
 fi
 
 # Inside servo's own repository the injectors live in the example modules

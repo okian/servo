@@ -86,3 +86,41 @@ func ExampleRunStop() {
 	fmt.Println(result.Status)
 	// Output: ok
 }
+
+// App and New stand in for what servo generate writes beside the spec
+// file: the App type, with its Run and Shutdown, and its constructor.
+type App struct{}
+
+func (*App) Run(context.Context) error             { return nil }
+func (*App) Shutdown(context.Context) servo.Report { return servo.Report{} }
+
+func New(context.Context) (*App, error) { return &App{}, nil }
+
+// ExampleMain is the whole of a service's main function. It has no
+// "Output:" comment, so go test compiles it — checking that the generated
+// New fits Main as shown — but never runs it: Main ends the process.
+func ExampleMain() {
+	servo.Main(New)
+}
+
+// ExampleShutdownTimeout gives the stop longer than the default 25
+// seconds, for a deployment whose termination grace period has room for
+// it. Compiled, not run, like ExampleMain.
+func ExampleShutdownTimeout() {
+	servo.Main(New, servo.ShutdownTimeout(50*time.Second))
+}
+
+// ExampleExitCode shows the decision a hand-written main hands to os.Exit
+// as its last line, once Run has returned and Shutdown has reported.
+func ExampleExitCode() {
+	clean := servo.Report{Nodes: []servo.NodeResult{{Name: "*api.Server", Status: servo.StatusOK}}}
+	dirty := servo.Report{Nodes: []servo.NodeResult{{Name: "*postgres.DB", Status: servo.StatusAbandoned}}}
+
+	fmt.Println(servo.ExitCode(context.Canceled, clean)) // stopped by the signal
+	fmt.Println(servo.ExitCode(errors.New("consumer: broker unreachable"), clean))
+	fmt.Println(servo.ExitCode(nil, dirty))
+	// Output:
+	// 0
+	// 1
+	// 1
+}

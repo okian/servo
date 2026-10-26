@@ -27,3 +27,12 @@ func ExampleNewRecorder() {
 	fmt.Println(len(rec.Init.Nodes), len(rec.Shutdown.Nodes))
 	// Output: 3 2
 }
+
+// ExampleNodeName shows the name an order assertion has to use: the full
+// import path, star included, which is what a generated report records.
+// In a test, pass NodeName's results to AssertStopOrder or
+// AssertInitOrder rather than spelling them by hand.
+func ExampleNodeName() {
+	fmt.Println(servotest.NodeName[*servo.HTTPConfig]())
+	// Output: *github.com/okian/servo/v3/servo.HTTPConfig
+}

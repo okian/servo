@@ -1,6 +1,7 @@
 package load
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -114,6 +115,10 @@ func parseScopeOptions(pkg *packages.Package, call *ast.CallExpr, decl *ScopeDec
 		// diagnostic instead of falling into the generic "not a marker".
 		name, _, optPos, err := markerCall(pkg, optCall)
 		if err != nil {
+			var skew *markerSkewError
+			if errors.As(err, &skew) {
+				return err
+			}
 			return notAScopeOption(pkg.Fset.Position(arg.Pos()))
 		}
 
@@ -146,6 +151,9 @@ func parseScopeOptions(pkg *packages.Package, call *ast.CallExpr, decl *ScopeDec
 			}
 			decl.Max, decl.MaxSet = n, true
 		default:
+			if returnsServoType(calledMarker(pkg, optCall), "ScopeOption") {
+				return &markerSkewError{pos: optPos, name: name, kind: "servo.Scoped option"}
+			}
 			return fmt.Errorf("%s: servo.%s is not a scope option — servo.Scoped accepts servo.Linger(...) and servo.Max(...)", optPos, name)
 		}
 	}

@@ -36,6 +36,9 @@ func writeLevels(b *strings.Builder, g servo.Graph, label string) {
 			fmt.Fprintf(b, "      deps: %s\n", joinOrNone(n.Deps))
 			fmt.Fprintf(b, "      capabilities: %s\n", joinOrNone(n.Capabilities))
 			fmt.Fprintf(b, "      binding: %s\n", n.Binding)
+			if n.Provider != "" {
+				fmt.Fprintf(b, "      provider: %s\n", n.Provider)
+			}
 			fmt.Fprintf(b, "      pos: %s\n", n.Pos)
 		}
 	}

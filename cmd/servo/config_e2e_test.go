@@ -135,7 +135,7 @@ func TestConfigEnvOnlyEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(injector), "config, err := store.ServoConfig()") {
+	if !strings.Contains(string(injector), "config, configErr := store.ServoConfig()") {
 		t.Fatalf("injector does not call the generated loader:\n%s", injector)
 	}
 

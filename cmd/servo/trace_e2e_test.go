@@ -25,7 +25,7 @@ func writeTraceModule(t *testing.T) string {
 
 	write("go.mod", `module example.com/tracefix
 
-go 1.27.0
+go 1.26.0
 
 require (
 	github.com/okian/servo/v3 v3.0.0
@@ -330,7 +330,7 @@ func TestGenerateTraceModule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated test file: %v", err)
 	}
-	if !strings.Contains(string(testGen), "storeTraced := newTestTracedStore(mem, provider)") {
+	if !strings.Contains(string(testGen), "storeTraced := newTestTracedStore(storeOverride, provider)") {
 		t.Errorf("servo_gen_test.go does not trace the override through its own wrapper type:\n%s", testGen)
 	}
 

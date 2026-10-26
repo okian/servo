@@ -10,12 +10,13 @@ workflow that runs automatically on every push and pull request, so a broken bui
 ## Why a second workflow file, not a bigger one
 
 The servo repository already has `.github/workflows/go.yml`, which builds, vets, and tests the
-root module plus the other `examples/*` modules on every push. `examples/tutorial` isn't added to
-it. It gets its own `.github/workflows/tutorial.yml` instead, for a reason that'll matter more as a
-real project's test suite grows: this module's integration tests need Postgres, Redis, and NATS as
-service containers, and its Docker build takes real time. Bundling that into `go.yml` would mean
-every change anywhere in the servo repository — a comment fix in `internal/emit/`, a typo in the root
-README — waits on a Docker build it has nothing to do with.
+root module plus the other `examples/*` modules on every push. `examples/tutorial` is only checked
+there — linted, and its generated files compared — not built or tested. It gets its own
+`.github/workflows/tutorial.yml` instead, for a reason that'll matter more as a real project's test
+suite grows: this module's integration tests need Postgres, Redis, and NATS as service containers,
+and its Docker build takes real time. Bundling that into `go.yml` would mean every change anywhere
+in the servo repository — a typo in the root README, a new page under `docs/reference/` — waits on
+a Docker build it has nothing to do with.
 
 ```yaml
 on:
@@ -25,20 +26,21 @@ on:
       - 'examples/tutorial/**'
       - 'docs/tutorial/**'
       - '.github/workflows/tutorial.yml'
+      # ...and the parts of the servo checkout this module builds against
   pull_request:
     branches: [ master ]
     paths:
-      - 'examples/tutorial/**'
-      - 'docs/tutorial/**'
-      - '.github/workflows/tutorial.yml'
+      # the same list
 ```
 
-The `paths:` filter is what makes this safe to keep separate: the workflow simply doesn't run
-unless something under `examples/tutorial/`, `docs/tutorial/`, or the workflow file itself changed.
-A change to `internal/emit/emit.go` in servo itself never triggers it. This is the same
-trade-off a monorepo with many services eventually has to make deliberately — one fast, universal
-pipeline for the parts everyone touches, and narrower, heavier pipelines path-filtered to the parts
-that need them.
+The `paths:` filter is what makes this safe to keep separate: the workflow runs only when something
+it depends on changed. That is this module, its chapters and the workflow file — and, because
+`examples/tutorial/go.mod` replaces servo with the checkout around it, the parts of servo it builds
+against: the runtime packages, the generator under `internal/` and `cmd/`, and the root `go.mod`.
+A typo fixed in the root README never triggers it; a change to what `servo generate` writes always
+does. This is the same trade-off a monorepo with many services eventually has to make deliberately
+— one fast, universal pipeline for the parts everyone touches, and narrower, heavier pipelines
+path-filtered to the parts that need them, as long as the filter names everything they depend on.
 
 ## Four jobs, each answering one question
 
@@ -71,7 +73,7 @@ lint:
         go-version: '1.27'
     - uses: golangci/golangci-lint-action@v9
       with:
-        version: v2.13
+        version: v2.14
         working-directory: examples/tutorial
 ```
 
@@ -133,27 +135,29 @@ build-and-unit-test:
       run: go test ./...
 
     # The reference check every consumer of servo should run in CI:
-    # verifies cmd/orders/servo_gen.go still matches what `servo
-    # generate` would produce right now, so a constructor signature
-    # change without a re-run of `servo generate` fails the build
-    # instead of shipping a stale generated file. Run from the repo
-    # root, same as go.yml does for examples/basic and
-    # examples/mocking, since cmd/servo is a root-module binary.
+    # verifies every injector's generated files still match what
+    # `servo generate` would produce right now, and still compile, so a
+    # constructor signature change without a re-run of `servo generate`
+    # fails the build instead of shipping a stale generated file. There
+    # are four injectors, one per transport, and `check` covers all of
+    # them in one pass.
     - name: servo check
-      working-directory: .
-      run: go run ./cmd/servo check --dir examples/tutorial
+      run: go tool servo check
 ```
 
 Two things worth noticing. First, `gofmt -l .` lists files that *aren't* formatted correctly — an
 empty list means everything's clean — so the step diffs its output against an empty string rather
 than checking `gofmt`'s exit code, which is 0 regardless of whether it found anything to list.
-Second, `servo check` runs with `working-directory: .`, overriding the job's own default of
-`examples/tutorial`, because `cmd/servo` is a binary that lives in the *root* module, not this
-one — the same pattern `go.yml` already uses for `examples/basic` and `examples/mocking`. This step
-is the CI enforcement of the warning chapter 14 raised when introducing `servo generate`: if
-`cmd/orders/servo_gen.go` doesn't match what `servo generate` would produce right now — because a
-constructor's signature changed and nobody re-ran it — this fails the build instead of shipping a
-stale generated file.
+Second, `servo check` runs as `go tool servo check`, from this module's own directory like every
+other step: the tool directive [chapter 2](02-project-setup.md) added pins the generator in this
+module's `go.mod`, so CI runs exactly the servo version that generated the committed files, and the
+two can only disagree about the code. (servo's own `go.yml` runs `go run ./cmd/servo` instead, which
+works only inside servo's repository, where the generator is part of the module under test;
+[servo in CI](../servo-in-ci.md) covers the difference, and everything else about running servo in
+a pipeline.) This step is the CI enforcement of the warning chapter 14 raised when introducing
+`servo generate`: if `cmd/orders/servo_gen.go` doesn't match what `servo generate` would produce
+right now — because a constructor's signature changed and nobody re-ran it — this fails the build
+instead of shipping a stale generated file.
 
 `go test ./...` here runs with none of the `TEST_POSTGRES_DSN`/`TEST_REDIS_ADDR`/`TEST_NATS_URL`
 variables set, and this job declares no `services:` block at all. That's deliberate, and it's a
@@ -296,10 +300,10 @@ work on this exact codebase.
 
 ## Diagnostics
 
-- **The workflow doesn't trigger on a PR that clearly touches `examples/tutorial/`** — check the
+- **The workflow doesn't trigger on a PR that clearly affects `examples/tutorial/`** — check the
   `paths:` filter against the actual changed files; a change only under a directory not listed
-  there (a root-level `go.mod` bump, say) won't trigger it even if it happens to affect this module
-  too.
+  there (a new top-level package the module starts importing, say) won't trigger it even though it
+  affects this module.
 - **`integration-test` fails immediately on every test, not intermittently** — almost always a
   service's `ports:` mapping or a test's `TEST_*` variable disagreeing on the port number, not an
   actual connectivity problem. Double check `5432`/`6379`/`4222` appear consistently on both sides.
@@ -307,9 +311,12 @@ work on this exact codebase.
   `--health-cmd` binary actually exists inside that exact image tag. `pg_isready` and `redis-cli`
   are safe bets for the official Postgres/Redis images; a slimmer or custom image might not have
   them, the same way `nats:2-alpine` has no NATS-aware health-check binary of its own.
-- **`servo check` fails only in CI, never locally** — someone ran `servo generate` locally,
-  edited the generated output by hand afterward, and committed both. `servo check`'s whole purpose
-  is to catch exactly this, so treat it as correct and regenerate rather than adjusting the check.
+- **`servo check` fails only in CI, never locally** — the committed file was generated under
+  different conditions from the ones CI checks: most often a `go.work` on the developer's machine
+  that CI doesn't have (generate with `GOWORK=off`;
+  [servo in CI](../servo-in-ci.md#gowork-and---scope) explains why), or a generated file someone edited by
+  hand afterward. `servo check`'s whole purpose is to catch exactly this, so treat it as correct and
+  regenerate rather than adjusting the check.
 - **`docker-build` fails with a missing-module error that `go build` locally doesn't reproduce** —
   check whether `.dockerignore` (or its absence) is excluding something the multi-stage build's
   `COPY . .` needs; the build context here is the whole repository, not just this module.
@@ -342,10 +349,12 @@ work on this exact codebase.
   a PR's checks list — a lint failure is immediately distinguishable from a Docker build failure.
   One combined job would use a single runner sequentially, which is simpler to read top-to-bottom
   but slower overall and less precise about which concern actually broke.
-- **`actions/cache` for the Go module and build cache.** Not used here, since a tutorial workflow
-  that only runs on changes to one small module doesn't run often enough for the caching to pay for
-  its own added complexity (a cache key strategy, occasional stale-cache debugging). A workflow that
-  runs on every push to a large, frequently-changed module would likely find the trade worthwhile.
+- **A tuned cache for the Go module and build caches.** `actions/setup-go` caches both by default,
+  and this workflow leaves that alone rather than adding an explicit `actions/cache` step with a key
+  of its own: a tutorial workflow that only runs on changes to one small module doesn't run often
+  enough for a key strategy, and the occasional stale-cache debugging it brings, to pay for
+  themselves. A workflow that runs on every push to a large, frequently-changed module would likely
+  find the trade worthwhile.
 - **testcontainers-go instead of a `services:` block** (see also chapter 18's alternatives) — would
   let `integration-test` collapse into the same job as unit tests, since the containers would be
   started by the test process itself rather than declared at the job level. Trades a `services:`
@@ -356,9 +365,11 @@ work on this exact codebase.
   fast tests without infrastructure, slower tests with real service containers, an image build —
   isn't GitHub-Actions-specific. GitLab CI's `services:` keyword and CircleCI's Docker executor
   both support the same service-container pattern; only the YAML dialect changes.
-- **Dependabot or Renovate for dependency updates.** Neither is configured here. A real project
-  depending on this many third-party modules (pgx, go-redis, nats.go, the OTel SDK, gobreaker)
-  would normally want automated PRs for version bumps rather than noticing drift manually.
+- **Dependabot for dependency updates.** The servo repository configures it in
+  `.github/dependabot.yml`, and this module is one of its entries: weekly, grouped pull requests for
+  the Go modules (pgx, go-redis, nats.go, the OTel SDK, gobreaker) and for the workflows' pinned
+  actions, rather than noticing drift by hand. A project of your own copies the same `gomod` entry
+  for its module's directory; Renovate is the alternative if you need its finer scheduling.
 
 ## Next
 

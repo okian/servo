@@ -1,0 +1,189 @@
+name: Cut a release
+
+# How a release starts: run this from master with the version to cut —
+# `gh workflow run cut-release.yml -f version=v3.5.0`, or the Actions tab.
+# Every check a release needs happens here, before the tag exists, because
+# a tag is permanent once anyone has fetched it: the module proxy caches
+# the version, the checksum database records it, and moving it would hand
+# `go install` and the release two different builds under one name.
+#
+#   - the version is new, newer than every release, and its major matches
+#     go.mod's module path;
+#   - CHANGELOG.md has its section;
+#   - go.yml passed on the commit being tagged (it waits if go.yml is still
+#     running);
+#   - gorelease, against the previous release, finds the version right for
+#     what changed in the exported API.
+#
+# Then it tags master's commit and starts release.yml on the tag. A tag
+# created with the workflow token starts no workflow by itself, hence the
+# dispatch. RELEASING.md walks through it.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. v3.5.0'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# One release at a time.
+concurrency:
+  group: cut-release
+  cancel-in-progress: false
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  # Reads everything, writes nothing. gorelease and the module proxy's
+  # code run here, so this job's token cannot write.
+  check:
+    name: Check the version can be released
+    runs-on: ubuntu-latest
+    # Includes waiting for go.yml on the commit.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # Reading go.yml's runs.
+      actions: read
+    outputs:
+      tag: ${{ steps.request.outputs.tag }}
+    steps:
+      - name: Check the request
+        id: request
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # master only: the tag goes on the commit this run was started
+          # for, and only master's commits have passed master's checks.
+          if [ "$GITHUB_REF" != refs/heads/master ]; then
+            echo "::error::run this from master, not $GITHUB_REF"
+            exit 1
+          fi
+          # vMAJOR.MINOR.PATCH, optionally -pre-release, with or without
+          # the leading v.
+          tag="v${VERSION#v}"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$VERSION' is not a semantic version (vMAJOR.MINOR.PATCH, optionally -pre-release)"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "releasing $GITHUB_SHA as $tag"
+
+      - name: Check out master
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every tag, for the version checks.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false
+
+      - name: Check the version against the tags, go.mod and CHANGELOG.md
+        id: version
+        env:
+          TAG: ${{ steps.request.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" > /dev/null; then
+            echo "::error::$TAG already exists. A version is never reused; cut the next one."
+            exit 1
+          fi
+
+          # The newest release so far, pre-releases aside. A release cuts
+          # master's head, so the new version has to come after it: a lower
+          # one would be a backport, which this workflow does not make. A
+          # pre-release of a version that is already out is refused too.
+          major=${TAG#v}
+          major=${major%%.*}
+          core=${TAG%%-*}
+          latest=$(git tag --list "v$major.*" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)
+          if [ -n "$latest" ]; then
+            newest=$(printf '%s\n%s\n' "$latest" "$core" | sort -V | tail -n 1)
+            if [ "$newest" != "$core" ] || [ "$core" = "$latest" ]; then
+              echo "::error::$TAG does not come after $latest, the latest release"
+              exit 1
+            fi
+          fi
+          echo "base=${latest:-none}" >> "$GITHUB_OUTPUT"
+          echo "previous release: ${latest:-none}"
+
+          # A release's tag and its import path's version suffix always
+          # match (CHANGELOG.md's versioning section).
+          module=$(go list -m)
+          suffix=$(printf '%s' "$module" | sed -nE 's#^.*(/v[0-9]+)$#\1#p')
+          want=""
+          if [ "$major" -ge 2 ]; then
+            want="/v$major"
+          fi
+          if [ "$suffix" != "$want" ]; then
+            echo "::error::$TAG belongs to a module path ending in '$want', but go.mod declares $module"
+            exit 1
+          fi
+
+          # The same rule release.yml applies: the version's own section,
+          # or for a pre-release the unreleased work.
+          section() { awk -v v="$1" '/^## /{p = ($2 == "[" v "]")} p' CHANGELOG.md; }
+          version=${TAG#v}
+          if [ -z "$(section "$version")" ]; then
+            if [[ "$TAG" != *-* ]] || [ -z "$(section Unreleased)" ]; then
+              echo "::error::CHANGELOG.md has no '## [$version]' section. Rename [Unreleased] to it on master, then run this again."
+              exit 1
+            fi
+          fi
+
+      - name: Wait for go.yml to pass on this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/scripts/await-ci.sh "$GITHUB_SHA" 30
+
+      # gorelease compares the exported API with the previous release's and
+      # fails when the version is wrong for the change: a removal that needs
+      # a new major, or an addition released as a patch. Pinned, since
+      # golang.org/x/exp has no tagged versions.
+      - name: gorelease
+        env:
+          TAG: ${{ steps.request.outputs.tag }}
+          BASE: ${{ steps.version.outputs.base }}
+        run: go run golang.org/x/exp/cmd/gorelease@v0.0.0-20261014143641-f0251eb4aa3e -base="$BASE" -version="$TAG"
+
+  # The only job that writes, and it runs nothing from the repository or
+  # any module: two API calls.
+  tag:
+    name: Tag ${{ needs.check.outputs.tag }} and start the release
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # Creating the tag.
+      contents: write
+      # Starting release.yml.
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.check.outputs.tag }}
+    steps:
+      # Annotated, like a tag made by hand, on the commit the check job
+      # checked; the API creates the tag object and then the ref.
+      - name: Tag the commit
+        run: |
+          set -euo pipefail
+          object=$(gh api "repos/$GH_REPO/git/tags" \
+            -f tag="$TAG" -f message="Release $TAG" -f object="$GITHUB_SHA" -f type=commit --jq .sha)
+          gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$object" > /dev/null
+          echo "tagged $GITHUB_SHA as $TAG"
+
+      - name: Start the release
+        run: |
+          gh workflow run release.yml --ref "$TAG"
+          echo "release.yml is running for $TAG: https://github.com/$GH_REPO/actions/workflows/release.yml"

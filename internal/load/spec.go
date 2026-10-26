@@ -8,11 +8,15 @@ import (
 	"go/constant"
 	"go/token"
 	"go/types"
+	"maps"
+	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/packages"
 
@@ -177,29 +181,65 @@ type BindDecl struct {
 	Included bool
 }
 
-// FindSpecs locates every servo.Build(...) call across the main module's
-// packages and extracts each one's Root/Bind/Override arguments. Multiple
-// specs in *different* packages is a normal multi-injector module — a
-// monorepo with cmd/api, cmd/worker, cmd/migrator each wiring their own
-// graph — and callers that can act on all of them (generate, check) should.
-// Multiple specs in the *same* package is still an error: that package
-// could only ever have one generated file, so two Build calls there are
-// genuinely ambiguous, not a second injector.
-func FindSpecs(l *Loaded) ([]*Spec, error) {
+// moduleSpecs memoizes ModuleSpecs: every caller asks the same question of
+// the same load, so the specs are parsed once.
+type moduleSpecs struct {
+	once  sync.Once
+	specs []*Spec
+	err   error
+}
+
+// ModuleSpecs locates every servo.Build(...) call across the main module's
+// packages (see Loaded.InMainModule) and extracts each one's declarations,
+// whichever injectors Config.Dir selects — for the checks that are about the
+// module rather than one graph, like a route group no injector declares,
+// and as the ground FindSpecs selects from.
+//
+// Every spec in the module is read, and a malformed one fails the run
+// wherever it is: the module-wide checks need all of them, and a run from
+// an injector's own directory has to reach the verdict a run from the
+// module root does.
+//
+// Multiple specs in *different* packages is a normal multi-injector module —
+// a monorepo with cmd/api, cmd/worker, cmd/migrator each wiring their own
+// graph. Multiple specs in the *same* package is still an error: that
+// package could only ever have one generated file, so two Build calls there
+// are genuinely ambiguous, not a second injector.
+func ModuleSpecs(l *Loaded) ([]*Spec, error) {
+	if l.specs == nil {
+		return findModuleSpecs(l)
+	}
+	l.specs.once.Do(func() { l.specs.specs, l.specs.err = findModuleSpecs(l) })
+	return slices.Clone(l.specs.specs), l.specs.err
+}
+
+func findModuleSpecs(l *Loaded) ([]*Spec, error) {
 	var found []*Spec
 	for _, pkg := range l.All {
-		if pkg.Module == nil || !pkg.Module.Main {
+		if !l.InMainModule(pkg) {
 			continue
 		}
 		for _, file := range pkg.Syntax {
 			specs, err := specsInFile(pkg, file)
 			if err != nil {
-				return nil, err
+				return nil, l.withVersions(err)
 			}
 			found = append(found, specs...)
 		}
 	}
 	if len(found) == 0 {
+		// A spec file whose Build call does not type-check — `servo.Buidl`,
+		// or an import of the runtime that does not resolve — holds no call
+		// servo can recognize, and "run `servo init`" is the wrong advice
+		// for a file that is right there.
+		for _, pkg := range l.All {
+			if !l.InMainModule(pkg) {
+				continue
+			}
+			if lines := specFileTypeErrors(pkg); len(lines) > 0 {
+				return nil, fmt.Errorf("servo: no servo.Build(...) call could be read — a spec file does not type-check:\n\t%s", strings.Join(lines, "\n\t"))
+			}
+		}
 		return nil, errors.New("servo: no servo.Build(...) call found — run `servo init` to scaffold a spec file")
 	}
 
@@ -207,7 +247,8 @@ func FindSpecs(l *Loaded) ([]*Spec, error) {
 	for _, s := range found {
 		byPkg[s.InjectorPkg.PkgPath] = append(byPkg[s.InjectorPkg.PkgPath], s)
 	}
-	for pkgPath, specs := range byPkg {
+	for _, pkgPath := range slices.Sorted(maps.Keys(byPkg)) {
+		specs := byPkg[pkgPath]
 		if len(specs) <= 1 {
 			continue
 		}
@@ -236,10 +277,40 @@ func FindSpecs(l *Loaded) ([]*Spec, error) {
 	return found, nil
 }
 
+// FindSpecs is ModuleSpecs narrowed to the injectors Config.Dir selects —
+// the ones generate, check and doctor process. A Dir that selects none is
+// an error naming where the module's injectors are, since pointing --dir
+// one level too deep — at a package that calls an injector rather than
+// holds one — is the likely slip.
+func FindSpecs(l *Loaded) ([]*Spec, error) {
+	all, err := ModuleSpecs(l)
+	if err != nil {
+		return nil, err
+	}
+	selected := make(map[string]bool)
+	for _, p := range l.selectedPackages() {
+		selected[p.PkgPath] = true
+	}
+	var specs []*Spec
+	for _, s := range all {
+		if selected[s.InjectorPkg.PkgPath] {
+			specs = append(specs, s)
+		}
+	}
+	if len(specs) == 0 {
+		var b strings.Builder
+		fmt.Fprintf(&b, "servo: no servo.Build(...) call in %s or below — the module's injectors are elsewhere; point --dir at one of them, or at the module root for all of them:\n", l.dir)
+		for _, s := range all {
+			fmt.Fprintf(&b, "  %s\n", s.Pos)
+		}
+		return nil, errors.New(b.String())
+	}
+	return specs, nil
+}
+
 // FindSpec narrows FindSpecs to exactly one — for commands that inherently
-// operate on a single injector (explain/why/list/graph/doctor) and need
-// the caller to disambiguate with --dir when the scanned scope contains
-// more than one.
+// operate on a single injector (explain/why/list/graph/config) and need
+// the caller to disambiguate with --dir when it selects more than one.
 func FindSpec(l *Loaded) (*Spec, error) {
 	specs, err := FindSpecs(l)
 	if err != nil {
@@ -269,11 +340,7 @@ func specsInFile(pkg *packages.Package, file *ast.File) ([]*Spec, error) {
 			return false
 		}
 		call, ok := n.(*ast.CallExpr)
-		if !ok {
-			return true
-		}
-		fn, ok := resolveCalledFunc(pkg, call)
-		if !ok || fn.Pkg() == nil || fn.Pkg().Path() != graph.ServoPackagePath || fn.Name() != "Build" {
+		if !ok || !isBuildCall(pkg, call) {
 			return true
 		}
 		s, err := parseBuildCall(pkg, file, call)
@@ -297,6 +364,13 @@ func resolveCalledFunc(pkg *packages.Package, call *ast.CallExpr) (*types.Func, 
 	}
 	fn, ok := pkg.TypesInfo.Uses[sel.Sel].(*types.Func)
 	return fn, ok
+}
+
+// isBuildCall reports whether call is a call of servo.Build itself,
+// resolved through the type checker rather than by name.
+func isBuildCall(pkg *packages.Package, call *ast.CallExpr) bool {
+	fn, ok := resolveCalledFunc(pkg, call)
+	return ok && fn.Pkg() != nil && fn.Pkg().Path() == graph.ServoPackagePath && fn.Name() == "Build"
 }
 
 func parseBuildCall(pkg *packages.Package, file *ast.File, call *ast.CallExpr) (*Spec, error) {
@@ -373,6 +447,9 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 			}
 			if isInterfaceType(typeArgs[1]) {
 				return fmt.Errorf("%s: servo.%s's second type argument must be a concrete type, not an interface (%s) — Bind/Override name the concrete implementation, they don't chain to another interface", pos, name, typeArgs[1].String())
+			}
+			if err := checkBindable(pkg, name, typeArgs[0], typeArgs[1], pos); err != nil {
+				return err
 			}
 			decl := BindDecl{
 				Iface: graph.NewKey(typeArgs[0], ""), IfaceType: typeArgs[0],
@@ -459,6 +536,9 @@ func parseMarkerArgs(pkg *packages.Package, spec *Spec, args []ast.Expr, includi
 		case "Linger", "Max":
 			return fmt.Errorf("%s: servo.%s is a scope option, not a Build marker — it belongs inside a servo.Scoped[T, I](...) argument list", pos, name)
 		default:
+			if returnsServoType(calledMarker(pkg, argCall), "Marker") {
+				return &markerSkewError{pos: pos, name: name, kind: "marker"}
+			}
 			return fmt.Errorf("%s: unrecognized servo marker %q inside Build(...)", pos, name)
 		}
 	}
@@ -621,6 +701,9 @@ func parseTraceCall(pkg *packages.Package, spec *Spec, call *ast.CallExpr, typeA
 			return TraceDecl{}, err
 		}
 		if name != "Expected" {
+			if returnsServoType(calledMarker(pkg, optCall), "TraceOption") {
+				return TraceDecl{}, &markerSkewError{pos: optPos, name: name, kind: "servo.Trace option"}
+			}
 			return TraceDecl{}, fmt.Errorf("%s: servo.%s is not a servo.Trace option — the only option is servo.Expected(err)", optPos, name)
 		}
 		exp, err := parseExpectedCall(pkg, spec, optCall, optPos)
@@ -770,7 +853,7 @@ func replaceByIface(decls []BindDecl, decl BindDecl) {
 
 // groupNameRE is the grammar a group name must satisfy in both places it
 // can appear: a servo.Group argument and a directive's trailing token.
-var groupNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var groupNameRE = regexp.MustCompile(graph.GroupNamePattern)
 
 // parseHTTPCall parses servo.HTTP's option list: Group declarations and Use
 // attachments, in declaration order. Everything here is read as syntax —
@@ -813,6 +896,9 @@ func parseHTTPCall(pkg *packages.Package, call *ast.CallExpr, pos token.Position
 		case "Route":
 			return nil, fmt.Errorf("%s: servo.Route belongs inside servo.Use(...)", optPos)
 		default:
+			if returnsServoType(calledMarker(pkg, optCall), "HTTPOption") {
+				return nil, &markerSkewError{pos: optPos, name: name, kind: "servo.HTTP option"}
+			}
 			return nil, fmt.Errorf("%s: servo.%s is not a servo.HTTP option — options are servo.Group and servo.Use", optPos, name)
 		}
 	}
@@ -854,6 +940,9 @@ func parseUseCall(pkg *packages.Package, call *ast.CallExpr, typeArgs []types.Ty
 			}
 			use.Routes = append(use.Routes, RouteSel{Pattern: pattern, Pos: selPos})
 		default:
+			if returnsServoType(calledMarker(pkg, selCall), "HTTPOption") {
+				return UseDecl{}, &markerSkewError{pos: selPos, name: name, kind: "servo.Use selector"}
+			}
 			return UseDecl{}, fmt.Errorf(`%s: servo.%s is not a servo.Use selector — use servo.Group("name") or servo.Route("METHOD /pattern")`, selPos, name)
 		}
 	}
@@ -909,10 +998,19 @@ func isInterfaceType(t types.Type) bool {
 // markerCall extracts the marker function name and its explicit generic
 // type arguments (via go/types instantiation info, never by executing
 // anything) from a call like servo.Root[T]() or servo.Bind[I, C]().
+//
+// Everything servo knows about a marker comes from the type checker, so a
+// marker whose name or type argument does not resolve has no information
+// to read at all. The type checker's own error for it — "undefined:
+// api.Sever" — is the one that names the mistake, and since no build but
+// servo's ever compiles a spec file, nothing else will say it; so that is
+// what is reported, rather than a guess at what the missing information
+// implies ("must be instantiated with explicit type arguments", for a
+// mistyped type name).
 func markerCall(pkg *packages.Package, call *ast.CallExpr) (string, []types.Type, token.Position, error) {
 	pos := pkg.Fset.Position(call.Pos())
 
-	var selIdent *ast.Ident
+	var sel *ast.SelectorExpr
 	switch fun := call.Fun.(type) {
 	case *ast.SelectorExpr:
 		// A marker with no type parameters at all — servo.Linger/Max,
@@ -920,31 +1018,44 @@ func markerCall(pkg *packages.Package, call *ast.CallExpr) (string, []types.Type
 		// Resolved here rather than rejected outright so the caller can
 		// say *that*, instead of the misleading "must be a Root/Bind/
 		// Override/Scoped call with explicit type arguments".
-		selIdent = fun.Sel
+		sel = fun
 	case *ast.IndexExpr:
-		sel, ok := fun.X.(*ast.SelectorExpr)
+		s, ok := fun.X.(*ast.SelectorExpr)
 		if !ok {
 			return "", nil, pos, fmt.Errorf("%s: unsupported marker call shape", pos)
 		}
-		selIdent = sel.Sel
+		sel = s
 	case *ast.IndexListExpr:
-		sel, ok := fun.X.(*ast.SelectorExpr)
+		s, ok := fun.X.(*ast.SelectorExpr)
 		if !ok {
 			return "", nil, pos, fmt.Errorf("%s: unsupported marker call shape", pos)
 		}
-		selIdent = sel.Sel
+		sel = s
 	default:
 		return "", nil, pos, fmt.Errorf("%s: servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments", pos)
 	}
 
-	fn, ok := pkg.TypesInfo.Uses[selIdent].(*types.Func)
+	obj := pkg.TypesInfo.Uses[sel.Sel]
+	if obj == nil {
+		// `sevo.Root`, `servo.Rot`, or a marker the runtime this module
+		// requires predates: the name itself did not resolve.
+		if err := unresolvedMarker(pkg, sel, pos); err != nil {
+			return "", nil, pos, err
+		}
+	}
+	fn, ok := obj.(*types.Func)
 	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != graph.ServoPackagePath {
 		return "", nil, pos, fmt.Errorf("%s: not a servo marker call", pos)
 	}
 
-	inst, hasInst := pkg.TypesInfo.Instances[selIdent]
+	inst, hasInst := pkg.TypesInfo.Instances[sel.Sel]
 	if !hasInst {
 		if sig, ok := fn.Type().(*types.Signature); ok && sig.TypeParams().Len() > 0 {
+			// A type argument that does not resolve leaves the marker
+			// uninstantiated too, and is far likelier than a missing one.
+			if err := specTypeError(pkg, pos, "servo."+fn.Name()+"'s type arguments"); err != nil {
+				return "", nil, pos, err
+			}
 			return "", nil, pos, fmt.Errorf("%s: servo.%s must be instantiated with explicit type arguments", pos, fn.Name())
 		}
 		return fn.Name(), nil, pos, nil
@@ -953,8 +1064,272 @@ func markerCall(pkg *packages.Package, call *ast.CallExpr) (string, []types.Type
 	typeArgs := make([]types.Type, inst.TypeArgs.Len())
 	for i := range typeArgs {
 		typeArgs[i] = inst.TypeArgs.At(i)
+		if hasInvalid(typeArgs[i]) {
+			if err := specTypeError(pkg, pos, "servo."+fn.Name()+"'s type arguments"); err != nil {
+				return "", nil, pos, err
+			}
+		}
 	}
 	return fn.Name(), typeArgs, pos, nil
+}
+
+// calledMarker is the servo function call names, or nil.
+func calledMarker(pkg *packages.Package, call *ast.CallExpr) *types.Func {
+	fun := call.Fun
+	switch f := fun.(type) {
+	case *ast.IndexExpr:
+		fun = f.X
+	case *ast.IndexListExpr:
+		fun = f.X
+	}
+	sel, ok := fun.(*ast.SelectorExpr)
+	if !ok {
+		return nil
+	}
+	fn, _ := pkg.TypesInfo.Uses[sel.Sel].(*types.Func)
+	return fn
+}
+
+// returnsServoType reports whether fn is a function of the servo runtime
+// package returning exactly its type name — Marker for a Build marker,
+// HTTPOption, TraceOption or ScopeOption for an option. That is what makes
+// a name this CLI does not recognize a marker of a newer runtime, rather
+// than some other servo function written in the wrong place.
+func returnsServoType(fn *types.Func, name string) bool {
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != graph.ServoPackagePath {
+		return false
+	}
+	results := fn.Signature().Results()
+	if results.Len() != 1 {
+		return false
+	}
+	named, ok := types.Unalias(results.At(0).Type()).(*types.Named)
+	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == graph.ServoPackagePath && named.Obj().Name() == name
+}
+
+// knownMarkers is every servo function this CLI reads in a spec file — the
+// names parseMarkerArgs and the option parsers switch on. A test keeps it
+// equal to the runtime package's own marker functions, so a marker added
+// to one cannot be missing from the other.
+var knownMarkers = map[string]bool{
+	"Build": true, "Root": true, "Bind": true, "Override": true, "Value": true,
+	"Include": true, "ConfigFile": true, "Extract": true,
+	"Scoped": true, "Linger": true, "Max": true,
+	"HTTP": true, "Group": true, "Use": true, "Route": true,
+	"Trace": true, "Expected": true,
+}
+
+// unresolvedMarker explains a servo.X whose X the type checker could not
+// resolve. A name this CLI knows as a marker, on the servo runtime package
+// itself, means the runtime the module requires is older than the CLI;
+// anything else is the spec file's own type errors. Nil when there are
+// none to report, leaving the caller its own diagnostic.
+func unresolvedMarker(pkg *packages.Package, sel *ast.SelectorExpr, pos token.Position) error {
+	if x, ok := sel.X.(*ast.Ident); ok && knownMarkers[sel.Sel.Name] {
+		if pkgName, ok := pkg.TypesInfo.Uses[x].(*types.PkgName); ok && pkgName.Imported().Path() == graph.ServoPackagePath {
+			return &markerSkewError{pos: pos, name: sel.Sel.Name, kind: "marker", cliKnows: true}
+		}
+	}
+	return specTypeError(pkg, pos, "this marker")
+}
+
+// specTypeError is the type checker's own errors positioned inside pkg's
+// spec files, headed by what servo could not read because of them — or nil
+// when there are none. Only the spec files' errors are offered: the rest of
+// the package is the build's to report, and an injector's main.go
+// legitimately fails to compile before the first generation.
+func specTypeError(pkg *packages.Package, pos token.Position, what string) error {
+	lines := specFileTypeErrors(pkg)
+	if len(lines) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: the spec file does not type-check, so %s cannot be read:\n\t%s", pos, what, strings.Join(lines, "\n\t"))
+}
+
+// specFileTypeErrors is "position: message" for every type error inside
+// one of pkg's files gated on BuildTag — its spec files, and any shared
+// marker set an Include names.
+func specFileTypeErrors(pkg *packages.Package) []string {
+	gated := map[string]bool{}
+	for _, f := range pkg.Syntax {
+		if FileRequiresBuildTag(f, BuildTag) {
+			gated[pkg.Fset.Position(f.Package).Filename] = true
+		}
+	}
+	if len(gated) == 0 {
+		return nil
+	}
+	var lines []string
+	for _, e := range pkg.TypeErrors {
+		if p := e.Fset.Position(e.Pos); gated[p.Filename] {
+			lines = append(lines, fmt.Sprintf("%s: %s", p, e.Msg))
+		}
+	}
+	return lines
+}
+
+// hasInvalid reports whether t is, or is built from, the type the checker
+// substitutes for one it could not resolve.
+func hasInvalid(t types.Type) bool {
+	switch u := types.Unalias(t).(type) {
+	case *types.Basic:
+		return u.Kind() == types.Invalid
+	case *types.Pointer:
+		return hasInvalid(u.Elem())
+	case *types.Slice:
+		return hasInvalid(u.Elem())
+	case *types.Array:
+		return hasInvalid(u.Elem())
+	case *types.Map:
+		return hasInvalid(u.Key()) || hasInvalid(u.Elem())
+	case *types.Chan:
+		return hasInvalid(u.Elem())
+	case *types.Named:
+		if targs := u.TypeArgs(); targs != nil {
+			for i := 0; i < targs.Len(); i++ {
+				if hasInvalid(targs.At(i)) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// markerSkewError is a marker the CLI and the runtime package the module
+// requires disagree about. The spec file is checked against the runtime
+// the module's go.mod resolves, while the list of markers servo reads is
+// the CLI's — so a CLI older than the runtime finds a marker it has never
+// heard of, and a CLI newer than the runtime is handed a spec using one the
+// runtime does not declare. Neither is a mistake in the spec, and both used
+// to read as one ("unrecognized servo marker \"Trace\""), with nothing
+// naming the two versions that disagree.
+type markerSkewError struct {
+	pos  token.Position
+	name string // the marker, without the servo. qualifier
+	kind string // "marker", "servo.HTTP option", …
+	// cliKnows is set when this CLI knows the marker and the runtime does
+	// not declare it; clear when the runtime declares a marker this CLI
+	// does not know.
+	cliKnows bool
+	// cli and runtime are the two versions, "" where unknown — a
+	// development build, a replaced runtime. FindSpecs fills them in.
+	cli, runtime string
+}
+
+func (e *markerSkewError) Error() string {
+	cli := "this servo CLI"
+	if e.cli != "" {
+		cli = "servo " + e.cli
+	}
+	runtime := graph.ServoPackagePath
+	if e.runtime != "" {
+		runtime += " " + e.runtime
+	}
+	if e.cliKnows {
+		return fmt.Sprintf("%s: servo.%s is a %s %s knows, but %s, which the module requires, does not declare it — the module requires an older servo than the CLI generating it: update the module (`go get %s@latest`) to use servo.%s, or keep its release and generate with the CLI it pins (`go tool servo`)",
+			e.pos, e.name, e.kind, cli, runtime, path.Dir(graph.ServoPackagePath), e.name)
+	}
+	return fmt.Sprintf("%s: servo.%s is a %s %s, which the module requires, declares and %s does not know — the module requires a newer servo than the CLI generating it: regenerate with the CLI the module pins (`go tool servo generate`), or update this one",
+		e.pos, e.name, e.kind, runtime, cli)
+}
+
+// withVersions fills in the two versions a markerSkewError names; any
+// other error passes through.
+func (l *Loaded) withVersions(err error) error {
+	var skew *markerSkewError
+	if errors.As(err, &skew) {
+		skew.cli, skew.runtime = l.cliVersion, l.RuntimeVersion()
+	}
+	return err
+}
+
+// checkBindable refuses a Bind or Override whose concrete type cannot stand
+// where its interface is requested. Without it the declaration parsed, the
+// graph resolved, and the generated file failed to compile — reported as a
+// bug in servo, about a file the user is told not to read. The everyday
+// cause is a mock generated before its interface last changed: `go
+// generate ./...` runs servo's directive before the mock generator's when
+// it comes first, so the mock is always one interface change behind at the
+// moment servo reads it.
+func checkBindable(pkg *packages.Package, marker string, iface, concrete types.Type, pos token.Position) error {
+	if hasInvalid(iface) || hasInvalid(concrete) || types.AssignableTo(concrete, iface) {
+		return nil
+	}
+	decl := fmt.Sprintf("servo.%s[%s, %s]()", marker, shortType(iface), shortType(concrete))
+	it, ok := types.Unalias(iface).Underlying().(*types.Interface)
+	if !ok {
+		return fmt.Errorf("%s: %s: %s is not assignable to %s — %s names the implementation used wherever an interface is requested, so its first type argument is that interface", pos, decl, shortType(concrete), shortType(iface), marker)
+	}
+	msg := fmt.Sprintf("%s: %s: %s does not implement %s (%s)", pos, decl, shortType(concrete), shortType(iface), missingMethodReason(concrete, it, iface))
+	if looksGenerated(pkg, concrete) {
+		msg += fmt.Sprintf(" — if %s is a generated mock, it predates the interface's last change: regenerate it, then run servo generate again (go generate runs servo before a mock generator whose directive comes later)", shortType(concrete))
+	}
+	return errors.New(msg)
+}
+
+// missingMethodReason says why concrete does not implement iface the way
+// the compiler would, naming the method: missing, a pointer receiver on a
+// value type, or the wrong signature.
+func missingMethodReason(concrete types.Type, it *types.Interface, iface types.Type) string {
+	method, wrongType := types.MissingMethod(concrete, it, true)
+	if method == nil {
+		return "it does not satisfy the interface"
+	}
+	if _, isPtr := types.Unalias(concrete).(*types.Pointer); !isPtr && types.Implements(types.NewPointer(concrete), it) {
+		return fmt.Sprintf("method %s has a pointer receiver, so only *%s does — bind that instead", method.Name(), shortType(concrete))
+	}
+	if wrongType {
+		if have, ok := lookupMethod(concrete, method); ok {
+			return fmt.Sprintf("wrong type for method %s: %s has %s, %s wants %s", method.Name(), shortType(concrete), shortType(have.Type()), shortType(iface), shortType(method.Type()))
+		}
+	}
+	return "missing method " + method.Name()
+}
+
+// lookupMethod finds t's own method with want's name, pointer receivers
+// included.
+func lookupMethod(t types.Type, want *types.Func) (*types.Func, bool) {
+	obj, _, _ := types.LookupFieldOrMethod(t, true, want.Pkg(), want.Name())
+	fn, ok := obj.(*types.Func)
+	return fn, ok
+}
+
+// shortType spells t the way the compiler's own messages do, packages by
+// name: "*cache.Cache", not "*example.com/app/cache.Cache".
+func shortType(t types.Type) string {
+	return types.TypeString(t, func(p *types.Package) string { return p.Name() })
+}
+
+// looksGenerated reports whether t's declaration reads like generated code
+// — a mock above all: declared in a file with a generated-code header, in a
+// package whose path says mock or fake, or named Mock…, Fake… or Stub….
+func looksGenerated(pkg *packages.Package, t types.Type) bool {
+	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok || named.Obj().Pkg() == nil {
+		return false
+	}
+	obj := named.Obj()
+	name := strings.ToLower(obj.Name())
+	pkgPath := strings.ToLower(obj.Pkg().Path())
+	if strings.HasPrefix(name, "mock") || strings.HasPrefix(name, "fake") || strings.HasPrefix(name, "stub") ||
+		strings.Contains(pkgPath, "mock") || strings.Contains(pkgPath, "fake") {
+		return true
+	}
+	for _, p := range allPackages(pkg) {
+		if p.Types != obj.Pkg() {
+			continue
+		}
+		for _, f := range p.Syntax {
+			if f.Pos() <= obj.Pos() && obj.Pos() < f.End() {
+				return ast.IsGenerated(f)
+			}
+		}
+	}
+	return false
 }
 
 // checkBuildTag guards against an untagged spec file in the generator

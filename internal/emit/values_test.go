@@ -255,3 +255,113 @@ func TestEmitTwoSuppliedValuesDoNotDereferenceAnAbsentProvider(t *testing.T) {
 		}
 	}
 }
+
+// nilableValuesSrc supplies one value of every kind whose zero value is a
+// nil no constructor can use — pointer, interface, func, map, chan — plus
+// a struct, whose zero value is a real value, and a slice, whose nil is an
+// empty one. NewStore records that it ran.
+const nilableValuesSrc = `
+package app
+
+type DB struct{ Name string }
+type Flags struct{ Verbose bool }
+type Clock interface{ Now() string }
+type Hook func() string
+type Labels map[string]string
+type Events chan int
+type Tags []string
+
+var Built bool
+
+type Store struct{ DB *DB }
+
+func NewStore(db *DB, f Flags, c Clock, h Hook, l Labels, e Events, t Tags) *Store {
+	Built = true
+	return &Store{DB: db}
+}
+`
+
+// TestEmitRefusesNilSuppliedValues: New passes the zero Values, so a graph
+// declaring servo.Value[*sql.DB]() used to hand every consumer a nil
+// pointer from plain New and crash somewhere inside a constructor.
+// NewWith now refuses each nilable value left nil, before anything is
+// built, naming the field and the marker — by type, not position, so the
+// committed file stays put when the spec moves.
+func TestEmitRefusesNilSuppliedValues(t *testing.T) {
+	resolved, spec := buildFixture(t, fixtureSpec{
+		roots:  []string{"Store"},
+		values: []string{"*DB", "Flags", "Clock", "Hook", "Labels", "Events", "Tags"},
+	}, fixturePkg{"example.com/app", nilableValuesSrc})
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+	for _, field := range []string{"Db", "Clock", "Hook", "Labels", "Events"} {
+		want := "\tif v." + field + " == nil {\n\t\treturn nil, errors.New(\"servo: Values." + field + " is nil, but servo.Value["
+		if !strings.Contains(src, want) {
+			t.Errorf("no nil check for Values.%s\n---\n%s", field, src)
+		}
+	}
+	if want := `servo.Value[*example.com/app.DB]() declares it supplied by the caller: set it in the Values passed to NewWith (New supplies only zero values)`; !strings.Contains(src, want) {
+		t.Errorf("the nil check does not name the marker and say what to do: want %q\n---\n%s", want, src)
+	}
+	for _, field := range []string{"Flags", "Tags"} {
+		if strings.Contains(src, "if v."+field+" == nil") {
+			t.Errorf("Values.%s has a usable zero value and must not be refused\n---\n%s", field, src)
+		}
+	}
+	if strings.Index(src, "if v.Db == nil") > strings.Index(src, "a := &App{}") {
+		t.Errorf("the checks must run before anything is built\n---\n%s", src)
+	}
+	typecheckGenerated(t, out, fixturePkg{"example.com/app", nilableValuesSrc})
+}
+
+// TestEmitNilSuppliedValueRuns drives both constructors: New, whose zero
+// Values leaves the pointer nil, fails with the field named and builds
+// nothing; NewWith with every value set builds the app.
+func TestEmitNilSuppliedValueRuns(t *testing.T) {
+	resolved, spec := buildFixture(t, fixtureSpec{
+		roots:  []string{"Store"},
+		values: []string{"*DB", "Flags", "Clock", "Hook", "Labels", "Events", "Tags"},
+	}, fixturePkg{"example.com/app", nilableValuesSrc})
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	runGenerated(t, "app", out, map[string]string{
+		"app/app.go": nilableValuesSrc,
+		"app/values_test.go": `package app
+
+import (
+	"context"
+	"strings"
+	"testing"
+)
+
+type clock struct{}
+
+func (clock) Now() string { return "now" }
+
+func TestNilValue(t *testing.T) {
+	app, err := New(context.Background())
+	if app != nil || err == nil || !strings.Contains(err.Error(), "Values.Db is nil") {
+		t.Fatalf("New = %v, %v; want nil and an error naming Values.Db", app, err)
+	}
+	if Built {
+		t.Fatal("NewStore ran although a value it needs was nil")
+	}
+	app, err = NewWith(context.Background(), Values{
+		Db: &DB{Name: "orders"}, Clock: clock{}, Hook: func() string { return "" },
+		Labels: Labels{}, Events: make(Events),
+	})
+	if err != nil {
+		t.Fatalf("NewWith: %v", err)
+	}
+	if !Built || app.store.DB.Name != "orders" {
+		t.Fatalf("NewWith did not build the store from the supplied DB")
+	}
+}
+`,
+	})
+}

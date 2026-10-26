@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/okian/servo/v3/servo"
 
@@ -80,14 +81,29 @@ func (e *ClaimsExtractor) Extract(r *http.Request) (auth.Claims, error) {
 // injector never writes env-parsing code. Each injector resolves only its
 // own config, so sharing the HTTP_ADDR spelling is not a collision.
 //
+// HTTP_SHUTDOWN_DELAY is how long the listener goes on serving once
+// Shutdown has marked it not ready, so a load balancer — or Kubernetes,
+// taking the pod out of its endpoints — stops routing here before the
+// socket closes. Unset, it is zero, which suits docker-compose and a
+// laptop; behind a load balancer, a few seconds, with the orchestrator's
+// grace period above the delay plus the slowest request.
+//
 //servo:config prefix=HTTP
 type ListenConfig struct {
-	Addr string `config:"addr,default=:8080"`
+	Addr          string        `config:"addr,default=:8080"`
+	ShutdownDelay time.Duration `config:"shutdown_delay"`
 }
 
 // NewHTTPConfig is the node servo.HTTP() requires: it turns the loaded
 // address into the servo.HTTPConfig the emitted server binds. The listen
 // config arrives by value, built by the generated loader.
+//
+// The timeouts are this service's facts rather than settings: zero would
+// mean none, as it does on net/http.Server, and a server with no header
+// timeout lets a client that never finishes its headers hold a connection
+// open for good — the generated server warns at startup when nothing
+// bounds the header read. The bodies here are small JSON, so a whole
+// request and a whole response each fit comfortably in fifteen seconds.
 func NewHTTPConfig(cfg ListenConfig) (*servo.HTTPConfig, error) {
 	host, portStr, err := net.SplitHostPort(cfg.Addr)
 	if err != nil {
@@ -97,5 +113,13 @@ func NewHTTPConfig(cfg ListenConfig) (*servo.HTTPConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &servo.HTTPConfig{IP: host, Port: uint16(port)}, nil
+	return &servo.HTTPConfig{
+		IP:                host,
+		Port:              uint16(port),
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       time.Minute,
+		ShutdownDelay:     cfg.ShutdownDelay,
+	}, nil
 }

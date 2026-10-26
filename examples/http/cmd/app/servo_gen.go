@@ -6,53 +6,57 @@
 //
 //	[L1] *github.com/okian/servo/v3/servo.HTTPConfig
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | api/api.go:38:6
+//	      capabilities: none | binding: sole candidate | api.NewHTTPConfig
 //	[L1] *example.com/servohttp/mw.UserExtractor
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | mw/mw.go:35:6
+//	      capabilities: none | binding: sole candidate | mw.NewUserExtractor
 //	[L1] *github.com/okian/servo/v3/middleware.Recover
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/recover.go:17:6
+//	      capabilities: none | binding: sole candidate | middleware.NewRecover
 //	[L1] *github.com/okian/servo/v3/middleware.RequestID
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/requestid.go:40:6
+//	      capabilities: none | binding: sole candidate | middleware.NewRequestID
+//	[L1] example.com/servohttp/mw.NoSniff
+//	      deps: none
+//	      capabilities: none | binding: sole candidate | mw.NewNoSniff
 //	[L1] *github.com/okian/servo/v3/middleware.CORSConfig
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | api/api.go:25:6
+//	      capabilities: none | binding: sole candidate | api.NewCORSConfig
 //	[L2] *github.com/okian/servo/v3/middleware.CORS
 //	      deps: *github.com/okian/servo/v3/middleware.CORSConfig
-//	      capabilities: none | binding: sole candidate | github.com/okian/servo/v3/middleware/cors.go:44:6
+//	      capabilities: none | binding: sole candidate | middleware.NewCORS
 //	[L1] *example.com/servohttp/mw.Auth
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | mw/mw.go:17:6
+//	      capabilities: none | binding: sole candidate | mw.NewAuth
 //	[L1] *example.com/servohttp/store.Store
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | store/store.go:22:6
+//	      capabilities: none | binding: sole candidate | store.New
 //
-// http (servo.HTTP() at cmd/app/spec.go:23:3):
+// http (servo.HTTP() at cmd/app/spec.go:24:3):
 //
 //	config: *github.com/okian/servo/v3/servo.HTTPConfig
 //	groups: internal, telemetry
 //	use: *github.com/okian/servo/v3/middleware.Recover -> every group
 //	use: *github.com/okian/servo/v3/middleware.RequestID -> every group
+//	use: example.com/servohttp/mw.NoSniff -> every group
 //	use: *github.com/okian/servo/v3/middleware.CORS -> group default
 //	use: *example.com/servohttp/mw.Auth -> group internal
 //	extract: *example.com/servohttp/mw.UserExtractor -> *example.com/servohttp/mw.User
-//	POST /feedback -> api.Feedback (api/api.go:193:1)
+//	POST /feedback -> api.Feedback (api/api.go:247:1)
 //	      args: none
-//	GET /old-orders -> api.OldOrders (api/api.go:208:1)
+//	GET /old-orders -> api.OldOrders (api/api.go:262:1)
 //	      args: none
-//	POST /order/{category}/ -> api.Order (api/api.go:94:1)
+//	POST /order/{category}/ -> api.Order (api/api.go:148:1)
 //	      args: *example.com/servohttp/store.Store
-//	GET /search -> api.Search (api/api.go:131:1)
+//	GET /search -> api.Search (api/api.go:185:1)
 //	      args: none
-//	GET /version -> api.Version (api/api.go:200:1)
+//	GET /version -> api.Version (api/api.go:254:1)
 //	      args: none
-//	GET /whoami -> api.Whoami (api/api.go:145:1)
+//	GET /whoami -> api.Whoami (api/api.go:199:1)
 //	      args: *example.com/servohttp/mw.User (extracted)
-//	POST /replicate/{shard} [internal] -> api.Replicate (api/api.go:175:1)
+//	POST /replicate/{shard} [internal] -> api.Replicate (api/api.go:229:1)
 //	      args: *example.com/servohttp/mw.User (extracted)
-//	GET /healthz [telemetry] -> api.Healthz (api/api.go:158:1)
+//	GET /healthz [telemetry] -> api.Healthz (api/api.go:212:1)
 //	      args: none
 package main
 
@@ -60,10 +64,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"log/slog"
-	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -76,31 +78,34 @@ import (
 	"example.com/servohttp/store"
 	"github.com/okian/servo/v3/middleware"
 	"github.com/okian/servo/v3/servo"
-	"golang.org/x/sync/errgroup"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type App struct {
 	hTTPConfig                    *servo.HTTPConfig
 	userExtractor                 *mw.UserExtractor
 	recover2                      *middleware.Recover
 	requestID                     *middleware.RequestID
+	noSniff                       mw.NoSniff
 	cORSConfig                    *middleware.CORSConfig
 	cors                          *middleware.CORS
 	auth                          *mw.Auth
 	store                         *store.Store
 	httpServer                    *httpServer
-	httpServerStopOnce            sync.Once
 	httpServerStopResult          servo.NodeResult
 	httpInternalServer            *httpInternalServer
-	httpInternalServerStopOnce    sync.Once
 	httpInternalServerStopResult  servo.NodeResult
 	httpTelemetryServer           *httpTelemetryServer
-	httpTelemetryServerStopOnce   sync.Once
 	httpTelemetryServerStopResult servo.NodeResult
+	httpServersStopOnce           sync.Once
 	startupReport                 servo.StartupReport
 }
-
-const defaultMaxBodyBytes = 1 << 20
 
 // httpServer serves the default group's //servo: routes. It is generated
 // machinery, not a graph node: its dependencies are ordinary singletons
@@ -110,29 +115,21 @@ type httpServer struct {
 	lc      servo.HTTPListener
 	srv     *http.Server
 	maxBody int64
+	// cancel ends the context every request's context descends from —
+	// the stop path's last resort when a drain outlives its deadline.
+	cancel context.CancelCauseFunc
 	// ready flips once the listener is bound, which is the precise moment
 	// Ready starts reporting ok for the "http" node.
 	ready atomic.Bool
 }
 
 func newHttpServer(a *App) (*httpServer, error) {
-	cfg := a.hTTPConfig
-	lc := servo.HTTPListener{
-		IP:                cfg.IP,
-		Port:              cfg.Port,
-		CertFile:          cfg.CertFile,
-		KeyFile:           cfg.KeyFile,
-		MaxBodyBytes:      cfg.MaxBodyBytes,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		ReadTimeout:       cfg.ReadTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
+	lc, err := servoimpl.Listener(a.hTTPConfig, "")
+	if err != nil {
+		return nil, err
 	}
 	s := &httpServer{app: a, lc: lc}
-	s.maxBody = lc.MaxBodyBytes
-	if s.maxBody <= 0 {
-		s.maxBody = defaultMaxBodyBytes
-	}
+	s.maxBody = servoimpl.BodyLimit(lc)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /feedback", s.handleFeedback)
 	mux.HandleFunc("GET /old-orders", s.handleOldOrders)
@@ -142,15 +139,12 @@ func newHttpServer(a *App) (*httpServer, error) {
 	mux.HandleFunc("GET /whoami", s.handleWhoami)
 	var handler http.Handler = mux
 	handler = a.cors.Middleware(handler)
+	handler = a.noSniff(handler)
 	handler = a.requestID.Middleware(handler)
 	handler = a.recover2.Middleware(handler)
-	s.srv = &http.Server{
-		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:           handler,
-		ReadHeaderTimeout: lc.ReadHeaderTimeout,
-		ReadTimeout:       lc.ReadTimeout,
-		WriteTimeout:      lc.WriteTimeout,
-		IdleTimeout:       lc.IdleTimeout,
+	s.srv, s.cancel, err = servoimpl.NewServer("http", lc, handler)
+	if err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -161,47 +155,25 @@ func (s *httpServer) handleFeedback(w http.ResponseWriter, r *http.Request) {
 	// ParseMultipartForm falls through to ParseForm on urlencoded
 	// bodies, reporting ErrNotMultipart after already parsing them.
 	if err := r.ParseMultipartForm(s.maxBody); err != nil && !errors.Is(err, http.ErrNotMultipart) {
-		httpBodyError(w, err, "malformed form body")
+		servoimpl.BodyError(w, err, "malformed form body")
 		return
 	}
 	req.Subject = r.PostForm.Get("subject")
 	if raw := r.PostForm.Get("stars"); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 0)
 		if err != nil {
-			httpWriteError(w, http.StatusBadRequest, "form value \"stars\" is not a valid int")
+			servoimpl.WriteError(w, http.StatusBadRequest, "form value \"stars\" is not a valid int")
 			return
 		}
 		req.Stars = int(v)
 	}
 	res, err := api.Feedback(r.Context(), req)
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.Feedback", "POST /feedback", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.Feedback", "POST /feedback", res, err)
 }
 
 func (s *httpServer) handleOldOrders(w http.ResponseWriter, r *http.Request) {
 	res, err := api.OldOrders(r.Context())
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.OldOrders", "GET /old-orders", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.OldOrders", "GET /old-orders", res, err)
 }
 
 func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
@@ -210,42 +182,45 @@ func (s *httpServer) handleOrder(w http.ResponseWriter, r *http.Request) {
 	// overwrite anything it could smuggle into a same-named field.
 	r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 	if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-		httpBodyError(w, err, "malformed request body")
+		servoimpl.BodyError(w, err, "malformed request body")
 		return
 	}
-	q := r.URL.Query()
+	// Parsed here for the error r.URL.Query() throws away: a query
+	// net/url refuses — a bad escape, a semicolon, too many parameters —
+	// would otherwise bind every field to its zero value and answer 200.
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		servoimpl.WriteError(w, http.StatusBadRequest, "malformed query string")
+		return
+	}
 	req.Category = r.PathValue("category")
 	if raw := q.Get("priority"); raw != "" {
 		v, err := strconv.ParseInt(raw, 10, 0)
 		if err != nil {
-			httpWriteError(w, http.StatusBadRequest, "query parameter \"priority\" is not a valid int")
+			servoimpl.WriteError(w, http.StatusBadRequest, "query parameter \"priority\" is not a valid int")
 			return
 		}
 		req.Priority = int(v)
 	}
 	res, err := api.Order(r.Context(), req, s.app.store)
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.Order", "POST /order/{category}/", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.Order", "POST /order/{category}/", res, err)
 }
 
 func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	req := &api.SearchReq{}
-	q := r.URL.Query()
+	// Parsed here for the error r.URL.Query() throws away: a query
+	// net/url refuses — a bad escape, a semicolon, too many parameters —
+	// would otherwise bind every field to its zero value and answer 200.
+	q, err := url.ParseQuery(r.URL.RawQuery)
+	if err != nil {
+		servoimpl.WriteError(w, http.StatusBadRequest, "malformed query string")
+		return
+	}
 	req.Q = q.Get("q")
 	if raw := q.Get("limit"); raw != "" {
 		v, err := strconv.ParseUint(raw, 10, 16)
 		if err != nil {
-			httpWriteError(w, http.StatusBadRequest, "query parameter \"limit\" is not a valid uint16")
+			servoimpl.WriteError(w, http.StatusBadRequest, "query parameter \"limit\" is not a valid uint16")
 			return
 		}
 		req.Limit = uint16(v)
@@ -253,7 +228,7 @@ func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("ratio"); raw != "" {
 		v, err := strconv.ParseFloat(raw, 64)
 		if err != nil {
-			httpWriteError(w, http.StatusBadRequest, "query parameter \"ratio\" is not a valid float64")
+			servoimpl.WriteError(w, http.StatusBadRequest, "query parameter \"ratio\" is not a valid float64")
 			return
 		}
 		req.Ratio = v
@@ -261,89 +236,42 @@ func (s *httpServer) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if raw := q.Get("exact"); raw != "" {
 		v, err := strconv.ParseBool(raw)
 		if err != nil {
-			httpWriteError(w, http.StatusBadRequest, "query parameter \"exact\" is not a valid bool")
+			servoimpl.WriteError(w, http.StatusBadRequest, "query parameter \"exact\" is not a valid bool")
 			return
 		}
 		req.Exact = v
 	}
 	res, err := api.Search(r.Context(), req)
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.Search", "GET /search", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.Search", "GET /search", res, err)
 }
 
 func (s *httpServer) handleVersion(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Version(r.Context())
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.Version", "GET /version", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.Version", "GET /version", res, err)
 }
 
 func (s *httpServer) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	user, err := s.app.userExtractor.Extract(r)
 	if err != nil {
-		httpWriteFailure(w, "api.Whoami", "GET /whoami", err)
+		servoimpl.WriteFailure(w, r, "api.Whoami", "GET /whoami", err)
 		return
 	}
 	res, err := api.Whoami(r.Context(), user)
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.Whoami", "GET /whoami", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.Whoami", "GET /whoami", res, err)
 }
 
 func (s *httpServer) run(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.srv.Addr)
-	if err != nil {
-		return fmt.Errorf("http: listen %s: %w", s.srv.Addr, err)
+	return servoimpl.Serve(ctx, "http", s.srv, &s.ready)
+}
+
+// stop takes the server out of service. The nil receiver is the setup
+// failure path: a group missing its HTTPConfig.Groups entry unwinds
+// through Shutdown while its server, and every one after it, is still nil.
+func (s *httpServer) stop(ctx context.Context) servo.NodeResult {
+	if s == nil {
+		return servo.NodeResult{Name: "http", Status: servo.StatusOK}
 	}
-	s.ready.Store(true)
-	serveErr := make(chan error, 1)
-	go func() {
-		var err error
-		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
-			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
-		} else {
-			err = s.srv.Serve(ln)
-		}
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-			return
-		}
-		serveErr <- nil
-	}()
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-serveErr:
-		return err
-	}
+	return servoimpl.StopServer(ctx, "http", s.srv, &s.ready, s.lc.ShutdownDelay, s.cancel)
 }
 
 // httpInternalServer serves group "internal"'s //servo: routes. It is generated
@@ -353,31 +281,30 @@ type httpInternalServer struct {
 	app *App
 	lc  servo.HTTPListener
 	srv *http.Server
+	// cancel ends the context every request's context descends from —
+	// the stop path's last resort when a drain outlives its deadline.
+	cancel context.CancelCauseFunc
 	// ready flips once the listener is bound, which is the precise moment
 	// Ready starts reporting ok for the "http:internal" node.
 	ready atomic.Bool
 }
 
 func newHttpInternalServer(a *App) (*httpInternalServer, error) {
-	cfg := a.hTTPConfig
-	lc, ok := cfg.Groups["internal"]
-	if !ok {
-		return nil, fmt.Errorf("http: group %q declared in the spec but missing from HTTPConfig.Groups", "internal")
+	lc, err := servoimpl.Listener(a.hTTPConfig, "internal")
+	if err != nil {
+		return nil, err
 	}
 	s := &httpInternalServer{app: a, lc: lc}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /replicate/{shard}", s.handleReplicate)
 	var handler http.Handler = mux
 	handler = a.auth.Middleware(handler)
+	handler = a.noSniff(handler)
 	handler = a.requestID.Middleware(handler)
 	handler = a.recover2.Middleware(handler)
-	s.srv = &http.Server{
-		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:           handler,
-		ReadHeaderTimeout: lc.ReadHeaderTimeout,
-		ReadTimeout:       lc.ReadTimeout,
-		WriteTimeout:      lc.WriteTimeout,
-		IdleTimeout:       lc.IdleTimeout,
+	s.srv, s.cancel, err = servoimpl.NewServer("http:internal", lc, handler)
+	if err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -385,52 +312,27 @@ func newHttpInternalServer(a *App) (*httpInternalServer, error) {
 func (s *httpInternalServer) handleReplicate(w http.ResponseWriter, r *http.Request) {
 	user, err := s.app.userExtractor.Extract(r)
 	if err != nil {
-		httpWriteFailure(w, "api.Replicate", "POST /replicate/{shard}", err)
+		servoimpl.WriteFailure(w, r, "api.Replicate", "POST /replicate/{shard}", err)
 		return
 	}
 	req := &api.ReplicateReq{}
 	req.Shard = r.PathValue("shard")
 	res, err := api.Replicate(r.Context(), req, user)
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.Replicate", "POST /replicate/{shard}", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.Replicate", "POST /replicate/{shard}", res, err)
 }
 
 func (s *httpInternalServer) run(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.srv.Addr)
-	if err != nil {
-		return fmt.Errorf("http:internal: listen %s: %w", s.srv.Addr, err)
+	return servoimpl.Serve(ctx, "http:internal", s.srv, &s.ready)
+}
+
+// stop takes the server out of service. The nil receiver is the setup
+// failure path: a group missing its HTTPConfig.Groups entry unwinds
+// through Shutdown while its server, and every one after it, is still nil.
+func (s *httpInternalServer) stop(ctx context.Context) servo.NodeResult {
+	if s == nil {
+		return servo.NodeResult{Name: "http:internal", Status: servo.StatusOK}
 	}
-	s.ready.Store(true)
-	serveErr := make(chan error, 1)
-	go func() {
-		var err error
-		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
-			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
-		} else {
-			err = s.srv.Serve(ln)
-		}
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-			return
-		}
-		serveErr <- nil
-	}()
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-serveErr:
-		return err
-	}
+	return servoimpl.StopServer(ctx, "http:internal", s.srv, &s.ready, s.lc.ShutdownDelay, s.cancel)
 }
 
 // httpTelemetryServer serves group "telemetry"'s //servo: routes. It is generated
@@ -440,133 +342,50 @@ type httpTelemetryServer struct {
 	app *App
 	lc  servo.HTTPListener
 	srv *http.Server
+	// cancel ends the context every request's context descends from —
+	// the stop path's last resort when a drain outlives its deadline.
+	cancel context.CancelCauseFunc
 	// ready flips once the listener is bound, which is the precise moment
 	// Ready starts reporting ok for the "http:telemetry" node.
 	ready atomic.Bool
 }
 
 func newHttpTelemetryServer(a *App) (*httpTelemetryServer, error) {
-	cfg := a.hTTPConfig
-	lc, ok := cfg.Groups["telemetry"]
-	if !ok {
-		return nil, fmt.Errorf("http: group %q declared in the spec but missing from HTTPConfig.Groups", "telemetry")
+	lc, err := servoimpl.Listener(a.hTTPConfig, "telemetry")
+	if err != nil {
+		return nil, err
 	}
 	s := &httpTelemetryServer{app: a, lc: lc}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	var handler http.Handler = mux
+	handler = a.noSniff(handler)
 	handler = a.requestID.Middleware(handler)
 	handler = a.recover2.Middleware(handler)
-	s.srv = &http.Server{
-		Addr:              net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),
-		Handler:           handler,
-		ReadHeaderTimeout: lc.ReadHeaderTimeout,
-		ReadTimeout:       lc.ReadTimeout,
-		WriteTimeout:      lc.WriteTimeout,
-		IdleTimeout:       lc.IdleTimeout,
+	s.srv, s.cancel, err = servoimpl.NewServer("http:telemetry", lc, handler)
+	if err != nil {
+		return nil, err
 	}
 	return s, nil
 }
 
 func (s *httpTelemetryServer) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	res, err := api.Healthz(r.Context())
-	if err != nil {
-		var hs servo.HTTPStatus
-		if errors.As(err, &hs) && hs.Code() < 400 {
-			// A 2xx or 3xx status in the error position is the contract's
-			// way of picking a success or redirect code.
-			httpRespond(w, hs.Code(), res)
-			return
-		}
-		httpWriteFailure(w, "api.Healthz", "GET /healthz", err)
-		return
-	}
-	httpRespond(w, http.StatusOK, res)
+	servoimpl.Respond(w, r, "api.Healthz", "GET /healthz", res, err)
 }
 
 func (s *httpTelemetryServer) run(ctx context.Context) error {
-	ln, err := net.Listen("tcp", s.srv.Addr)
-	if err != nil {
-		return fmt.Errorf("http:telemetry: listen %s: %w", s.srv.Addr, err)
-	}
-	s.ready.Store(true)
-	serveErr := make(chan error, 1)
-	go func() {
-		var err error
-		if s.lc.CertFile != "" && s.lc.KeyFile != "" {
-			err = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)
-		} else {
-			err = s.srv.Serve(ln)
-		}
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			serveErr <- err
-			return
-		}
-		serveErr <- nil
-	}()
-	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-serveErr:
-		return err
-	}
+	return servoimpl.Serve(ctx, "http:telemetry", s.srv, &s.ready)
 }
 
-// httpRespond writes one success response; a nil response means status only,
-// no body. Encoding lives in the runtime's sealed Response family, so a
-// handler may return any of its kinds through this one helper.
-func httpRespond(w http.ResponseWriter, code int, res servo.Response) {
-	if res == nil {
-		w.WriteHeader(code)
-		return
+// stop takes the server out of service. The nil receiver is the setup
+// failure path: a group missing its HTTPConfig.Groups entry unwinds
+// through Shutdown while its server, and every one after it, is still nil.
+func (s *httpTelemetryServer) stop(ctx context.Context) servo.NodeResult {
+	if s == nil {
+		return servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK}
 	}
-	if err := servo.WriteResponse(w, code, res); err != nil {
-		slog.Error("servo: writing response failed", "error", err)
-	}
-}
-
-// httpWriteFailure maps a handler or extractor error onto the response: a status in
-// the chain picks the code, 4xx bodies carry the message, 5xx bodies only
-// the canonical text — the wrapped detail is for the log, not the client.
-func httpWriteFailure(w http.ResponseWriter, handler, route string, err error) {
-	var hs servo.HTTPStatus
-	if !errors.As(err, &hs) {
-		slog.Error("servo: handler "+handler+" failed", "route", route, "error", err)
-		httpWriteError(w, http.StatusInternalServerError, "Internal Server Error")
-		return
-	}
-	code := hs.Code()
-	if code < 400 {
-		// A success or redirect status with no response to carry it — an
-		// extractor returns a value or an error, never a body — is the code alone.
-		w.WriteHeader(code)
-		return
-	}
-	if code >= 500 {
-		slog.Error("servo: handler "+handler+" failed", "route", route, "status", code, "error", err)
-		httpWriteError(w, code, hs.Error())
-		return
-	}
-	httpWriteError(w, code, err.Error())
-}
-
-func httpWriteError(w http.ResponseWriter, code int, msg string) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(struct {
-		Error string `json:"error"`
-	}{Error: msg})
-}
-
-// httpBodyError maps a body decoding failure onto the response: a body over the
-// configured limit is a 413, anything else is the 400 the caller describes.
-func httpBodyError(w http.ResponseWriter, err error, msg string) {
-	var tooLarge *http.MaxBytesError
-	if errors.As(err, &tooLarge) {
-		httpWriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
-		return
-	}
-	httpWriteError(w, http.StatusBadRequest, msg)
+	return servoimpl.StopServer(ctx, "http:telemetry", s.srv, &s.ready, s.lc.ShutdownDelay, s.cancel)
 }
 
 func New(ctx context.Context) (*App, error) {
@@ -587,6 +406,9 @@ func New(ctx context.Context) (*App, error) {
 	requestID := middleware.NewRequestID()
 	a.requestID = requestID
 
+	noSniff := mw.NewNoSniff()
+	a.noSniff = noSniff
+
 	cORSConfig := api.NewCORSConfig()
 	a.cORSConfig = cORSConfig
 
@@ -604,85 +426,60 @@ func New(ctx context.Context) (*App, error) {
 
 	httpServer, err := newHttpServer(a)
 	if err != nil {
-		report := a.Shutdown(context.WithoutCancel(ctx))
-		if report.Clean() {
-			return nil, err
-		}
-		return nil, errors.Join(err, report)
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	a.httpServer = httpServer
 
 	httpInternalServer, err := newHttpInternalServer(a)
 	if err != nil {
-		report := a.Shutdown(context.WithoutCancel(ctx))
-		if report.Clean() {
-			return nil, err
-		}
-		return nil, errors.Join(err, report)
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	a.httpInternalServer = httpInternalServer
 
 	httpTelemetryServer, err := newHttpTelemetryServer(a)
 	if err != nil {
-		report := a.Shutdown(context.WithoutCancel(ctx))
-		if report.Clean() {
-			return nil, err
-		}
-		return nil, errors.Join(err, report)
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	a.httpTelemetryServer = httpTelemetryServer
 
 	return a, nil
 }
 
-func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {
-	a.httpServerStopOnce.Do(func() {
-		if a.httpServer == nil {
-			a.httpServerStopResult = servo.NodeResult{Name: "http", Status: servo.StatusOK}
-			return
-		}
-		// Readiness drops first: a probe that lands during the drain must not
-		// be told the listener is open when Shutdown has already closed it.
-		a.httpServer.ready.Store(false)
-		a.httpServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http", a.httpServer.srv.Shutdown)
+// stopHttpServers stops every group's server together, the first time Shutdown
+// reaches any of them: each serves out its own ShutdownDelay and drains
+// while the others do, so several groups' delays overlap instead of
+// adding up.
+func (a *App) stopHttpServers(ctx context.Context) {
+	a.httpServersStopOnce.Do(func() {
+		var wg sync.WaitGroup
+		wg.Go(func() { a.httpServerStopResult = a.httpServer.stop(ctx) })
+		wg.Go(func() { a.httpInternalServerStopResult = a.httpInternalServer.stop(ctx) })
+		wg.Go(func() { a.httpTelemetryServerStopResult = a.httpTelemetryServer.stop(ctx) })
+		wg.Wait()
 	})
+}
+
+func (a *App) stopHttpServer(ctx context.Context) servo.NodeResult {
+	a.stopHttpServers(ctx)
 	return a.httpServerStopResult
 }
 
 func (a *App) stopHttpInternalServer(ctx context.Context) servo.NodeResult {
-	a.httpInternalServerStopOnce.Do(func() {
-		if a.httpInternalServer == nil {
-			a.httpInternalServerStopResult = servo.NodeResult{Name: "http:internal", Status: servo.StatusOK}
-			return
-		}
-		// Readiness drops first: a probe that lands during the drain must not
-		// be told the listener is open when Shutdown has already closed it.
-		a.httpInternalServer.ready.Store(false)
-		a.httpInternalServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:internal", a.httpInternalServer.srv.Shutdown)
-	})
+	a.stopHttpServers(ctx)
 	return a.httpInternalServerStopResult
 }
 
 func (a *App) stopHttpTelemetryServer(ctx context.Context) servo.NodeResult {
-	a.httpTelemetryServerStopOnce.Do(func() {
-		if a.httpTelemetryServer == nil {
-			a.httpTelemetryServerStopResult = servo.NodeResult{Name: "http:telemetry", Status: servo.StatusOK}
-			return
-		}
-		// Readiness drops first: a probe that lands during the drain must not
-		// be told the listener is open when Shutdown has already closed it.
-		a.httpTelemetryServer.ready.Store(false)
-		a.httpTelemetryServerStopResult = servo.RunStop(ctx, servo.DefaultStopBudget, "http:telemetry", a.httpTelemetryServer.srv.Shutdown)
-	})
+	a.stopHttpServers(ctx)
 	return a.httpTelemetryServerStopResult
 }
 
 func (a *App) Run(ctx context.Context) error {
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return a.httpServer.run(gctx) })
-	g.Go(func() error { return a.httpInternalServer.run(gctx) })
-	g.Go(func() error { return a.httpTelemetryServer.run(gctx) })
-	return g.Wait()
+	return servoimpl.Run(ctx, servo.DefaultRunGrace,
+		servoimpl.Call{Node: "http", Fn: a.httpServer.run},
+		servoimpl.Call{Node: "http:internal", Fn: a.httpInternalServer.run},
+		servoimpl.Call{Node: "http:telemetry", Fn: a.httpTelemetryServer.run},
+	)
 }
 
 func (a *App) Shutdown(ctx context.Context) servo.Report {
@@ -693,8 +490,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -748,29 +545,31 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:38:6"},
-		{Type: "*example.com/servohttp/mw.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:35:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/recover.go:17:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/requestid.go:40:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.CORSConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:25:6"},
-		{Type: "*github.com/okian/servo/v3/middleware.CORS", Level: 2, Deps: []string{"*github.com/okian/servo/v3/middleware.CORSConfig"}, Capabilities: nil, Binding: "sole candidate", Pos: "github.com/okian/servo/v3/middleware/cors.go:44:6"},
-		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "mw/mw.go:17:6"},
-		{Type: "*example.com/servohttp/store.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "store/store.go:22:6"},
+		{Type: "*github.com/okian/servo/v3/servo.HTTPConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "api.NewHTTPConfig"},
+		{Type: "*example.com/servohttp/mw.UserExtractor", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "mw.NewUserExtractor"},
+		{Type: "*github.com/okian/servo/v3/middleware.Recover", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "middleware.NewRecover"},
+		{Type: "*github.com/okian/servo/v3/middleware.RequestID", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "middleware.NewRequestID"},
+		{Type: "example.com/servohttp/mw.NoSniff", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "mw.NewNoSniff"},
+		{Type: "*github.com/okian/servo/v3/middleware.CORSConfig", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "api.NewCORSConfig"},
+		{Type: "*github.com/okian/servo/v3/middleware.CORS", Level: 2, Deps: []string{"*github.com/okian/servo/v3/middleware.CORSConfig"}, Capabilities: nil, Binding: "sole candidate", Provider: "middleware.NewCORS"},
+		{Type: "*example.com/servohttp/mw.Auth", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "mw.NewAuth"},
+		{Type: "*example.com/servohttp/store.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "store.New"},
 	}, HTTP: &servo.GraphHTTP{
 		Groups: []string{"internal", "telemetry"},
 		Routes: []servo.GraphRoute{
-			{Method: "POST", Pattern: "/feedback", Handler: "api.Feedback", Pos: "api/api.go:193:1"},
-			{Method: "GET", Pattern: "/old-orders", Handler: "api.OldOrders", Pos: "api/api.go:208:1"},
-			{Method: "POST", Pattern: "/order/{category}/", Handler: "api.Order", Args: []string{"*example.com/servohttp/store.Store"}, Pos: "api/api.go:94:1"},
-			{Method: "GET", Pattern: "/search", Handler: "api.Search", Pos: "api/api.go:131:1"},
-			{Method: "GET", Pattern: "/version", Handler: "api.Version", Pos: "api/api.go:200:1"},
-			{Method: "GET", Pattern: "/whoami", Handler: "api.Whoami", Args: []string{"*example.com/servohttp/mw.User (extracted)"}, Pos: "api/api.go:145:1"},
-			{Method: "POST", Pattern: "/replicate/{shard}", Group: "internal", Handler: "api.Replicate", Args: []string{"*example.com/servohttp/mw.User (extracted)"}, Pos: "api/api.go:175:1"},
-			{Method: "GET", Pattern: "/healthz", Group: "telemetry", Handler: "api.Healthz", Pos: "api/api.go:158:1"},
+			{Method: "POST", Pattern: "/feedback", Handler: "api.Feedback"},
+			{Method: "GET", Pattern: "/old-orders", Handler: "api.OldOrders"},
+			{Method: "POST", Pattern: "/order/{category}/", Handler: "api.Order", Args: []string{"*example.com/servohttp/store.Store"}},
+			{Method: "GET", Pattern: "/search", Handler: "api.Search"},
+			{Method: "GET", Pattern: "/version", Handler: "api.Version"},
+			{Method: "GET", Pattern: "/whoami", Handler: "api.Whoami", Args: []string{"*example.com/servohttp/mw.User (extracted)"}},
+			{Method: "POST", Pattern: "/replicate/{shard}", Group: "internal", Handler: "api.Replicate", Args: []string{"*example.com/servohttp/mw.User (extracted)"}},
+			{Method: "GET", Pattern: "/healthz", Group: "telemetry", Handler: "api.Healthz"},
 		},
 		Uses: []servo.GraphUse{
 			{Type: "*github.com/okian/servo/v3/middleware.Recover", Scope: "server"},
 			{Type: "*github.com/okian/servo/v3/middleware.RequestID", Scope: "server"},
+			{Type: "example.com/servohttp/mw.NoSniff", Scope: "server"},
 			{Type: "*github.com/okian/servo/v3/middleware.CORS", Scope: "group default"},
 			{Type: "*example.com/servohttp/mw.Auth", Scope: "group internal"},
 		},

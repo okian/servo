@@ -2,6 +2,7 @@ package servotest
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -68,6 +69,46 @@ func TestTimeoutOverridesAndRestoresDefaultStopBudget(t *testing.T) {
 	})
 	if servo.DefaultStopBudget != original {
 		t.Fatalf("DefaultStopBudget not restored after subtest: got %v, want %v", servo.DefaultStopBudget, original)
+	}
+}
+
+// TestTimeoutAndLingerRefuseAParallelTest: both knobs are package
+// variables, and a parallel test changing one raced every test reading
+// it — `go test -race` said so, and a doc comment was all that stood in
+// the way. They call t.Setenv now, so Go refuses the combination in
+// either order, before the variable is touched.
+func TestTimeoutAndLingerRefuseAParallelTest(t *testing.T) {
+	overrides := []struct {
+		name string
+		set  func(*testing.T)
+	}{
+		{"Timeout", func(t *testing.T) { Timeout(t, time.Millisecond) }},
+		{"Linger", func(t *testing.T) { Linger(t, 0) }},
+	}
+	refused := func(t *testing.T, what string) {
+		t.Helper()
+		r := recover()
+		if r == nil || !strings.Contains(fmt.Sprint(r), "t.Parallel") {
+			t.Errorf("%s: recovered %v, want the testing package's refusal of t.Parallel", what, r)
+		}
+	}
+	for _, o := range overrides {
+		budget, linger := servo.DefaultStopBudget, servo.LingerOverride
+		t.Run(o.name, func(t *testing.T) {
+			t.Run("in a parallel test", func(t *testing.T) {
+				t.Parallel()
+				defer refused(t, o.name+" after t.Parallel")
+				o.set(t)
+			})
+			t.Run("then t.Parallel", func(t *testing.T) {
+				o.set(t)
+				defer refused(t, "t.Parallel after "+o.name)
+				t.Parallel()
+			})
+		})
+		if servo.DefaultStopBudget != budget || servo.LingerOverride != linger {
+			t.Errorf("%s left the knobs changed: budget %v (was %v), linger %v (was %v)", o.name, servo.DefaultStopBudget, budget, servo.LingerOverride, linger)
+		}
 	}
 }
 

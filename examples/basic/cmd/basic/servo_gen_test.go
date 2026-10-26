@@ -6,35 +6,33 @@
 //
 //	[L1] *example.com/servobasic/mockstore.Store
 //	      deps: none
-//	      capabilities: Finalizer | binding: explicit bind | mockstore/mockstore.go:29:6
+//	      capabilities: Finalizer | binding: explicit bind | mockstore.New
 //	[L2] *example.com/servobasic/api.Server
 //	      deps: *example.com/servobasic/mockstore.Store
-//	      capabilities: Runner, Drainer, Finalizer, Readier | binding: sole candidate | api/api.go:15:6
+//	      capabilities: Runner, Drainer, Finalizer, Readier | binding: sole candidate | api.New
 //	[L1] *example.com/servobasic/logger.Logger
 //	      deps: none
-//	      capabilities: Finalizer | binding: sole candidate | logger/logger.go:10:6
+//	      capabilities: Finalizer | binding: sole candidate | logger.New
 //	[L2] *example.com/servobasic/worker.Consumer
 //	      deps: *example.com/servobasic/logger.Logger
-//	      capabilities: Runner | binding: sole candidate | worker/worker.go:13:6
+//	      capabilities: Runner | binding: sole candidate | worker.New
 //	[L1] *example.com/servobasic/queue.OrdersAccount
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | queue/queue.go:24:6
+//	      capabilities: none | binding: sole candidate | queue.NewOrdersAccount
 //	[L1] *example.com/servobasic/queue.AuditAccount
 //	      deps: none
-//	      capabilities: none | binding: sole candidate | queue/queue.go:28:6
+//	      capabilities: none | binding: sole candidate | queue.NewAuditAccount
 //	[L2] *example.com/servobasic/relay.Relay
 //	      deps: *example.com/servobasic/queue.OrdersAccount, *example.com/servobasic/queue.AuditAccount
-//	      capabilities: Initializer | binding: sole candidate | relay/relay.go:24:6
+//	      capabilities: Initializer | binding: sole candidate | relay.New
 package main
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"example.com/servobasic/api"
 	"example.com/servobasic/logger"
@@ -43,8 +41,14 @@ import (
 	"example.com/servobasic/relay"
 	"example.com/servobasic/worker"
 	"github.com/okian/servo/v3/servo"
-	"golang.org/x/sync/errgroup"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type TestApp struct {
 	store            *mockstore.Store
@@ -87,17 +91,12 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 	relay := relay.New(ordersAccount, auditAccount)
 	a.relay = relay
 
-	{
-		start := time.Now()
-		err := a.relay.Init(ctx)
-		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servobasic/relay.Relay", Duration: time.Since(start)})
-		if err != nil {
-			report := a.Shutdown(context.WithoutCancel(ctx))
-			if report.Clean() {
-				return nil, err
-			}
-			return nil, errors.Join(err, report)
-		}
+	if err := servoimpl.Init(ctx, servo.DefaultInitBudget, &a.startupReport,
+		[]servoimpl.Call{
+			{Node: "*example.com/servobasic/relay.Relay", Fn: a.relay.Init},
+		},
+	); err != nil {
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	return a, nil
 }
@@ -105,8 +104,8 @@ func NewTestApp(ctx context.Context) (*TestApp, error) {
 func (a *TestApp) stopStore(ctx context.Context) servo.NodeResult {
 	a.storeStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/mockstore.Store", a.store.Stop))
-		a.storeStopResult = servo.MergeNodeResults("*example.com/servobasic/mockstore.Store", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/mockstore.Store", a.store.Stop))
+		a.storeStopResult = servoimpl.MergeNodeResults("*example.com/servobasic/mockstore.Store", results...)
 	})
 	return a.storeStopResult
 }
@@ -114,9 +113,9 @@ func (a *TestApp) stopStore(ctx context.Context) servo.NodeResult {
 func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
 	a.serverStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/api.Server", a.server.Drain))
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/api.Server", a.server.Stop))
-		a.serverStopResult = servo.MergeNodeResults("*example.com/servobasic/api.Server", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/api.Server", a.server.Drain))
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/api.Server", a.server.Stop))
+		a.serverStopResult = servoimpl.MergeNodeResults("*example.com/servobasic/api.Server", results...)
 	})
 	return a.serverStopResult
 }
@@ -124,17 +123,17 @@ func (a *TestApp) stopServer(ctx context.Context) servo.NodeResult {
 func (a *TestApp) stopLogger(ctx context.Context) servo.NodeResult {
 	a.loggerStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/logger.Logger", a.logger.Stop))
-		a.loggerStopResult = servo.MergeNodeResults("*example.com/servobasic/logger.Logger", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/servobasic/logger.Logger", a.logger.Stop))
+		a.loggerStopResult = servoimpl.MergeNodeResults("*example.com/servobasic/logger.Logger", results...)
 	})
 	return a.loggerStopResult
 }
 
 func (a *TestApp) Run(ctx context.Context) error {
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return a.server.Run(gctx) })
-	g.Go(func() error { return a.consumer.Run(gctx) })
-	return g.Wait()
+	return servoimpl.Run(ctx, servo.DefaultRunGrace,
+		servoimpl.Call{Node: "*example.com/servobasic/api.Server", Fn: a.server.Run},
+		servoimpl.Call{Node: "*example.com/servobasic/worker.Consumer", Fn: a.consumer.Run},
+	)
 }
 
 func (a *TestApp) Shutdown(ctx context.Context) servo.Report {
@@ -145,8 +144,8 @@ func (a *TestApp) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -175,13 +174,13 @@ func (a *TestApp) Ready(ctx context.Context) servo.Report {
 
 func (a *TestApp) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/servobasic/mockstore.Store", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "explicit bind", Pos: "mockstore/mockstore.go:29:6"},
-		{Type: "*example.com/servobasic/api.Server", Level: 2, Deps: []string{"*example.com/servobasic/mockstore.Store"}, Capabilities: []string{"Runner", "Drainer", "Finalizer", "Readier"}, Binding: "sole candidate", Pos: "api/api.go:15:6"},
-		{Type: "*example.com/servobasic/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "logger/logger.go:10:6"},
-		{Type: "*example.com/servobasic/worker.Consumer", Level: 2, Deps: []string{"*example.com/servobasic/logger.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "worker/worker.go:13:6"},
-		{Type: "*example.com/servobasic/queue.OrdersAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "queue/queue.go:24:6"},
-		{Type: "*example.com/servobasic/queue.AuditAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Pos: "queue/queue.go:28:6"},
-		{Type: "*example.com/servobasic/relay.Relay", Level: 2, Deps: []string{"*example.com/servobasic/queue.OrdersAccount", "*example.com/servobasic/queue.AuditAccount"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Pos: "relay/relay.go:24:6"},
+		{Type: "*example.com/servobasic/mockstore.Store", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "explicit bind", Provider: "mockstore.New"},
+		{Type: "*example.com/servobasic/api.Server", Level: 2, Deps: []string{"*example.com/servobasic/mockstore.Store"}, Capabilities: []string{"Runner", "Drainer", "Finalizer", "Readier"}, Binding: "sole candidate", Provider: "api.New"},
+		{Type: "*example.com/servobasic/logger.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Provider: "logger.New"},
+		{Type: "*example.com/servobasic/worker.Consumer", Level: 2, Deps: []string{"*example.com/servobasic/logger.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Provider: "worker.New"},
+		{Type: "*example.com/servobasic/queue.OrdersAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "queue.NewOrdersAccount"},
+		{Type: "*example.com/servobasic/queue.AuditAccount", Level: 1, Deps: nil, Capabilities: nil, Binding: "sole candidate", Provider: "queue.NewAuditAccount"},
+		{Type: "*example.com/servobasic/relay.Relay", Level: 2, Deps: []string{"*example.com/servobasic/queue.OrdersAccount", "*example.com/servobasic/queue.AuditAccount"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Provider: "relay.New"},
 	}}
 }
 

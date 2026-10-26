@@ -257,9 +257,9 @@ func Wire() {
 // Instances lookup failing: go/types refuses to record instantiation info
 // for a generic call whose explicit type-argument count doesn't match the
 // function's type-parameter count (servo.Bind[I, C] takes exactly two), so
-// the call resolves to the function but not to a specific instantiation —
-// the same "must be instantiated with explicit type arguments" diagnostic
-// as omitting type arguments entirely.
+// the call resolves to the function but not to a specific instantiation.
+// The type checker says why in its own words — it cannot infer C — and
+// that is what is reported, rather than servo's guess at the cause.
 func TestFindSpecRejectsMarkerCallWithWrongArity(t *testing.T) {
 	dir := t.TempDir()
 	root := repoRoot(t)
@@ -285,8 +285,8 @@ func Wire() {
 		t.Fatalf("Load: %v", err)
 	}
 	_, err = FindSpec(loaded)
-	if err == nil || !strings.Contains(err.Error(), "must be instantiated with explicit type arguments") {
-		t.Fatalf("got err=%v, want an 'explicit type arguments' error", err)
+	if err == nil || !strings.Contains(err.Error(), "the spec file does not type-check, so servo.Bind's type arguments cannot be read") || !strings.Contains(err.Error(), "cannot infer C") {
+		t.Fatalf("got err=%v, want the type checker's own 'cannot infer C'", err)
 	}
 }
 

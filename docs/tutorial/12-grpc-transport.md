@@ -9,7 +9,7 @@ It assumes chapter 10: the DTOs, the domain-error mapping and the session scope 
 than repeated here. As in chapter 11, the spec-file change at the end belongs to
 [chapter 14](14-wiring-with-servo.md), so come back to it if you are reading in order. The working
 code is
-[`examples/tutorial/grpcapi`](https://github.com/okian/servo/tree/master/examples/tutorial/grpcapi),
+[`examples/tutorial/internal/transport/grpcapi`](https://github.com/okian/servo/tree/master/examples/tutorial/internal/transport/grpcapi),
 wired by `cmd/ordersgrpc`.
 
 `transport/grpcapi/` is the advanced option, and it does something the other two don't: it serves gRPC and
@@ -44,7 +44,7 @@ The generated `.pb.go` files are committed, exactly like the `gomock` mocks from
 first require installing `protoc` and two plugins. Regenerate with:
 
 ```
-$ go generate ./grpcapi/...
+$ go generate ./internal/transport/grpcapi/...
 ```
 
 That runs `protoc` and then `gofumpt`. The second step is not decoration: `protoc-gen-go` emits one
@@ -167,6 +167,9 @@ dependencies and a `Run`/`Stop` pair, which is all a root has to be.
 
 ## Talking to it
 
+With the same variables and services as [chapter 11](11-gin-transport.md#integrating-with-servo)'s
+run:
+
 ```
 $ make run-grpc
 ```
@@ -182,7 +185,7 @@ register the reflection service — a production binary enumerating its own API 
 is a decision, not a default, and registering it is one line if you want it:
 
 ```
-$ grpcurl -plaintext -import-path grpcapi/ordersv1 -proto orders.proto \
+$ grpcurl -plaintext -import-path internal/transport/grpcapi/ordersv1 -proto orders.proto \
     -d '{"username":"alice","password":"password123"}' \
     localhost:8080 ordersv1.Orders/Login
 ```

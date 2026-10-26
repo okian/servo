@@ -7,75 +7,248 @@ on:
     branches: [ master ]
   workflow_dispatch:
   schedule:
-    # The scope soak below is too slow for every push and too valuable to
-    # drop. 03:17 rather than on the hour, so it is not queued behind
-    # everyone else's midnight cron.
+    # The scope soak and the toolchain canary below are too slow for every
+    # push and too valuable to drop. 03:17 rather than on the hour, so it is
+    # not queued behind everyone else's midnight cron.
     - cron: '17 3 * * *'
 
-jobs:
-  build:
-    name: Build, vet, and test (Go ${{ matrix.go-version }})
-    runs-on: ubuntu-latest
+# Every job here reads the checkout and reports; none writes to the
+# repository. Said here rather than inherited, because the repository's
+# default token can write, and these jobs run third-party code: actions,
+# gems, and every module's dependencies.
+permissions:
+  contents: read
 
+# A newer push to a pull request supersedes the run of its older head. Every
+# other run — each push to master, each nightly — is a group of its own, so
+# none is ever cancelled or held back behind another: a release waits on
+# go.yml's result for its exact commit.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # Pin every job to the toolchain setup-go installed. Under the default
+  # GOTOOLCHAIN=auto, any module whose go directive outranks it silently
+  # downloads a newer toolchain, and a job quietly stops testing the
+  # version it names.
+  GOTOOLCHAIN: local
+
+# Timeouts. Every go test here sets -timeout and every job timeout-minutes,
+# both well above what the step takes, so a slow runner is not a failure
+# and a hang still ends with every goroutine's stack in the log. go test's
+# own default, ten minutes per package, was neither: three packages crossed
+# it under -race on 2026-09-05, and the nightly stayed red until 2026-10-11
+# — 36 failures in a row, long enough to hide the Go 1.27.2 export-data
+# break behind them.
+#
+# Caching. The heavy jobs restore the module and build caches with
+# actions/cache/restore, keyed by job, toolchain and every go.sum in the
+# repository, and only a push to master saves one. setup-go's built-in
+# cache keyed on the root go.sum alone, which almost never changes: one
+# entry was saved on 2026-10-11 and every job since restored it and logged
+# "not saving cache", whichever job had happened to write it first. A pull
+# request now reads master's caches and writes none of its own.
+#
+# Every go test also passes -count=1. A restored build cache carries test
+# results, and go test replays a cached pass when the test binary and the
+# files the test itself opened are unchanged — but cmd/servo's tests run
+# the go command on fixture modules that build against this checkout's
+# runtime packages, and nothing the go command reads is part of that key.
+# A change to the runtime could replay a pass that no longer holds.
+
+jobs:
+  test:
+    name: Test (Go ${{ matrix.go-version }}, ${{ matrix.part }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
-      # Report every version's result: a break on one toolchain shouldn't
-      # hide the state of the others.
+      # Report every version's and every shard's result: a break on one
+      # shouldn't hide the state of the others.
       fail-fast: false
       matrix:
-        # 1.27 is the floor declared by go.mod, and so also the oldest
-        # toolchain any consumer can be on. servo type-checks *their* code
-        # through go/packages, so its behaviour tracks whatever toolchain
-        # they run: this list is one entry today only because the floor is
-        # the current release. Add each new release here as it ships —
-        # newer versions need coverage as much as the floor does.
-        go-version: [ '1.27' ]
-
+        # The two most recent Go releases, matching Go's own support
+        # window; go.mod's go directive is the older one. servo type-checks
+        # its users' code through go/packages, so its behaviour tracks
+        # whatever toolchain they run, and both ends of the window need
+        # coverage. When a release ships, it replaces the oldest entry here
+        # and in the examples job, and go.mod's floor moves up to the new
+        # oldest. The canary job below runs the newest release nightly from
+        # the day it ships, and Go's development branch before that.
+        go-version: [ '1.26', '1.27' ]
+        # cmd/servo's suite is most of the root module's test time, so it
+        # runs as four shards, and every other package as a fifth job.
+        part: [ other-packages, cmd-servo-1, cmd-servo-2, cmd-servo-3, cmd-servo-4 ]
+        # One toolchain's coverage is uploaded, not two views of the same
+        # suite. The newest, since the floor is the entry that leaves.
+        include:
+          - go-version: '1.27'
+            coverage: true
     env:
-      # Pin each entry to the toolchain it installed. Under the default
-      # GOTOOLCHAIN=auto, any module whose go directive outranks the matrix
-      # entry silently downloads a newer toolchain, and the entry quietly
-      # stops testing the version it names.
-      GOTOOLCHAIN: local
-
+      PART: ${{ matrix.part }}
+      # The number of cmd-servo-N entries in the matrix above.
+      SHARDS: 4
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Nothing here pushes, so no checkout leaves the token in
+          # .git/config for every later step, and whatever it runs, to read.
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
+          cache: false # see "Caching" at the top
 
-      - name: Build
-        run: go build ./...
+      - name: Restore the Go caches
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-test-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-test-
 
-      - name: Vet
-        run: go vet ./...
+      - name: Build and vet
+        if: matrix.part == 'other-packages'
+        run: |
+          go build ./...
+          go vet ./...
 
+      # A shard takes every SHARDS-th top-level test of `go test -list`, so
+      # a new test joins a shard by itself and every test runs exactly once.
+      # -list builds the same -race test binary the run below then takes
+      # from the build cache.
       - name: Test
-        run: go test -race -covermode=atomic -coverprofile=cover.out ./...
+        run: |
+          set -euo pipefail
+          flags=(-race -count=1 -timeout=20m -covermode=atomic -coverprofile="$RUNNER_TEMP/cover-$PART.out")
+          if [ "$PART" = other-packages ]; then
+            go list ./... | grep -vx 'github.com/okian/servo/v3/cmd/servo' > "$RUNNER_TEMP/packages.txt"
+            mapfile -t packages < "$RUNNER_TEMP/packages.txt"
+            go test "${flags[@]}" "${packages[@]}"
+            exit 0
+          fi
+          shard=${PART#cmd-servo-}
+          go test -race -list . ./cmd/servo > "$RUNNER_TEMP/list.txt"
+          grep -E '^(Test|Example|Fuzz)' "$RUNNER_TEMP/list.txt" > "$RUNNER_TEMP/tests.txt"
+          awk -v n="$SHARDS" -v k="$shard" '(NR - 1) % n == k - 1' "$RUNNER_TEMP/tests.txt" > "$RUNNER_TEMP/shard.txt"
+          echo "shard $shard of $SHARDS: $(wc -l < "$RUNNER_TEMP/shard.txt") of $(wc -l < "$RUNNER_TEMP/tests.txt") top-level tests"
+          go test "${flags[@]}" -run "^($(paste -sd '|' "$RUNNER_TEMP/shard.txt"))\$" ./cmd/servo
 
-      # Pinned to the floor entry so that adding a newer toolchain to the
-      # matrix does not start uploading two views of the same suite, which
-      # would be duplication rather than more information. Requires a
-      # CODECOV_TOKEN repository secret — until that exists the action warns
-      # and moves on rather than failing the job.
+      - name: Keep the coverage profile
+        if: matrix.coverage
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage-${{ matrix.part }}
+          path: ${{ runner.temp }}/cover-${{ matrix.part }}.out
+          retention-days: 1
+          if-no-files-found: error
+
+      # One shard saves for the whole matrix entry: they share the key.
+      - name: Save the Go caches
+        if: github.event_name == 'push' && matrix.part == 'other-packages' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  # A job of its own, after every shard, for two reasons: the shards'
+  # profiles have to be merged before one upload, and the Codecov action
+  # exports its token through $GITHUB_ENV to every later step of the job it
+  # runs in. Here nothing after it runs, and nothing in this job runs the
+  # repository's code. The checkout is only for Codecov to map the
+  # profile's import paths to files. The token is the CODECOV_TOKEN
+  # repository secret; pull requests from forks get none and upload
+  # without it.
+  coverage:
+    name: Upload coverage
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Collect the profiles
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: coverage-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/coverage
+
+      # Every profile is a "mode: atomic" line, then one line per block:
+      # file:start,end statements count. The four cmd/servo shards each
+      # report every block of that package, so a block's counts add up
+      # across files, and the result is one profile of the whole suite.
+      - name: Merge the profiles
+        run: |
+          set -euo pipefail
+          awk 'FNR == 1 { if (NR == 1) print; next }
+               { key = $1 " " $2; if (!(key in hits)) order[++n] = key; hits[key] += $3 }
+               END { for (i = 1; i <= n; i++) print order[i], hits[order[i]] }' \
+            "$RUNNER_TEMP"/coverage/*.out > "$RUNNER_TEMP/cover.out"
+          wc -l "$RUNNER_TEMP"/coverage/*.out "$RUNNER_TEMP/cover.out"
+
       - name: Upload coverage to Codecov
-        if: matrix.go-version == '1.27'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: okian/servo
-          files: cover.out
+          files: ${{ runner.temp }}/cover.out
+          disable_search: true
 
-      # examples/basic, examples/scoped and examples/mocking are separate
-      # modules (each replaces github.com/okian/servo/v3 with this
-      # checkout) so they're built and tested independently.
+  # Every example module, on every toolchain its go.mod allows. Each one
+  # replaces github.com/okian/servo/v3 with this checkout, so they are
+  # built and tested independently, and checked from the root.
+  examples:
+    name: Examples (Go ${{ matrix.go-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The same window as the test job. examples/tutorial's go.mod asks
+        # for 1.27, since it uses the standard library's uuid package, so
+        # its steps skip the 1.26 entry; every other example declares the
+        # root module's floor.
+        go-version: [ '1.26', '1.27' ]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache: false # see "Caching" at the top
+
+      - name: Restore the Go caches
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-examples-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-examples-
+
       - name: Build and test examples/basic
         working-directory: examples/basic
         run: |
           go build ./...
-          go test -race ./...
+          go test -race -count=1 -timeout=10m ./...
 
       # examples/scoped is the gate on scopes, not a demo of them. A golden
       # file cannot catch an instance torn down while a caller still holds
@@ -90,13 +263,13 @@ jobs:
         working-directory: examples/scoped
         run: |
           go build ./...
-          go test -race -count=5 ./...
+          go test -race -count=5 -timeout=10m ./...
 
       - name: Build and test examples/mocking
         working-directory: examples/mocking
         run: |
           go build ./...
-          go test -race ./...
+          go test -race -count=1 -timeout=10m ./...
 
       # examples/http exercises the //servo: directive feature end to end:
       # its test binds a real listener and drives every binding source and
@@ -105,40 +278,16 @@ jobs:
         working-directory: examples/http
         run: |
           go build ./...
-          go test -race ./...
+          go test -race -count=1 -timeout=10m ./...
 
       # examples/diagnostics is deliberately unresolvable, so it has no
       # generated file and nothing to run `servo check` against — only that
       # it's otherwise ordinary, valid Go. The eight diagnostics it's meant
       # to produce are pinned by TestExampleDiagnostic* in cmd/servo,
-      # covered by the root Test step above.
+      # covered by the test job.
       - name: Build examples/diagnostics
         working-directory: examples/diagnostics
         run: go build ./...
-
-      # The reference check every consumer of servo should run in their own
-      # CI: verify every injector's committed servo_gen.go still matches
-      # what `servo generate` would produce, so drift between a constructor
-      # signature change and a re-run of `servo generate` fails the build
-      # instead of shipping a stale generated file.
-      - name: servo check (examples/basic)
-        run: go run ./cmd/servo check --dir examples/basic
-
-      - name: servo check (examples/scoped)
-        run: go run ./cmd/servo check --dir examples/scoped
-
-      - name: servo check (examples/mocking)
-        run: go run ./cmd/servo check --dir examples/mocking
-
-      - name: servo check (examples/http)
-        run: go run ./cmd/servo check --dir examples/http
-
-      # examples/tutorial has its own workflow, but that one is path-filtered
-      # to the tutorial, so a generator change here could not fail on the
-      # tutorial's four committed generated files. The check needs no
-      # services, so it runs on every push too.
-      - name: servo check (examples/tutorial)
-        run: go run ./cmd/servo check --dir examples/tutorial
 
       # examples/variants holds two generated variants of one injector, so
       # everything is done once per build configuration — which is exactly
@@ -147,13 +296,24 @@ jobs:
         working-directory: examples/variants
         run: |
           go build ./...
-          go test -race ./...
+          go test -race -count=1 -timeout=10m ./...
           go build -tags=prod ./...
-          go test -race -tags=prod ./...
+          go test -race -count=1 -timeout=10m -tags=prod ./...
 
-      - name: servo check (examples/variants)
+      # The check this repository runs on itself: every injector's committed
+      # servo_gen.go still matches what `servo generate` would produce, so
+      # drift between a constructor signature change and a re-run of
+      # `servo generate` fails the build instead of shipping a stale
+      # generated file. `go run ./cmd/servo` works only inside this
+      # repository; a consumer's CI runs the same check as
+      # `go tool servo check`, against the version pinned in its go.mod.
+      - name: servo check (every example)
         run: |
-          go run ./cmd/servo check --dir examples/variants
+          set -euo pipefail
+          for dir in examples/basic examples/scoped examples/mocking examples/http examples/variants; do
+            echo "--- $dir ---"
+            go run ./cmd/servo check --dir "$dir"
+          done
           go run ./cmd/servo check --dir examples/variants --tags=prod
 
       # doctor and servo-vet are the two commands a consumer runs outside
@@ -166,28 +326,66 @@ jobs:
         run: |
           set -euo pipefail
           go build -o "$RUNNER_TEMP/servo-vet" ./cmd/servo-vet
-          for dir in examples/basic examples/scoped examples/mocking examples/http examples/tutorial examples/variants; do
+          for dir in examples/basic examples/scoped examples/mocking examples/http examples/variants; do
             echo "--- doctor $dir ---"
             go run ./cmd/servo doctor --dir "$dir"
           done
           go run ./cmd/servo doctor --dir examples/variants --tags=prod
-          for dir in examples/basic examples/scoped examples/mocking examples/http examples/diagnostics examples/tutorial examples/variants; do
+          for dir in examples/basic examples/scoped examples/mocking examples/http examples/diagnostics examples/variants; do
             echo "--- servo-vet $dir ---"
             (cd "$dir" && go vet -vettool="$RUNNER_TEMP/servo-vet" ./...)
           done
           (cd examples/variants && go vet -tags=prod -vettool="$RUNNER_TEMP/servo-vet" ./...)
 
+      # examples/tutorial has its own workflow, but that one is path-filtered,
+      # and this is the workflow every change goes through. The check, doctor
+      # and analyzer need no services and take seconds, so the tutorial's
+      # four committed generated files are checked on every push here too.
+      - name: servo check, doctor and servo-vet (examples/tutorial)
+        if: matrix.go-version != '1.26'
+        run: |
+          set -euo pipefail
+          go run ./cmd/servo check --dir examples/tutorial
+          go run ./cmd/servo doctor --dir examples/tutorial
+          go build -o "$RUNNER_TEMP/servo-vet" ./cmd/servo-vet
+          (cd examples/tutorial && go vet -vettool="$RUNNER_TEMP/servo-vet" ./...)
+
+      - name: Save the Go caches
+        if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
   lint:
     name: golangci-lint
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
+          cache: false # see "Caching" at the top
+
+      - name: Restore the Go and golangci-lint caches
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-lint-${{ hashFiles('**/go.sum') }}
+          restore-keys: go-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-lint-
 
       # Downloaded and verified here rather than through upstream's
       # install.sh, which is currently broken for this release: the
@@ -228,15 +426,164 @@ jobs:
           fail=0
           for dir in . examples/basic examples/http examples/mocking examples/scoped examples/diagnostics examples/variants examples/tutorial; do
             echo "--- $dir ---"
-            (cd "$dir" && golangci-lint run --timeout=5m ./...) || fail=1
+            (cd "$dir" && golangci-lint run --timeout=10m ./...) || fail=1
           done
           # examples/variants again under the tag that selects its other
           # spec: files behind a build constraint are invisible to the
           # default run, and app_prod_test.go carried an unchecked error
           # for exactly that reason.
           echo "--- examples/variants (--tags=prod) ---"
-          (cd examples/variants && golangci-lint run --timeout=5m --build-tags=prod ./...) || fail=1
+          (cd examples/variants && golangci-lint run --timeout=10m --build-tags=prod ./...) || fail=1
           exit $fail
+
+      - name: Save the Go and golangci-lint caches
+        if: github.event_name == 'push' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~/.cache/golangci-lint
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+  # Two checks whose fix is one command, and which nothing else here ran:
+  # golangci-lint's default set has no formatter in it, so only
+  # tutorial.yml checked gofmt, and only for its own module; and nothing
+  # compared a go.mod or go.sum with what go mod tidy would write, which is
+  # how examples/diagnostics went without the go.sum its requirements call
+  # for.
+  tidy:
+    name: gofmt and go mod tidy
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false
+
+      # Every committed Go file, every example module's included — gofmt
+      # does not care where one module ends. testdata/ is left out: what
+      # sits there is input to a test, and may be malformed on purpose.
+      # gofmt exits 0 whether or not it lists anything, so the list itself
+      # is the verdict.
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted=$(git ls-files -z -- '*.go' ':!:**/testdata/**' | xargs -0 gofmt -l)
+          if [ -n "$unformatted" ]; then
+            echo "::error::not gofmt-formatted (gofmt -w fixes them):"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      # Every module is checked before the job fails, so one untidy module
+      # does not hide another. -diff prints what go mod tidy would change.
+      - name: go mod tidy
+        run: |
+          fail=0
+          for dir in . examples/basic examples/http examples/mocking examples/scoped examples/diagnostics examples/variants examples/tutorial; do
+            echo "--- $dir ---"
+            (cd "$dir" && go mod tidy -diff) || fail=1
+          done
+          exit $fail
+
+  # The spelling checker, with the allowlist in typos.toml. The action
+  # installs the typos release its own tag names, so the pin below is also
+  # the dictionary's version: a new release's new corrections arrive as a
+  # Dependabot pull request, not as a red build on an unrelated change.
+  typos:
+    name: Spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: typos
+        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+
+  # actionlint type-checks these workflow files: expressions, contexts,
+  # job outputs, and every run: script through shellcheck, which the
+  # runner image has. Built from source through the module proxy, so the
+  # checksum database vouches for the version named.
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false
+
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+  # Every relative link and #fragment in the Markdown files resolves:
+  # README.md and the root's other pages, docs/ (the published site), and
+  # the examples' READMEs. Offline, so a flaky external site can never fail
+  # a pull request; links to other sites are not checked. The site serves
+  # docs/x.md as x.html, so a link written either way is resolved to the
+  # Markdown file. docs/superpowers/ holds working notes, not pages anyone
+  # navigates.
+  links:
+    name: Links
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The release asset's SHA-256, as GitHub records it for the upload,
+      # pinned here so a replaced asset fails the check instead of running.
+      - name: Install lychee
+        env:
+          LYCHEE_VERSION: 0.24.2
+          LYCHEE_SHA256: 1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a
+        run: |
+          set -euo pipefail
+          tarball=lychee-x86_64-unknown-linux-gnu.tar.gz
+          curl -sSfL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/${tarball}"
+          echo "${LYCHEE_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$HOME/.local/bin"
+          tar xzf "$RUNNER_TEMP/$tarball" --strip-components=1 -C "$HOME/.local/bin" \
+            lychee-x86_64-unknown-linux-gnu/lychee
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/lychee" --version
+
+      # $1 and $2 in the remap are lychee's capture groups, not the shell's.
+      - name: Check the links
+        run: |
+          # shellcheck disable=SC2016
+          lychee --offline --no-progress --include-fragments \
+            --exclude-path docs/superpowers \
+            --remap '^(file://[^#]*)\.html(#.*)?$ $1.md$2' \
+            '*.md' 'docs/**/*.md' 'examples/**/*.md'
+
+      # A link whose file exists can still be dead on the published site:
+      # Pages rewrites a link to another page's .md into its .html only when
+      # the link's text is on one line. The script names each one that is
+      # not; the docs job's output check catches the rest of the class.
+      - name: Check no link text wraps a line
+        run: git ls-files -z -- 'docs/*.md' ':!:docs/superpowers/*' | xargs -0 python3 .github/scripts/wrapped-links.py
 
   # The site is five hand-written Jekyll layouts, a Liquid-templated search
   # index and a hand-formatted stylesheet, published straight to Pages from
@@ -246,24 +593,31 @@ jobs:
   docs:
     name: Docs site builds
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # docs/Gemfile pins github-pages, the gem set Pages itself builds
+      # with, and its lockfile pins every gem beneath it, so a build that
+      # passes here is the build that happens on publish. Set for the whole
+      # job, as setup-ruby asks, so the install and the build agree; the
+      # gems install under ./vendor/bundle, outside the site's source.
+      BUNDLE_GEMFILE: ${{ github.workspace }}/docs/Gemfile
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
+      # bundler-cache installs exactly the lockfile (bundle install in
+      # deployment mode refuses one that disagrees with the Gemfile) and
+      # caches the result by the lockfile's hash.
+      - name: Set up Ruby and the pinned gems
+        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
         with:
           ruby-version: '3.3'
-
-      # github-pages pins the exact gem set Pages itself runs, so a build
-      # that passes here is the build that happens on publish.
-      - name: Install Jekyll
-        run: gem install bundler github-pages
+          bundler-cache: true
 
       - name: Build
-        run: |
-          cd docs
-          github-pages build --source . --destination ../_site
+        run: bundle exec github-pages build --source docs --destination _site
 
       # A page whose front matter or layout is wrong still "builds" — it
       # just comes out empty or unwrapped. Assert the pages that must exist
@@ -273,6 +627,7 @@ jobs:
         run: |
           set -euo pipefail
           for page in index.html preface.html comparison.html limitations.html \
+                      coming-from-wire-and-fx.html servo-in-ci.html running-in-production.html \
                       reference/index.html reference/cli.html \
                       tutorial/01-architecture-overview.html \
                       tutorial/22-alternatives-and-further-reading.html; do
@@ -280,7 +635,56 @@ jobs:
           done
           python3 -c "import json,sys; json.load(open('_site/search.json'))"
 
-  # 200 consecutive green runs is the gate on scopes. It takes ~8 minutes
+          # Every link between pages should have come out pointing at a
+          # .html page. One still pointing at a .md file is a link the site
+          # cannot follow: its target does not exist, its text wraps a line,
+          # or its text holds a `](` (a code span like `Use[T](sel)`) that
+          # ends the rewriter's match early.
+          if grep -rEo 'href="[^":#]*\.md(#[^"]*)?"' --include='*.html' _site | grep -v '^_site/superpowers/'; then
+            echo "::error::the pages above link to .md files the published site does not serve"
+            exit 1
+          fi
+
+  # servo's output must be a function of the code alone. This regenerates
+  # every example from a moved checkout, a moved module cache, vendored
+  # dependencies and a go.work, on each operating system the CLI is
+  # released for, and fails on any byte that differs from the committed
+  # files — positions, ordering and line endings all included. The scenarios
+  # are spelled out in the script.
+  determinism:
+    name: Generated bytes are reproducible (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    steps:
+      # The Windows image checks text out with CRLF line endings by default,
+      # which would hide a generator that wrote them: git compares after
+      # converting. Byte-for-byte checkouts everywhere instead.
+      - name: Check out text files byte for byte
+        if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # 1.27 for the tutorial's go.mod; no cache, because the scenarios are
+      # about where modules come from.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27'
+          cache: false
+
+      - name: Regenerate every example under each scenario
+        shell: bash
+        run: bash .github/scripts/determinism.sh
+
+  # 200 consecutive green runs is the gate on scopes. It takes ~10 minutes
   # and belongs nowhere near a pull request, but it is not decoration: the
   # Acquire-racing-Shutdown teardown race reproduced about once in 200 runs
   # and passed -count=5 every time.
@@ -288,23 +692,95 @@ jobs:
     name: Scope soak (200 runs)
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Check out code
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
+          cache: false
 
+      # One run takes a few seconds, so a run still going after two minutes
+      # is the hang the soak exists to catch.
       - name: 200 consecutive runs under -race
         working-directory: examples/scoped
         run: |
           for i in $(seq 1 200); do
-            if ! go test -race -count=1 ./... > "$RUNNER_TEMP/soak.log" 2>&1; then
+            if ! go test -race -count=1 -timeout=2m ./... > "$RUNNER_TEMP/soak.log" 2>&1; then
               echo "::error::failed on run $i"
               cat "$RUNNER_TEMP/soak.log"
               exit 1
             fi
           done
           echo "200 consecutive runs green"
+
+  # The test job runs the releases it names, and a new release joins it only
+  # when someone adds it. servo type-checks its users' code with their
+  # toolchain and reads the standard library from that toolchain's export
+  # data, whose format a Go release can change — 1.27.2 did — so a release
+  # that breaks servo used to reach its users before anything here ran it.
+  # Nightly, this runs the root module's build and tests and every example's
+  # servo check on the newest stable release from the day it ships, and on
+  # tip, Go's development branch, months before that. tip is unreleased and
+  # now and then broken on its own, so its result is advisory: shown on the
+  # run, never failing it.
+  canary:
+    name: Toolchain canary (Go ${{ matrix.go }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: ${{ matrix.go == 'tip' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [ stable, tip ]
+    steps:
+      - name: Check out code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # check-latest resolves stable afresh on every run instead of taking
+      # whatever the runner image cached, which can trail a release by
+      # weeks. No cache: nothing saved under one toolchain helps another.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: stable
+          check-latest: true
+          cache: false
+
+      # gotip is the Go team's installer for the development branch: it
+      # clones tip and builds it with the stable release set up above.
+      # servo runs whichever go is first on PATH, so tip's goes first.
+      - name: Build Go at tip
+        if: matrix.go == 'tip'
+        run: |
+          go install golang.org/dl/gotip@v0.0.0-20261020012710-a46f0086a8ec
+          gotip download
+          echo "$HOME/sdk/gotip/bin" >> "$GITHUB_PATH"
+
+      - name: Build and vet
+        run: |
+          go version
+          go build ./...
+          go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 -timeout=20m ./...
+
+      - name: servo check (every example)
+        run: |
+          fail=0
+          for dir in examples/basic examples/scoped examples/mocking examples/http examples/tutorial examples/variants; do
+            echo "--- $dir ---"
+            go run ./cmd/servo check --dir "$dir" || fail=1
+          done
+          echo "--- examples/variants (--tags=prod) ---"
+          go run ./cmd/servo check --dir examples/variants --tags=prod || fail=1
+          exit $fail

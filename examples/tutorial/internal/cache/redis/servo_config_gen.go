@@ -12,7 +12,15 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 // ServoConfig builds config. Precedence per setting: default, then the REDIS_* environment
 // variable — the environment always wins.

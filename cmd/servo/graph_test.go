@@ -88,8 +88,8 @@ func TestRunGraphFailsWhenModuleFailsToLoad(t *testing.T) {
 func TestRunGraphFailsWhenResolutionFails(t *testing.T) {
 	dir := writeAppModule(t, "example.com/graphresolvefail", false, "")
 	err := runGraph(cfg(dir), "text")
-	if err == nil || !strings.Contains(err.Error(), "no provider for") {
-		t.Fatalf("got err=%v, want a 'no provider for' ambiguity diagnostic", err)
+	if err == nil || !strings.Contains(err.Error(), "ambiguous provider for") {
+		t.Fatalf("got err=%v, want a 'ambiguous provider for' ambiguity diagnostic", err)
 	}
 }
 

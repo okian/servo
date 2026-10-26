@@ -6,10 +6,10 @@
 //
 //	[L1] *example.com/servomocking/realstore.Store
 //	      deps: none
-//	      capabilities: none | binding: explicit bind | realstore/realstore.go:8:6
+//	      capabilities: none | binding: explicit bind | realstore.New
 //	[L2] *example.com/servomocking/api.Server
 //	      deps: *example.com/servomocking/realstore.Store
-//	      capabilities: none | binding: sole candidate | api/api.go:7:6
+//	      capabilities: none | binding: sole candidate | api.New
 package main
 
 import (
@@ -21,7 +21,14 @@ import (
 	"example.com/servomocking/api"
 	"example.com/servomocking/realstore"
 	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type App struct {
 	store         *realstore.Store
@@ -53,8 +60,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -75,8 +82,8 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/servomocking/realstore.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "realstore/realstore.go:8:6"},
-		{Type: "*example.com/servomocking/api.Server", Level: 2, Deps: []string{"*example.com/servomocking/realstore.Store"}, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:7:6"},
+		{Type: "*example.com/servomocking/realstore.Store", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Provider: "realstore.New"},
+		{Type: "*example.com/servomocking/api.Server", Level: 2, Deps: []string{"*example.com/servomocking/realstore.Store"}, Capabilities: nil, Binding: "sole candidate", Provider: "api.New"},
 	}}
 }
 

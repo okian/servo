@@ -17,11 +17,13 @@ import (
 // deterministically instead of by luck.
 //
 // Generated code reads the override once per scope, inside New, so call
-// this before constructing the app. Since the underlying setting is a
-// package var, tests using Linger must not run in parallel with each other
-// or with tests that depend on a scope's real declared window.
+// this before constructing the app. The setting is a package variable, so
+// like Timeout it calls t.Setenv (SERVOTEST_LINGER, which nothing reads)
+// first: Go then panics rather than let a parallel test change it under
+// another one.
 func Linger(t *testing.T, d time.Duration) {
 	t.Helper()
+	t.Setenv("SERVOTEST_LINGER", d.String())
 	prev := servo.LingerOverride
 	servo.LingerOverride = d
 	t.Cleanup(func() { servo.LingerOverride = prev })

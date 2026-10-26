@@ -14,9 +14,16 @@
 // assumed.
 //
 // The third is a broken //servo: comment directive — unrecognized name,
-// malformed //servo:config options, or a directive placed where the
-// generator never looks. A typo'd directive is otherwise just a comment:
-// it compiles, generates, and silently does nothing.
+// malformed route or //servo:config arguments, or a directive placed where
+// no reader looks — judged by the same pass `servo generate` uses, plus the
+// one mistake only an editor can usefully flag: a directive a space after
+// the // turned into an ordinary comment. A typo'd directive is otherwise
+// just a comment: it compiles, generates, and silently does nothing.
+//
+// The fourth is a method that has a capability's name but not its
+// signature — Run() error, a Stop with no error result — on a type a
+// constructor in the package returns. Capabilities are detected by
+// signature alone, so servo never calls such a method.
 //
 // It lives in its own importable package, not in the command, so the
 // integrations the reference promises are actually reachable:
@@ -40,7 +47,7 @@ import (
 // analysistest.
 var Analyzer = &analysis.Analyzer{
 	Name: "servovet",
-	Doc:  "flags servo marker calls in files missing the servoinject build tag, ScopeKey methods with a non-blank receiver, and malformed or misplaced //servo: directives",
+	Doc:  "flags servo marker calls in files missing the servoinject build tag, ScopeKey methods with a non-blank receiver, malformed or misplaced //servo: directives, directives a space after // turned into comments, and capability-named methods whose signature servo will never call",
 	Run:  run,
 }
 
@@ -78,7 +85,8 @@ func isMarkerFunc(fn *types.Func) bool {
 
 func run(pass *analysis.Pass) (any, error) {
 	checkScopeKeyReceivers(pass)
-	checkConfigDirectives(pass)
+	checkDirectives(pass)
+	checkCapabilityNearMisses(pass)
 
 	for _, file := range pass.Files {
 		if load.FileRequiresBuildTag(file, load.BuildTag) {
@@ -104,24 +112,27 @@ func run(pass *analysis.Pass) (any, error) {
 
 // markerFuncCalled reports the servo marker function call.Fun resolves to,
 // handling both plain calls (Build) and generic instantiations (Root[T],
-// Bind[I, C]).
+// Bind[I, C]), each qualified (servo.Build) or bare.
+//
+// Bare is what a dot import gives: `import . ".../servo"` makes
+// `Build(Root[*api.Server]())` an ordinary call, and the panic it carries
+// is just as real. The identifier is resolved through TypesInfo.Uses either
+// way, so a bare call to some other package's Build is not mistaken for
+// servo's.
 func markerFuncCalled(pass *analysis.Pass, call *ast.CallExpr) (*types.Func, bool) {
-	var ident *ast.Ident
-	switch fun := call.Fun.(type) {
-	case *ast.SelectorExpr:
-		ident = fun.Sel
+	fun := call.Fun
+	switch f := fun.(type) {
 	case *ast.IndexExpr:
-		sel, ok := fun.X.(*ast.SelectorExpr)
-		if !ok {
-			return nil, false
-		}
-		ident = sel.Sel
+		fun = f.X
 	case *ast.IndexListExpr:
-		sel, ok := fun.X.(*ast.SelectorExpr)
-		if !ok {
-			return nil, false
-		}
-		ident = sel.Sel
+		fun = f.X
+	}
+	var ident *ast.Ident
+	switch f := fun.(type) {
+	case *ast.SelectorExpr:
+		ident = f.Sel
+	case *ast.Ident:
+		ident = f
 	default:
 		return nil, false
 	}

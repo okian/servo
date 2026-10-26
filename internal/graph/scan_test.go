@@ -148,7 +148,7 @@ func TestScanCandidatesRejections(t *testing.T) {
 	}{
 		{"store.NewID", "result type is a primitive (string)"},
 		{"store.NewAny", "result type is any (empty interface)"},
-		{"store.NewBadShape", "does not match a supported result shape"},
+		{"store.NewBadShape", "does not match a supported result shape: the second result is int, and must be error or a func() cleanup"},
 		{"store.NewGeneric", "generic function — unsupported"},
 		{"store.NewVariadic", "variadic parameter — unsupported"},
 		{"store.newHidden", "unexported, outside injector package"},
@@ -163,7 +163,7 @@ func TestScanCandidatesRejections(t *testing.T) {
 		{"store.NewWithNamedError", "second result is *example.com/store.MyError, which implements error but is not the error interface itself — return error, not a type that merely satisfies it"},
 		{"store.NewWithCleanupAndNamedError", "third result is *example.com/store.MyError, which implements error but is not the error interface itself — return error, not a type that merely satisfies it"},
 		{"store.NewWithErrorIfaceResult", "second result is example.com/store.MyErrIface, which implements error but is not the error interface itself — return error, not a type that merely satisfies it"},
-		{"store.NewWithPointerToErrorIface", "does not match a supported result shape"},
+		{"store.NewWithPointerToErrorIface", "does not match a supported result shape: the second result is *example.com/store.MyErrIface, and must be error or a func() cleanup"},
 	}
 	for _, c := range cases {
 		r := findRejected(t, rejected, c.name)
@@ -202,7 +202,7 @@ func TestScanCandidatesIgnoresTypeAliasAtPackageScope(t *testing.T) {
 }
 
 // TestScanCandidatesAcceptsAnonymousNonEmptyInterfaceResult covers
-// validResultType's raw *types.Interface branch: a named interface like
+// ValidResultType's raw *types.Interface branch: a named interface like
 // Store unwraps to *types.Named instead (Store itself, not its
 // underlying), so only a provider returning an interface type literal
 // directly — never named — reaches the interface case at all.
@@ -306,5 +306,113 @@ func main() {}
 	accepted, _ = ScanCandidates([]*packages.Package{other}, "example.com/app/cmd/other")
 	if len(accepted) != 1 || accepted[0].Name != "main.NewThing" {
 		t.Fatalf("the injector's own main package lost its constructor: %v", accepted)
+	}
+}
+
+// A rejection says what is wrong with this shape, not only that it is
+// wrong: the reason lands beside the function's name in a "no provider"
+// diagnostic, and "the error comes last" is something to act on.
+func TestScanRejectsResultShapesWithASpecificReason(t *testing.T) {
+	pkg := mustCheck(t, "example.com/shapes", "shapes.go", `
+package shapes
+
+type Store struct{}
+
+func NewSwapped() (error, *Store)                 { return nil, nil }
+func NewCleanupLast() (*Store, error, func())     { return nil, nil, nil }
+func NewThreeWrong() (*Store, *Store, *Store)     { return nil, nil, nil }
+func NewFour() (*Store, func(), error, int)       { return nil, nil, nil, 0 }
+`)
+	_, rejected := ScanCandidates([]*packages.Package{pkg}, "example.com/other")
+	for name, reason := range map[string]string{
+		"shapes.NewSwapped":     "does not match a supported result shape: the error comes last — return (T, error)",
+		"shapes.NewCleanupLast": "does not match a supported result shape: the cleanup func comes before the error — return (T, func(), error)",
+		"shapes.NewThreeWrong":  "does not match a supported result shape: three results must be (T, func(), error)",
+		"shapes.NewFour":        "does not match a supported result shape: 4 results — a provider returns one value, optionally followed by a func() cleanup and an error",
+	} {
+		r := findRejected(t, rejected, name)
+		if r.Reason != reason {
+			t.Errorf("%s: reason = %q, want %q", name, r.Reason, reason)
+		}
+		// Each would have provided *Store — the swapped pair included —
+		// which is what lets a "no provider for *shapes.Store" name it.
+		if r.Result == nil || TypeString(r.Result) != "*example.com/shapes.Store" {
+			t.Errorf("%s: Result = %v, want *example.com/shapes.Store", name, r.Result)
+		}
+	}
+}
+
+// TestScanRecordsTheWouldBeResult: a rejection keeps the type the function
+// would have provided, so a "no provider" diagnostic can point at it, and a
+// method keeps its receiver so `servo list --rejected` can group methods
+// apart.
+func TestScanRecordsTheWouldBeResult(t *testing.T) {
+	pkg := mustCheck(t, "example.com/store", "store.go", storeSrc)
+	_, rejected := ScanCandidates([]*packages.Package{pkg}, "example.com/other")
+
+	for name, want := range map[string]string{
+		"store.NewVariadic":             "*example.com/store.DB",
+		"store.NewWithNamedError":       "*example.com/store.DB",
+		"store.NewBadShape":             "int",
+		"store.newHidden":               "*example.com/store.DB",
+		"store.NewGeneric":              "*example.com/store.Cache",
+		"store.(*Pool).Session":         "*example.com/store.DB",
+		"store.NewWithErrorIfaceResult": "*example.com/store.DB",
+	} {
+		r := findRejected(t, rejected, name)
+		if r.Result == nil || TypeString(r.Result) != want {
+			t.Errorf("%s: Result = %v, want %s", name, r.Result, want)
+		}
+	}
+	if r := findRejected(t, rejected, "store.(*Pool).Session"); !r.IsMethod() || r.Recv != "(*Pool)" {
+		t.Errorf("Session: Recv = %q, want (*Pool) and IsMethod", r.Recv)
+	}
+	if r := findRejected(t, rejected, "store.NewVariadic"); r.IsMethod() {
+		t.Error("NewVariadic reported as a method")
+	}
+}
+
+func TestProducesMatchesInstantiations(t *testing.T) {
+	pkg := mustCheck(t, "example.com/gen", "gen.go", `
+package gen
+
+type DB struct{}
+type Other struct{}
+type Cache[T any] struct{}
+type Pair[K comparable, V any] struct{}
+
+func NewCache[T any]() *Cache[T] { return nil }
+func NewSame[T comparable]() *Pair[T, T] { return nil }
+func NewDB() *DB { return nil }
+
+var (
+	cacheOfDB   *Cache[*DB]
+	cacheValue  Cache[*DB]
+	pairSame    *Pair[string, string]
+	pairMixed   *Pair[string, int]
+	db          *DB
+	other       *Other
+)
+`)
+	result := func(fn string) types.Type {
+		return pkg.Types.Scope().Lookup(fn).Type().(*types.Signature).Results().At(0).Type()
+	}
+	typ := func(name string) types.Type { return pkg.Types.Scope().Lookup(name).Type() }
+
+	cases := []struct {
+		fn, want string
+		ok       bool
+	}{
+		{"NewCache", "cacheOfDB", true},
+		{"NewCache", "cacheValue", false}, // *Cache[T] never produces a Cache value
+		{"NewSame", "pairSame", true},
+		{"NewSame", "pairMixed", false}, // T cannot be string and int at once
+		{"NewDB", "db", true},
+		{"NewDB", "other", false},
+	}
+	for _, c := range cases {
+		if got := Produces(result(c.fn), typ(c.want)); got != c.ok {
+			t.Errorf("Produces(%s's result, %s) = %v, want %v", c.fn, c.want, got, c.ok)
+		}
 	}
 }

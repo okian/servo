@@ -557,8 +557,8 @@ func TestShutdownWaitsForAnInFlightEviction(t *testing.T) {
 // without the guard it stayed in the map with no loop goroutine, so every
 // later acquire of that key blocked until its own context died and
 // Shutdown waited forever. And the panic must not escape: on a
-// multi-initializer level it would come from an errgroup goroutine no
-// caller can recover, taking the process down. So it becomes this
+// multi-initializer level it would come from a goroutine no caller can
+// recover, taking the process down. So it becomes this
 // acquire's error instead.
 func TestPanicInAConstructorBecomesAnError(t *testing.T) {
 	servotest.Linger(t, 0)

@@ -165,6 +165,12 @@ Anything else in the argument list is rejected with its position:
 `servo.Build argument is not a marker call`, or
 `servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments`.
 
+Markers are found by their package-qualified spelling, `servo.Build`, `servo.Root[…]`. A dot import
+(`import . "github.com/okian/servo/v3/servo"`) makes them bare identifiers that `servo generate` does
+not recognize — it reports no `servo.Build(...)` call at all — so import the package by name.
+[`servo-vet`](cli.md#servo-vet) does recognize the bare spelling, so a dot-imported `Build` in a file
+missing the build tag is still flagged before it can panic at runtime.
+
 `Marker` is an empty struct. It carries no data and exists only to give the markers a return type
 that makes `Build`'s argument list type-check.
 
@@ -208,9 +214,14 @@ its own. It is a deliberate override, not only a tie-breaker. `servo explain` re
 provider's binding as `explicit bind`.
 
 **A bind switches resolution to an exact-type lookup.** Once `I` is bound to `C`, servo looks for
-the one function returning exactly `C` and never runs a structural search for `I`. If nothing
-returns `C`, that's a missing-provider diagnostic for `C`, with no candidate suggestions — because
-suggesting alternatives to an explicit instruction would be second-guessing it.
+the one function returning exactly `C` — your module's first — and never runs a structural search
+for `I`. If nothing returns `C`, that's a missing-provider diagnostic for `C`. It suggests no other
+types — suggesting alternatives to an explicit instruction would be second-guessing it — but it
+does list the [near misses](resolution.md#near-misses) for `C`, such as a constructor of it that
+is variadic. If the only constructors of `C` are ones this injector
+[cannot refer to](resolution.md#the-injector-has-to-be-able-to-refer-to-it) — under another tree's
+`internal/`, or in a package that imports the injector's — it is `no usable provider for C`, with
+the reason.
 
 Two rules are enforced at declaration time:
 
@@ -433,6 +444,13 @@ example.com/app/conf.Flags
 That lifetime line is the limitation worth reading twice: a supplied value is one per app, handed
 in at `NewWith` and held for the life of the process. It is not a per-call or per-request value.
 
+`context.Context` needs no `Value`. A constructor parameter of that type receives the context `New`,
+`NewWith` or `NewTestApp` was called with — the
+[construction context](resolution.md#selection-precedence). Declaring `servo.Value[context.Context]()`
+still works and still wins, but then the context comes only from `Values`, and a plain `New(ctx)`
+passes none; leave the declaration out unless the constructors need some other context than the
+one `New` receives.
+
 ## `Include`
 
 ```go
@@ -651,6 +669,10 @@ Everything the spec parser can reject, in one place:
 | `servo.Build argument is not a marker call` | Something other than a call in the argument list |
 | `servo.Build argument must be a Root/Bind/Override/Scoped call with explicit type arguments` | A marker without inline type arguments |
 | `unrecognized servo marker "X" inside Build(...)` | A `servo` function that isn't a marker |
+| `the spec file does not type-check, so X cannot be read:` followed by the type checker's own lines | A typo in a type a marker names (`Root[*api.Sever]`), or a package the spec uses but does not import — the type checker's errors inside the spec file, not a guess about the marker |
+| `servo.X is a …, which the module requires … — the module requires a newer servo than the CLI generating it` | Version skew: the servo in `go.mod` has a marker this CLI doesn't know. Both versions are named; regenerate with `go tool servo generate`, or update the CLI |
+| `servo.Bind[I, C]: C does not implement I (missing method M)` | `C` lacks a method, has it on a pointer receiver, or with another signature. When `C` looks like a generated mock, the message says to regenerate it first: `go generate` runs servo before a mock generator whose directive comes later |
+| `servo.Bind[I, C]: C is not assignable to I` | A Bind or Override whose arguments are the wrong way round, or two unrelated types |
 | `servo.HTTP() declared twice` | Two `HTTP()` markers in one `Build`, both written locally |
 | `servo.Group belongs inside servo.HTTP(...)` | A `Group`/`Use` at `Build`'s top level |
 | `servo.Route belongs inside servo.Use(...)` | A `Route` anywhere but a `Use` selector list |

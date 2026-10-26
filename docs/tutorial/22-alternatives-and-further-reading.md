@@ -257,9 +257,15 @@ changes several things this tutorial's local setup doesn't have to consider:
   `StatefulSet` with a persistent volume claim — `docker-compose.yml`'s Postgres has no volume at
   all, and loses all data on `make down` deliberately, which is fine locally and never acceptable
   in production.
-- **`/healthz` and `/readyz` become `livenessProbe` and `readinessProbe`** on the `Deployment`
-  spec, polling the exact same admin-port endpoints chapter 10 and 15 already built — no new code,
-  just a Kubernetes manifest pointing at what already exists.
+- **`/livez` and `/readyz` become `livenessProbe` and `readinessProbe`** on the `Deployment`
+  spec, polling the admin-port endpoints chapters 10 and 20 already built — no new code, just a
+  Kubernetes manifest pointing at what already exists. Not `/healthz`: it pings Postgres, Redis
+  and NATS, and as a liveness probe one Redis outage would restart every replica at once, into an
+  `Init` that fails fast until Redis is back. Even as a readiness probe it would take the whole
+  fleet out of rotation over a cache this service degrades around (chapter 17). Add a
+  `startupProbe` on `/livez` long enough for the migrations `Init` runs, and keep
+  `terminationGracePeriodSeconds` above `servo.Main`'s 25-second shutdown deadline — the default
+  30 does. [Probes](../reference/lifecycle.md#probes) and [Sizing the grace period](../reference/lifecycle.md#sizing-the-grace-period) explain each number.
 - **`JWT_SECRET` becomes a `Secret`**, mounted as an environment variable via `secretKeyRef` rather
   than written into a manifest or a compose file in plain text (chapter 20's own do's and don'ts
   flags this exact gap in the tutorial's local setup).
@@ -277,8 +283,8 @@ changes several things this tutorial's local setup doesn't have to consider:
   replicas would.
 
 None of this requires touching `examples/tutorial`'s Go code; it's entirely a deployment-manifest
-concern layered on top of the same binary and the same `/healthz`/`/readyz`/`/metrics` contract
-chapters 10 and 15 already built for exactly this reason.
+concern layered on top of the same binary and the same `/livez`/`/readyz`/`/healthz`/`/metrics`
+contract the admin listener already serves for exactly this reason.
 
 ## Order lifecycle as a state machine
 

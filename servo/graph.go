@@ -12,7 +12,22 @@ type GraphNode struct {
 	Deps         []string `json:"deps"`
 	Capabilities []string `json:"capabilities"`
 	Binding      string   `json:"binding"`
-	Pos          string   `json:"pos"`
+	// Pos is where the node is declared — its provider, the servo.Value or
+	// servo.Trace call that asked for it, or the //servo:config type — as
+	// `servo graph` prints it. The generated App.Graph() leaves it empty:
+	// a position moves whenever a line is added above a constructor, and
+	// with the toolchain's patch release for a standard-library provider,
+	// so a committed file that carried one went stale for reasons that had
+	// nothing to do with the graph. Provider names what builds the node
+	// instead.
+	Pos string `json:"pos"`
+	// Provider is the function that builds the node, qualified by its
+	// package's name: postgres.New, or store.ServoConfig, the loader
+	// generated for a //servo:config type. It is empty where no function
+	// of the program builds the node — a supplied value, which the caller
+	// hands in, and a servo.Trace wrapper, which generated code constructs.
+	// Omitted from JSON when empty.
+	Provider string `json:"provider,omitempty"`
 	// Scope names the scope this node belongs to, by key type, and is
 	// empty for an ordinary singleton. For a scoped node, Level counts
 	// from its own scope's floor rather than the app's, since a scope's
@@ -56,7 +71,10 @@ type GraphRoute struct {
 	Group   string   `json:"group,omitempty"`
 	Handler string   `json:"handler"`
 	Args    []string `json:"args,omitempty"`
-	Pos     string   `json:"pos,omitempty"`
+	// Pos is the handler's declaration as `servo graph` prints it, and
+	// empty in the generated App.Graph() for the reason GraphNode.Pos is;
+	// Handler already names the function.
+	Pos string `json:"pos,omitempty"`
 }
 
 // GraphUse is one servo.Use attachment and what it wraps: "server",
@@ -84,7 +102,9 @@ type GraphHTTP struct {
 }
 
 // Graph is the full resolved object graph, serializable to the same JSON
-// schema `servo graph --format=json` produces at build time.
+// schema `servo graph --format=json` produces at build time — the same
+// document, in fact, except that only the build-time one carries
+// positions.
 type Graph struct {
 	Nodes []GraphNode `json:"nodes"`
 	// Scopes is omitted entirely when nothing is scoped.

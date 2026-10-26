@@ -52,9 +52,11 @@ linger window for the duration of one test, the way `servotest.Timeout` shrinks 
 an eviction that would otherwise be thirty seconds away happens while the test is still running.
 Without it, asserting that an instance is actually torn down means either sleeping for the real
 window or not asserting it at all. Generated code reads the override once per scope, inside `New`,
-so call it *before* constructing the app; and because the underlying setting is a package variable,
-a test using it must not run in parallel. [Chapter 15](15-scoped-instances.md) uses it for exactly
-this.
+so call it *before* constructing the app. Because the underlying setting is a package variable, a
+test using it cannot run in parallel, and both helpers enforce that rather than leave it to
+discipline: they call `t.Setenv`, so a test that also calls `t.Parallel` fails at once with the
+standard library's own message instead of racing a sibling test.
+[Chapter 15](15-scoped-instances.md) uses it for exactly this.
 
 ## Tier 2: proving the HTTP contract, not just the handlers
 
@@ -94,10 +96,13 @@ func newTestServer(t *testing.T) (*httptest.Server, *mocks.MockOrderRepository, 
 	// request per test, ever; see
 	// TestRateLimiterRejectsRequestsOverTheLimitAndCountsIt for the test
 	// that actually wants that.
-	authCfg := auth.Config{Secret: "test-secret", Expiry: time.Hour}
+	authCfg := auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour}
 	limitCfg := resilience.Config{RPS: 1000}
 	sessionSettings := session.NewSettings(session.Config{Recent: 10})
-	issuer := auth.New(authCfg)
+	issuer, err := auth.New(authCfg)
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
 	orders := service.New(repo, orderCache, pub, quietLogger())
 	authSvc := service.NewAuthService(users, issuer)
 	metrics := observability.NewMetrics()
@@ -165,7 +170,10 @@ func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	apiCfg := api.Config{HTTPAddr: "127.0.0.1:0"}
 	limitCfg := resilience.Config{RPS: 1000}
-	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatalf("auth.New: %v", err)
+	}
 	orders := service.New(mocks.NewMockOrderRepository(ctrl), mocks.NewMockOrderCache(ctrl), mocks.NewMockEventPublisher(ctrl))
 	authSvc := service.NewAuthService(mocks.NewMockUserRepository(ctrl), issuer)
 	tracer, err := observability.NewTracer(observability.Config{})
