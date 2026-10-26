@@ -760,13 +760,35 @@ $ servo explain api.Server
   capabilities: Runner, Drainer, Finalizer, Readier
 ```
 
-`binding` is one of three values, and it is the answer to "why this provider":
+`binding` is the answer to "why this provider". For a node a constructor builds, it is one of
+three values:
 
 | Value | Meaning |
 | --- | --- |
 | `explicit bind` | A `servo.Bind` (or `Override`) named this concrete type. The line names the interface and where the Bind is written — `, via servo.Include` when it came from an included marker set rather than the spec file |
 | `sole candidate` | Exactly one function in the module returns this exact type |
 | `sole implementation` | The parameter is an interface, and exactly one candidate in the main module implements it. The line names the interface |
+
+A node no constructor builds says what it is instead: `supplied` for a `servo.Value`,
+`config directive` for a [`//servo:config`](config.md) type, `traced` for a
+[trace wrapper](tracing.md), `scope key` for the key a [scope](scopes.md) keeps one instance per,
+and `construction context` for the `context.Context` a constructor takes, which is the ctx `New`
+was called with. Each of them can be asked about like any other node, because `explain` lists them
+among a node's dependencies:
+
+```
+$ servo explain --dir examples/scoped chat.RoomKey
+example.com/servoscoped/chat.RoomKey
+  provider:     (*chat.Room).ScopeKey, on each acquire (chat/chat.go:91:14)
+  binding:      scope key
+  lifetime:     per acquire — read from the acquiring context; the scope keeps one instance per key
+  level:        0
+  depends on:   none
+  depended on:  *example.com/servoscoped/chat.RoomLog, *example.com/servoscoped/chat.Room
+  capabilities: none
+```
+
+A dependent is listed once, however many of its parameters the node answers.
 
 Asking about the interface itself answers the same question from the other end. Nodes are keyed by
 the type a provider returns, but the type you read in a constructor's parameter list is often an

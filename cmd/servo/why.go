@@ -342,21 +342,31 @@ func allPathsTo(resolved *resolve.Resolved, target *resolve.Node, limit int) (pa
 // resolved node, so a plain walk over Deps would stop at the interface and
 // report every scoped node as unreachable from any root — which is exactly
 // backwards: they are in the binary *because* something acquires them.
+//
+// Every other dependency is a real edge, a supplied value, a config, a
+// scope's key and the construction context included: the consumer depends
+// on each exactly as on a constructed one, and `explain` names them all,
+// so `why` has to reach them too. Each dependency is followed once,
+// however many parameters it answers — a constructor taking one node as
+// two interfaces is one reason it is in the binary, and `why --all`
+// printed that path twice.
 func scopeAwareDeps(n *resolve.Node) []*resolve.Node {
 	var out []*resolve.Node
+	seen := map[*resolve.Node]bool{}
+	follow := func(d *resolve.Node) {
+		if !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
 	for _, dep := range n.Deps {
 		switch dep.Kind {
 		case resolve.NodeScopeAccessor:
 			if dep.ScopeRoot != nil && dep.ScopeRoot.Node != nil {
-				out = append(out, dep.ScopeRoot.Node)
+				follow(dep.ScopeRoot.Node)
 			}
-		case resolve.NodeProvider, resolve.NodeSupplied, resolve.NodeConfig, resolve.NodeTraced:
-			// A supplied value or a config is a real edge — the consumer
-			// depends on it exactly as it would on a constructed one — so
-			// `why` has to traverse it or report a node it can plainly see
-			// as unreachable. NodeScopeKey is still skipped: it has no
-			// provider and no declaration site to lead anywhere.
-			out = append(out, dep)
+		default:
+			follow(dep)
 		}
 	}
 	return out
