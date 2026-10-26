@@ -249,6 +249,22 @@ func TestFuncDeclOfMisses(t *testing.T) {
 	}
 }
 
+// The declaring package is found wherever it sits among the loaded ones:
+// a package of another path, or one loaded without types, is passed over
+// rather than ending the search.
+func TestFuncDeclOfLooksPastOtherPackages(t *testing.T) {
+	pkg, _, pkgs := checkScopeKeyFixture(t)
+	m := pkg.Scope().Lookup("Good").Type().(*types.Named).Method(0)
+	others := []*packages.Package{
+		{PkgPath: "example.com/untyped"},
+		{PkgPath: "example.com/elsewhere", Types: types.NewPackage("example.com/elsewhere", "elsewhere")},
+		pkgs[0],
+	}
+	if got := FuncDeclOf(others, m); got == nil || got.Name.Name != ScopeKeyMethodName {
+		t.Fatalf("FuncDeclOf = %v, want the fixture's ScopeKey declaration", got)
+	}
+}
+
 func TestReceiverIsBlankRejectsNonMethods(t *testing.T) {
 	if ReceiverIsBlank(nil) {
 		t.Fatal("nil decl reported blank")

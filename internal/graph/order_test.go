@@ -78,3 +78,57 @@ func TestSourceOrderOutsideModulesAndNil(t *testing.T) {
 		t.Errorf("nil order: Compare = %d, ComparePos = %d", got, want)
 	}
 }
+
+// Two module directories of the same length still rank by module path,
+// whichever order the packages arrive in, and a position outside every
+// module sorts after a module position from either side of the compare.
+func TestSourceOrderTiesAndOutsiders(t *testing.T) {
+	root := t.TempDir()
+	aaa, bbb := filepath.Join(root, "aaa"), filepath.Join(root, "bbb")
+	inAAA := token.Position{Filename: filepath.Join(aaa, "a.go"), Line: 1}
+	inBBB := token.Position{Filename: filepath.Join(bbb, "a.go"), Line: 1}
+	outside := token.Position{Filename: "/aaa/goroot/src/fmt/print.go", Line: 1}
+	for _, pkgs := range [][]*packages.Package{
+		{modulePkg(aaa, "example.com/zeta"), modulePkg(bbb, "example.com/alpha")},
+		{modulePkg(bbb, "example.com/alpha"), modulePkg(aaa, "example.com/zeta")},
+	} {
+		o := NewSourceOrder(pkgs)
+		if got := o.Compare(inBBB, inAAA); got >= 0 {
+			t.Errorf("Compare(alpha's file, zeta's file) = %d, want < 0: example.com/alpha sorts first wherever its directory sorts", got)
+		}
+		if got := o.Compare(outside, inAAA); got <= 0 {
+			t.Errorf("Compare(outside, module) = %d, want > 0", got)
+		}
+	}
+}
+
+// Two spellings of one file — reached through a symlinked or unclean
+// directory — are the same file to SourceOrder, so their raw names decide,
+// which keeps the order total.
+func TestSourceOrderTwoSpellingsOfOneFile(t *testing.T) {
+	root := t.TempDir()
+	o := NewSourceOrder([]*packages.Package{modulePkg(root, "example.com/app")})
+	clean := token.Position{Filename: filepath.Join(root, "a.go"), Line: 9}
+	unclean := token.Position{Filename: root + string(filepath.Separator) + "." + string(filepath.Separator) + "a.go", Line: 2}
+	if got, want := o.Compare(clean, unclean), ComparePos(clean, unclean); got != want {
+		t.Errorf("Compare = %d, want ComparePos's %d", got, want)
+	}
+	if o.Compare(clean, unclean) != -o.Compare(unclean, clean) {
+		t.Error("Compare is not antisymmetric for two spellings of one file")
+	}
+}
+
+// The zero SourceOrder — written as a literal rather than built by
+// NewSourceOrder — knows no module, so every file is outside one and they
+// order by slash path; it fills in its memo on first use instead of
+// writing to a nil map.
+func TestSourceOrderZeroValue(t *testing.T) {
+	var o SourceOrder
+	a, b := token.Position{Filename: "/a/z.go", Line: 9}, token.Position{Filename: "/b/a.go", Line: 1}
+	if got := o.Compare(a, b); got >= 0 {
+		t.Errorf("Compare(/a/z.go, /b/a.go) = %d, want < 0", got)
+	}
+	if got := o.Compare(b, a); got <= 0 {
+		t.Errorf("Compare(/b/a.go, /a/z.go) = %d, want > 0", got)
+	}
+}

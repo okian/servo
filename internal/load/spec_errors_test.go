@@ -25,6 +25,14 @@ func TestFindSpecReportsTheSpecFilesOwnTypeErrors(t *testing.T) {
 		{"a mistyped type name", "\t\tservo.Root[*api.Sever](),\n", "undefined: api.Sever"},
 		{"a package the spec did not import", "\t\tservo.Bind[store.Store, *redis.Client](),\n", "undefined: redis"},
 		{"a mistyped marker", "\t\tservo.Rot[*api.Server](),\n", "undefined: servo.Rot"},
+		// A composite type built from the mistyped name is still a type, so
+		// the checker records the instantiation, and servo has to find the
+		// invalid type inside it to know the marker cannot be read.
+		{"a slice of a mistyped type", "\t\tservo.Root[[]api.Sever](),\n", "undefined: api.Sever"},
+		{"an array of one", "\t\tservo.Root[[2]api.Sever](),\n", "undefined: api.Sever"},
+		{"a map of one", "\t\tservo.Root[map[string]api.Sever](),\n", "undefined: api.Sever"},
+		{"a channel of one", "\t\tservo.Root[chan api.Sever](),\n", "undefined: api.Sever"},
+		{"a generic type instantiated with one", "\t\tservo.Root[servo.Json[[]api.Sever]](),\n", "undefined: api.Sever"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -133,6 +141,26 @@ func TestBindToATypeThatDoesNotImplementTheInterface(t *testing.T) {
 			decl:     "\t\tservo.Bind[store.Store, *value.Value](),\n\t\tservo.Override[store.Store, *mocks.Store](),\n",
 			want:     []string{"servo.Override[store.Store, *mocks.Store](): *mocks.Store does not implement store.Store (missing method Put)"},
 			mockHint: true,
+		},
+		{
+			// The type arguments in the wrong order, or a concrete type
+			// where the interface goes: there is no method to name.
+			name: "a concrete first type argument",
+			decl: "\t\tservo.Bind[*api.Server, *cache.Cache](),\n",
+			want: []string{"servo.Bind[*api.Server, *cache.Cache](): *cache.Cache is not assignable to *api.Server — Bind names the implementation used wherever an interface is requested, so its first type argument is that interface"},
+		},
+		{
+			// An unnamed type has no declaration to read as generated.
+			name: "an unnamed concrete type",
+			decl: "\t\tservo.Bind[store.Store, []string](),\n",
+			want: []string{"servo.Bind[store.Store, []string](): []string does not implement store.Store (missing method Get)"},
+		},
+		{
+			// No method is missing from a type that fails a type set, so
+			// there is no method to name either.
+			name: "an interface only a type set satisfies",
+			decl: "\t\tservo.Bind[comparable, []string](),\n",
+			want: []string{"[]string does not implement comparable (it does not satisfy the interface)"},
 		},
 	}
 	for _, c := range cases {

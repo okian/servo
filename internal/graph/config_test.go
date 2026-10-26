@@ -255,6 +255,64 @@ type cfg struct {
 	b string ` + "`config:\"x\"`" + `
 }
 `, `declared twice`},
+		{"uppercase section key", `
+package db
+
+//servo:config prefix=DB key=Primary
+type cfg struct {
+	x string ` + "`config:\"x\"`" + `
+}
+`, `key "Primary" must be lower_snake`},
+		{"stray comma", `
+package db
+
+//servo:config prefix=DB
+type cfg struct {
+	x string ` + "`config:\"x,,secret\"`" + `
+}
+`, "has an empty option (a stray comma?)"},
+		{"bad bool default", `
+package db
+
+//servo:config prefix=DB
+type cfg struct {
+	x bool ` + "`config:\"x,default=yes\"`" + `
+}
+`, `default "yes" is not a valid bool`},
+		// A default is parsed with the field's own bit size, the one the
+		// loader parses the environment with: 128 is an int, not an int8.
+		{"int8 default out of range", `
+package db
+
+//servo:config prefix=DB
+type cfg struct {
+	x int8 ` + "`config:\"x,default=128\"`" + `
+}
+`, `default "128" is not a valid int8`},
+		{"negative uint default", `
+package db
+
+//servo:config prefix=DB
+type cfg struct {
+	x uint16 ` + "`config:\"x,default=-1\"`" + `
+}
+`, `default "-1" is not a valid uint16`},
+		{"float32 default out of range", `
+package db
+
+//servo:config prefix=DB
+type cfg struct {
+	x float32 ` + "`config:\"x,default=1e39\"`" + `
+}
+`, `default "1e39" is not a valid float32`},
+		{"basic type outside the set", `
+package db
+
+//servo:config prefix=DB
+type cfg struct {
+	x complex128 ` + "`config:\"x\"`" + `
+}
+`, "unsupported type complex128"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -359,6 +417,92 @@ func TestScanConfigsReportsEveryErrorInSourceOrder(t *testing.T) {
 		}
 		if got != want {
 			t.Errorf("package order %d reported\n%s\nwant\n%s", i, got, want)
+		}
+	}
+}
+
+// Every field type the loader supports is read as its own kind, and each
+// default is checked by that kind's own parser at its own bit size — the
+// parse the generated loader will run at startup, so a default that
+// passes here cannot fail there.
+func TestScanConfigsReadsEveryKind(t *testing.T) {
+	decls, err := scanOne(t, `
+package db
+
+import "time"
+
+//servo:config prefix=ALL
+type cfg struct {
+	s   string        `+"`config:\"s,default=hello\"`"+`
+	b   bool          `+"`config:\"b,default=true\"`"+`
+	i   int           `+"`config:\"i,default=-1\"`"+`
+	i8  int8          `+"`config:\"i8,default=-128\"`"+`
+	i16 int16         `+"`config:\"i16,default=32767\"`"+`
+	i32 int32         `+"`config:\"i32,default=7\"`"+`
+	i64 int64         `+"`config:\"i64,default=9223372036854775807\"`"+`
+	u   uint          `+"`config:\"u,default=1\"`"+`
+	u8  uint8         `+"`config:\"u8,default=255\"`"+`
+	u16 uint16        `+"`config:\"u16,default=65535\"`"+`
+	u32 uint32        `+"`config:\"u32,default=4294967295\"`"+`
+	u64 uint64        `+"`config:\"u64,default=18446744073709551615\"`"+`
+	f32 float32       `+"`config:\"f32,default=1.5\"`"+`
+	f64 float64       `+"`config:\"f64,default=2.25\"`"+`
+	d   time.Duration `+"`config:\"d,default=1s\"`"+`
+}
+`)
+	if err != nil {
+		t.Fatalf("ScanConfigs: %v", err)
+	}
+	want := map[string]ConfigKind{
+		"s": KindString, "b": KindBool,
+		"i": KindInt, "i8": KindInt8, "i16": KindInt16, "i32": KindInt32, "i64": KindInt64,
+		"u": KindUint, "u8": KindUint8, "u16": KindUint16, "u32": KindUint32, "u64": KindUint64,
+		"f32": KindFloat32, "f64": KindFloat64, "d": KindDuration,
+	}
+	if len(decls) != 1 || len(decls[0].Fields) != len(want) {
+		t.Fatalf("decls = %v, want one config with %d fields", decls, len(want))
+	}
+	for _, f := range decls[0].Fields {
+		if f.Kind != want[f.Name] {
+			t.Errorf("field %s: kind %s, want %s", f.Name, f.Kind.GoType(), want[f.Name].GoType())
+		}
+		if !f.HasDefault {
+			t.Errorf("field %s: default not recorded", f.Name)
+		}
+	}
+}
+
+// GoType and StrconvBits are each kind's two facts the emitter writes into
+// the generated loader: the type it declares and the bitSize it parses
+// with. A value outside the set has no Go type to name.
+func TestConfigKindGoTypeAndStrconvBits(t *testing.T) {
+	for _, c := range []struct {
+		kind   ConfigKind
+		goType string
+		bits   int
+	}{
+		{KindString, "string", 0},
+		{KindBool, "bool", 0},
+		{KindInt, "int", 0},
+		{KindInt8, "int8", 8},
+		{KindInt16, "int16", 16},
+		{KindInt32, "int32", 32},
+		{KindInt64, "int64", 64},
+		{KindUint, "uint", 0},
+		{KindUint8, "uint8", 8},
+		{KindUint16, "uint16", 16},
+		{KindUint32, "uint32", 32},
+		{KindUint64, "uint64", 64},
+		{KindFloat32, "float32", 32},
+		{KindFloat64, "float64", 64},
+		{KindDuration, "time.Duration", 0},
+		{ConfigKind(99), "?", 0},
+	} {
+		if got := c.kind.GoType(); got != c.goType {
+			t.Errorf("ConfigKind(%d).GoType() = %q, want %q", c.kind, got, c.goType)
+		}
+		if got := c.kind.StrconvBits(); got != c.bits {
+			t.Errorf("%s.StrconvBits() = %d, want %d", c.goType, got, c.bits)
 		}
 	}
 }
