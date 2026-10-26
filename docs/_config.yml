@@ -70,6 +70,30 @@ defaults:
       description: >-
         What servo cannot do, separated into permanent consequences of
         build-time resolution, deliberate omissions, and gaps.
+  - scope:
+      path: coming-from-wire-and-fx.md
+    values:
+      layout: page
+      description: >-
+        Every google/wire and uber-go/fx concept mapped to servo's — Provide,
+        Invoke, Supply, Annotate, Replace, Decorate, Module, names and groups —
+        including the ones with no equivalent, and what to write instead.
+  - scope:
+      path: servo-in-ci.md
+    values:
+      layout: page
+      description: >-
+        Running servo check in CI: a workflow to copy, exit codes, pinning,
+        go.work and --scope, vendoring, cross-compiling, merge queues, and
+        what a check costs.
+  - scope:
+      path: running-in-production.md
+    values:
+      layout: page
+      description: >-
+        Deploying a servo-built service: GOMAXPROCS and GOMEMLIMIT in
+        containers, probes, the shutdown grace period, HTTP timeouts and
+        profiling.
 
 # examples/ and the repo's own Go modules live outside docs/ and are never
 # part of the site, but exclude defensively so a future move can't drag a
@@ -78,6 +102,9 @@ exclude:
   - "**/*.go"
   - "**/go.mod"
   - "**/go.sum"
+  # The docs job installs the site's gems from these; they are not pages.
+  - Gemfile
+  - Gemfile.lock
 
 kramdown:
   # Heading ids are what the on-this-page TOC links to.

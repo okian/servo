@@ -6,33 +6,37 @@
 //
 //	[L1] *example.com/app.Logger
 //	      deps: none
-//	      capabilities: Finalizer | binding: sole candidate | app.go:7:6
+//	      capabilities: Finalizer | binding: sole candidate | app.NewLogger
 //	[L2] *example.com/app.DB
 //	      deps: *example.com/app.Logger
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | app.go:17:6
+//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | app.NewDB
 //	[L2] *example.com/app.Cache
 //	      deps: *example.com/app.Logger
-//	      capabilities: Initializer | binding: sole candidate | app.go:21:6
+//	      capabilities: Initializer | binding: sole candidate | app.NewCache
 //	[L3] *example.com/app.Server
 //	      deps: *example.com/app.DB, *example.com/app.Cache
-//	      capabilities: Initializer, Runner, Drainer, Finalizer, Readier | binding: sole candidate | app.go:29:6
+//	      capabilities: Initializer, Runner, Drainer, Finalizer, Readier | binding: sole candidate | app.NewServer
 //	[L2] *example.com/app.Worker
 //	      deps: *example.com/app.Logger
-//	      capabilities: Runner | binding: sole candidate | app.go:33:6
+//	      capabilities: Runner | binding: sole candidate | app.NewWorker
 package app
 
 import (
 	"context"
-	"errors"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
 	"github.com/okian/servo/v3/servo"
-	"golang.org/x/sync/errgroup"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type App struct {
 	logger           *Logger
@@ -53,73 +57,58 @@ type App struct {
 func New(ctx context.Context) (*App, error) {
 	a := &App{}
 
+	var undo []func(context.Context) servo.NodeResult
+
 	logger := NewLogger()
 	a.logger = logger
+	undo = append(undo, a.stopLogger)
 
 	db, dbCleanup, err := NewDB(logger)
 	if err != nil {
-		_ = a.stopLogger(context.WithoutCancel(ctx))
+		a.unwind(context.WithoutCancel(ctx), undo)
 		return nil, err
 	}
 	a.db = db
 	a.dbCleanup = dbCleanup
+	undo = append(undo, a.stopDb)
 
 	cache := NewCache(logger)
 	a.cache = cache
 
 	server := NewServer(db, cache)
 	a.server = server
+	undo = append(undo, a.stopServer)
 
 	worker := NewWorker(logger)
 	a.worker = worker
 
-	{
-		var timingMu sync.Mutex
-		g, gctx := errgroup.WithContext(ctx)
-		g.Go(func() error {
-			start := time.Now()
-			err := a.db.Init(gctx)
-			timingMu.Lock()
-			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/app.DB", Duration: time.Since(start)})
-			timingMu.Unlock()
-			return err
-		})
-		g.Go(func() error {
-			start := time.Now()
-			err := a.cache.Init(gctx)
-			timingMu.Lock()
-			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/app.Cache", Duration: time.Since(start)})
-			timingMu.Unlock()
-			return err
-		})
-		if err := g.Wait(); err != nil {
-			report := a.Shutdown(context.WithoutCancel(ctx))
-			if report.Clean() {
-				return nil, err
-			}
-			return nil, errors.Join(err, report)
-		}
-	}
-	{
-		start := time.Now()
-		err := a.server.Init(ctx)
-		a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/app.Server", Duration: time.Since(start)})
-		if err != nil {
-			report := a.Shutdown(context.WithoutCancel(ctx))
-			if report.Clean() {
-				return nil, err
-			}
-			return nil, errors.Join(err, report)
-		}
+	if err := servoimpl.Init(ctx, servo.DefaultInitBudget, &a.startupReport,
+		[]servoimpl.Call{
+			{Node: "*example.com/app.DB", Fn: a.db.Init},
+			{Node: "*example.com/app.Cache", Fn: a.cache.Init},
+		},
+		[]servoimpl.Call{
+			{Node: "*example.com/app.Server", Fn: a.server.Init},
+		},
+	); err != nil {
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	return a, nil
+}
+
+// unwind stops, newest first, every node built before a constructor failed:
+// undo holds their stop methods in the order the nodes were built.
+func (a *App) unwind(ctx context.Context, undo []func(context.Context) servo.NodeResult) {
+	for i := len(undo) - 1; i >= 0; i-- {
+		_ = undo[i](ctx)
+	}
 }
 
 func (a *App) stopLogger(ctx context.Context) servo.NodeResult {
 	a.loggerStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.Logger", a.logger.Stop))
-		a.loggerStopResult = servo.MergeNodeResults("*example.com/app.Logger", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.Logger", a.logger.Stop))
+		a.loggerStopResult = servoimpl.MergeNodeResults("*example.com/app.Logger", results...)
 	})
 	return a.loggerStopResult
 }
@@ -127,11 +116,11 @@ func (a *App) stopLogger(ctx context.Context) servo.NodeResult {
 func (a *App) stopDb(ctx context.Context) servo.NodeResult {
 	a.dbStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.DB", a.db.Stop))
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.DB", a.db.Stop))
 		if a.dbCleanup != nil {
-			results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.DB", func(context.Context) error { a.dbCleanup(); return nil }))
+			results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.DB", func(context.Context) error { a.dbCleanup(); return nil }))
 		}
-		a.dbStopResult = servo.MergeNodeResults("*example.com/app.DB", results...)
+		a.dbStopResult = servoimpl.MergeNodeResults("*example.com/app.DB", results...)
 	})
 	return a.dbStopResult
 }
@@ -139,18 +128,18 @@ func (a *App) stopDb(ctx context.Context) servo.NodeResult {
 func (a *App) stopServer(ctx context.Context) servo.NodeResult {
 	a.serverStopOnce.Do(func() {
 		var results []servo.NodeResult
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.Server", a.server.Drain))
-		results = append(results, servo.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.Server", a.server.Stop))
-		a.serverStopResult = servo.MergeNodeResults("*example.com/app.Server", results...)
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.Server", a.server.Drain))
+		results = append(results, servoimpl.RunStop(ctx, servo.DefaultStopBudget, "*example.com/app.Server", a.server.Stop))
+		a.serverStopResult = servoimpl.MergeNodeResults("*example.com/app.Server", results...)
 	})
 	return a.serverStopResult
 }
 
 func (a *App) Run(ctx context.Context) error {
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return a.server.Run(gctx) })
-	g.Go(func() error { return a.worker.Run(gctx) })
-	return g.Wait()
+	return servoimpl.Run(ctx, servo.DefaultRunGrace,
+		servoimpl.Call{Node: "*example.com/app.Server", Fn: a.server.Run},
+		servoimpl.Call{Node: "*example.com/app.Worker", Fn: a.worker.Run},
+	)
 }
 
 func (a *App) Shutdown(ctx context.Context) servo.Report {
@@ -161,8 +150,8 @@ func (a *App) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -196,11 +185,11 @@ func (a *App) Ready(ctx context.Context) servo.Report {
 
 func (a *App) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/app.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Pos: "app.go:7:6"},
-		{Type: "*example.com/app.DB", Level: 2, Deps: []string{"*example.com/app.Logger"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Pos: "app.go:17:6"},
-		{Type: "*example.com/app.Cache", Level: 2, Deps: []string{"*example.com/app.Logger"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Pos: "app.go:21:6"},
-		{Type: "*example.com/app.Server", Level: 3, Deps: []string{"*example.com/app.DB", "*example.com/app.Cache"}, Capabilities: []string{"Initializer", "Runner", "Drainer", "Finalizer", "Readier"}, Binding: "sole candidate", Pos: "app.go:29:6"},
-		{Type: "*example.com/app.Worker", Level: 2, Deps: []string{"*example.com/app.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Pos: "app.go:33:6"},
+		{Type: "*example.com/app.Logger", Level: 1, Deps: nil, Capabilities: []string{"Finalizer"}, Binding: "sole candidate", Provider: "app.NewLogger"},
+		{Type: "*example.com/app.DB", Level: 2, Deps: []string{"*example.com/app.Logger"}, Capabilities: []string{"Initializer", "Finalizer", "Healther"}, Binding: "explicit bind", Provider: "app.NewDB"},
+		{Type: "*example.com/app.Cache", Level: 2, Deps: []string{"*example.com/app.Logger"}, Capabilities: []string{"Initializer"}, Binding: "sole candidate", Provider: "app.NewCache"},
+		{Type: "*example.com/app.Server", Level: 3, Deps: []string{"*example.com/app.DB", "*example.com/app.Cache"}, Capabilities: []string{"Initializer", "Runner", "Drainer", "Finalizer", "Readier"}, Binding: "sole candidate", Provider: "app.NewServer"},
+		{Type: "*example.com/app.Worker", Level: 2, Deps: []string{"*example.com/app.Logger"}, Capabilities: []string{"Runner"}, Binding: "sole candidate", Provider: "app.NewWorker"},
 	}}
 }
 

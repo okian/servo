@@ -87,13 +87,16 @@ for exactly this. Two local declarations of one thing remain the duplicate error
 4. Structural auto-bind — exactly one candidate in scope whose return type implements the
    requested interface (`types.Implements`).
 
-Zero matches and more than one match both render through the same diagnostic shape ("servo: no
-provider for ..." — `unresolvedDiagnostic` in `internal/resolve/diagnostics.go`); they differ only
-in whether there's a candidate list worth suggesting. For an ambiguous interface, that's one
-`servo.Bind[I, C]()` suggestion per implementer; for a concrete type produced by more than one
-function, it's "remove or rename all but one" instead, since no `Bind` can disambiguate two
-constructors that return the identical type. Every diagnostic also prints the full "needed by"
-chain back to the root that demanded the missing type, not just the immediate consumer.
+Zero matches and more than one match render through one diagnostic (`unresolvedDiagnostic` in
+`internal/resolve/diagnostics.go`), headed "servo: no provider for ..." or "servo: ambiguous
+provider for ..." accordingly. For an ambiguous interface it suggests one `servo.Bind[I, C]()` per
+implementer, spelled the way the spec file writes types, plus the imports the spec would need; for
+a concrete type produced by more than one function it says to delete all but one, or to give each
+instance its own named type, since no `Bind` can disambiguate two constructors that return the
+identical type and renaming a function changes nothing. A "no provider" also lists near misses —
+functions skipped for their shape, candidates the injector cannot reference, a `T` where `*T` was
+asked for (`nearmiss.go`). Every diagnostic prints the full "needed by" chain back to the root that
+demanded the missing type, not just the immediate consumer.
 
 "Scope" for structural search is the whole main module (`mainModuleScope` in pipeline.go), not
 just packages the requesting package itself imports — narrowing it that way would defeat the
@@ -249,7 +252,7 @@ and what doesn't is a handful of small runtime types (`Json`, `HTTPStatus`/`Stat
 `HTTPListener`). Each group's server is a pseudo-root: constructed after every node and before the
 Init phase (wiring only, except the named-group `HTTPConfig.Groups` lookup, the one runtime check —
 placed ahead of `Init` so a wrong name fails before anything expensive starts; the listener binds in
-`Run`, which is what `Ready`'s per-group entries report), joined into `Run`'s errgroup,
+`Run`, which is what `Ready`'s per-group entries report), supervised by `Run` with the runners,
 and stopped **first** in `Shutdown` — the inbound edges drain before anything beneath them. A spec
 with no `servo.HTTP()` emits a byte-identical file, the same invariant scopes hold.
 
@@ -283,10 +286,12 @@ only path to the implementation's `Stop` runs through the wrapper. A wrapper aro
 implementation is refused after membership is known (`checkTraces`), before the generic
 widening walk would describe the same edge less well.
 
-The tracer provider is the one key whose exact-type selection is restricted to the main module
-(`selectProvider`): the OpenTelemetry packages return `trace.TracerProvider` from several
-functions of their own — the global getter, the no-op provider — and "remove or rename all but
-one" is not advice a user can take about a module they do not own. A module in which nothing
+Exact-type selection prefers the main module (`selectProvider`): with several exact candidates,
+the module's own constructor wins, and one from a dependency is used only when the module has
+none, so a module can provide its own `*slog.Logger` despite `slog.New` and `slog.Default`. The
+tracer provider goes further and is never answered from outside the module: the OpenTelemetry
+packages return `trace.TracerProvider` from several functions of their own — the global getter,
+the no-op provider — none of which is a provider anyone meant. A module in which nothing
 imports the trace API gets a diagnostic naming the import instead of a wrapper written against a
 package the build cannot see (`TraceInput` is nil; the pipeline looks the type up in
 `Loaded.ByPath`).
@@ -305,9 +310,10 @@ declaring no `Trace` emits a byte-identical file.
 Two written-differently type expressions can name the same type: a defined alias
 (`type DBAlias = *DB`), a pointer to one, or an identical type reachable through two different
 import paths. `internal/graph.Key` is what the rest of the pipeline uses to decide "is this the
-same node" — built from `types.Unalias`, recursed through `*types.Pointer` (`unaliasDeep`), so
-`*DB` and `*DBAlias` collapse to one graph node instead of two that happen to construct identical
-values.
+same node" — built from `types.Unalias` applied at every depth (`unaliasDeep`: pointers, type
+arguments, element types, signatures, fields), so `*DB` and `*DBAlias`, or `Cache[DBAlias]` and
+`Cache[*DB]`, collapse to one graph node instead of two that happen to construct identical
+values. The empty interface is the one alias kept: `any` and `interface{}` both key as `any`.
 
 ## Why the markers panic
 
@@ -347,22 +353,29 @@ wrapper, no file read — instead of failing an injector whose production graph 
 
 ## Writes are atomic, checks never write, and what is written is compiled
 
-`servo generate` writes by creating a temp file in the target's own directory and renaming it into
-place (`writeFileAtomic`), never by truncating and rewriting the target directly — a process
-killed mid-write leaves the previous, complete file untouched instead of a truncated one. `check`
-never writes at all: it re-runs the same resolve-and-emit — the override variant too — and diffs
-the result against what's already committed (`checkOne` and `checkTestVariant` in
-`cmd/servo/check.go`), so CI can catch drift without a mutating step.
+`servo generate` resolves and emits every graph an injector writes a file for — the override
+variant's included — before it writes any of them (`planOne` in `cmd/servo/generate.go`), then
+writes each file by creating a temp file in the target's own directory and renaming it into place
+(`writeFileAtomic`), never by truncating and rewriting the target directly — a process killed
+mid-write leaves the previous, complete file untouched instead of a truncated one. A file whose
+bytes would not change is not written at all, so a no-op run leaves every modification time
+alone. `check` never writes at all: it re-runs the same resolve-and-emit — the override variant
+too — and diffs the result against what's already committed (`checkOne` and `checkTestVariant` in
+`cmd/servo/check.go`), so CI can catch drift without a mutating step. Both look for the generated
+files nothing produces any more — a test variant whose last `Override` went, a config loader whose
+`//servo:config` type moved — which `generate` removes and `check` refuses.
 
 The emitter formats its output but does not type-check it, so a shadowed package identifier or an
 import of a `package main` used to leave `servo generate` reporting success on a file `go build`
 rejected. `load.Verify` closes that gap after the write: it loads the packages the files landed
 in once more, under the configuration the generated files are gated for (the user's tags without
-`servoinject`) with the fresh files overlaid, and reports every compile error positioned inside
-one of them. The write comes first on purpose — the broken output is what a bug report needs, and
-the `go mod tidy` a first import of `errgroup` or a config decoder calls for needs the import to
-exist — which is also why a package whose imports `go list` cannot resolve yet is skipped rather
-than judged.
+`servoinject`) with the fresh files overlaid, and reports every error `go build` would stop on
+inside one of them — the go command's own list errors (an `internal/` import, an import cycle)
+as well as the type checker's. `check` runs it too, over the committed files it found current. The
+write comes first on purpose — the broken output is what a bug report needs, and the
+`go mod tidy` a first import of a config decoder calls for needs the import to exist — which is
+also why a package whose imports `go list` cannot resolve yet is reported as unchecked, with the
+go command's reason, rather than judged.
 
 ## Everything else
 

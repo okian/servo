@@ -3,14 +3,25 @@ name: Release
 # Every version tag becomes a GitHub release: one archive per architecture
 # the Go toolchain supports on Linux, macOS and Windows, each holding the
 # two binaries this module ships, servo and servo-vet, plus a checksums
-# file, with the tag's section of CHANGELOG.md as the notes.
+# file, a signed build-provenance attestation for every archive, and the
+# tag's section of CHANGELOG.md as the notes. RELEASING.md is the
+# maintainer's side of all this, and says how to verify a download.
 #
-# `go install github.com/okian/servo/v3/cmd/servo@<tag>` stays the primary
-# way to get the CLI: nothing to download by hand, and always the version a
-# consumer pinned in go.mod. The archives are for the places that have no
-# Go toolchain, or must not build at install time — a CI image that only
-# runs `servo check`, a container stage that copies a binary in, a machine
-# whose egress rules block the module proxy.
+# The archives install the CLI; they do not stand in for Go. servo loads
+# the module it generates for through the go command, so `go` has to be on
+# PATH wherever either binary runs — without it servo stops at `load: err:
+# go command required, not found`. The recommended install pins the version
+# where the code is: `go get -tool github.com/okian/servo/v3/cmd/servo`
+# records it in the consumer's go.mod, and `go tool servo` then runs that
+# version for every developer and CI runner alike. The archives are for
+# where building servo itself is unwanted — a CI image that only runs
+# `servo check`, a container stage that copies a binary in, a machine whose
+# module proxy does not carry servo's own dependencies.
+#
+# cut-release.yml is how a release starts: it checks everything the plan
+# job below checks before the tag exists, creates the tag, and dispatches
+# this workflow on it, since a tag created with the workflow token starts
+# no workflow by itself. A tag pushed by hand starts it directly.
 on:
   push:
     tags: [ 'v[0-9]*' ]
@@ -18,26 +29,23 @@ on:
   # runner outage — instead of deleting and re-pushing the tag. The module
   # proxy caches a version the first time anyone asks for it, so a re-pushed
   # tag on a different commit would hand `go install` and this release two
-  # different binaries under one version.
+  # different binaries under one version. Dispatched on the tag itself,
+  # `gh workflow run release.yml --ref v3.5.0`, never on a branch: the plan
+  # job's first step says why.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Existing tag to release, e.g. v3.4.0'
-        required: true
-        type: string
 
-# Only the publish job writes anything, and it says so itself.
+# Only the attest and publish jobs write anything, and each says so itself.
 permissions:
   contents: read
 
 # A dispatch for the tag a push is already releasing waits its turn: two
 # runs racing to create one release would each trip over the other's draft.
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-${{ github.ref_name }}
   cancel-in-progress: false
 
 env:
-  TAG: ${{ inputs.tag || github.ref_name }}
+  TAG: ${{ github.ref_name }}
   # Same reason as go.yml: build with the toolchain setup-go installed, not
   # one the go command downloads because a go directive outranks it. Here
   # it also fixes which ports exist: `go tool dist list` is the toolchain's.
@@ -47,25 +55,62 @@ jobs:
   # The tag is the last step of a release, not the first. Everything a
   # release needs to already be true is checked here, before a single
   # binary is built, with a message that says what to fix; and the list of
-  # ports every other job works from is decided once, here.
+  # ports and the Go version every other job works from are decided once,
+  # here.
   plan:
     name: Check the tag and list the ports
     runs-on: ubuntu-latest
+    # Includes waiting for go.yml on the tagged commit.
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      # Reading go.yml's runs.
+      actions: read
     outputs:
       matrix: ${{ steps.ports.outputs.matrix }}
       archives: ${{ steps.ports.outputs.archives }}
+      go-version: ${{ steps.go.outputs.go-version }}
     steps:
-      - name: Check out the tag
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.tag || github.ref_name }}
+      # Before anything is checked out. The run's own ref and commit are
+      # what the provenance attestation records as the source of every
+      # archive, so they must be the tag's: a dispatch on master would sign
+      # the tag's binaries as built from master.
+      - name: Check the run is for a version tag
+        run: |
+          if [ "$GITHUB_REF" != "refs/tags/$TAG" ]; then
+            echo "::error::this run is for $GITHUB_REF, not a tag. Push the tag, or dispatch on it: gh workflow run release.yml --ref vX.Y.Z"
+            exit 1
+          fi
 
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # In full, so that a branch with the tag's name can never be what
+          # gets checked out.
+          ref: ${{ github.ref }}
+          # Every branch and its history, for the check that the tag is on
+          # master.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # check-latest takes the newest patch release of the line, with every
+      # security fix in its standard library, rather than whichever one the
+      # runner image cached; its exact version goes to every later job and
+      # into the notes. No job here restores setup-go's cache, which is on
+      # by default and keyed by toolchain and go.sum alone: a release job
+      # would restore whatever any workflow on master last saved under that
+      # key — every v3.4.1 build job restored a 235 MB entry written by the
+      # tutorial's lint job. A release builds from what the module proxy
+      # serves and go.sum vouches for, nothing else.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        id: go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
+          check-latest: true
+          cache: false
 
-      - name: Check the tag against go.mod and CHANGELOG.md
+      - name: Check the tag against master, go.mod and CHANGELOG.md
         env:
           REPO: ${{ github.repository }}
         run: |
@@ -79,6 +124,24 @@ jobs:
           fi
           major="${BASH_REMATCH[1]}"
           prerelease="${BASH_REMATCH[2]}"
+
+          # The commit this run was started for is the one the attestation
+          # names, so the tag has to still point at it: a tag moved since
+          # the push would have every later job build something else.
+          commit=$(git rev-parse "refs/tags/$TAG^{commit}")
+          if [ "$commit" != "$GITHUB_SHA" ]; then
+            echo "::error::tag $TAG points at $commit, but this run was started for $GITHUB_SHA. A pushed tag is never moved: see RELEASING.md."
+            exit 1
+          fi
+
+          # Only what master already holds is released. A tag on a commit
+          # master never had — pushed from a local branch, or put on a pull
+          # request's commit before a squash merge gave master a different
+          # one — would publish code that master's checks never ran on.
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/master; then
+            echo "::error::tag $TAG points at $commit, which is not on master. Tag the release commit as it landed on master."
+            exit 1
+          fi
 
           # CHANGELOG.md's versioning section: a release's tag and its
           # import path's version suffix always match. A v4 tag on a /v3
@@ -96,7 +159,10 @@ jobs:
 
           # The notes are the changelog section for this version, verbatim.
           # A pre-release has no section of its own: it is the unreleased
-          # work, so it takes that section instead.
+          # work, so it takes that section instead. cut-release.yml checks
+          # this before tagging; a tag pushed by hand is checked only here,
+          # after the module proxy may already have served it, so the fix
+          # is the next version, never this tag moved.
           section() { awk -v v="$1" '/^## /{p = ($2 == "[" v "]")} p' CHANGELOG.md; }
           version="${TAG#v}"
           section "$version" > "$RUNNER_TEMP/section.md"
@@ -104,7 +170,7 @@ jobs:
             section Unreleased > "$RUNNER_TEMP/section.md"
           fi
           if ! [ -s "$RUNNER_TEMP/section.md" ]; then
-            echo "::error::CHANGELOG.md has no '## [$version]' section. Rename [Unreleased] to it, commit, and tag that commit."
+            echo "::error::CHANGELOG.md at $TAG has no '## [$version]' section, so the release has no notes. Do not move or re-push the tag: add the section on master and cut the next version with cut-release.yml (RELEASING.md)."
             exit 1
           fi
           echo "release notes: $(wc -l < "$RUNNER_TEMP/section.md") lines from CHANGELOG.md [$version]"
@@ -116,13 +182,25 @@ jobs:
           {
             tail -n +2 "$RUNNER_TEMP/section.md"
             printf '\n---\n\n'
-            printf 'With a Go toolchain, `go install github.com/okian/servo/v3/cmd/servo@%s` installs this exact version, and `servo version` prints it. ' "$TAG"
-            printf 'The archives hold the same `servo` and `servo-vet` binaries, built with %s for every architecture the toolchain supports on Linux, macOS and Windows; verify a download with `sha256sum --ignore-missing -c servo_%s_checksums.txt`. ' "$(go env GOVERSION)" "$TAG"
+            printf '`go get -tool github.com/okian/servo/v3/cmd/servo@%s` pins this version in your go.mod, where `go tool servo` runs it; `go install github.com/okian/servo/v3/cmd/servo@%s` puts it on your PATH instead. `servo version` prints it either way. ' "$TAG" "$TAG"
+            printf 'The archives hold the same `servo` and `servo-vet` binaries, built with %s for every architecture the toolchain supports on Linux, macOS and Windows. Like any install of servo they need `go` on PATH, since servo loads your module through the go command. ' "$(go env GOVERSION)"
+            printf 'Verify a download with `sha256sum --ignore-missing -c servo_%s_checksums.txt`, and where it was built with `gh attestation verify <archive> --repo %s`; [RELEASING.md](https://github.com/%s/blob/%s/RELEASING.md) also has the recipe that rebuilds the binaries bit for bit. ' "$TAG" "$REPO" "$REPO" "$TAG"
             printf 'The versioning rules these notes refer to, and every earlier release, are in [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md).\n' "$REPO" "$TAG"
           } > "$RUNNER_TEMP/notes.md"
 
+      # go.yml is the full suite: both toolchains, every example, servo
+      # check, lint. A tag pushed straight after its commit used to be
+      # published before go.yml had finished on that commit — v3.4.1 four
+      # minutes before — so this waits for it, and stops the release if it
+      # failed.
+      - name: Wait for go.yml to pass on the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash .github/scripts/await-ci.sh "$GITHUB_SHA" 30
+
       - name: Keep the notes for the publish job
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: notes
           path: ${{ runner.temp }}/notes.md
@@ -154,36 +232,48 @@ jobs:
           echo "$count ports across $(jq '.include | length' <<< "$matrix") operating systems; $((count + extra)) archives"
           jq -r '.include[] | "\(.goos): \(.goarchs)"' <<< "$matrix"
 
-  # go.yml runs on pushes to master, not on tags, and a tag can be pushed
-  # before — or without — its commit's run going green. The root module's
-  # own suite is the cheap part of that run and the part that covers the
-  # two binaries. Alongside the builds rather than before them: a failure
-  # here blocks the publish job just the same.
+  # The root module's build, vet and tests once more, under the exact
+  # toolchain the binaries are built with: check-latest can pick a patch
+  # release newer than the one go.yml last ran. Alongside the builds rather
+  # than before them: a failure here blocks the attest and publish jobs just
+  # the same.
   test:
     name: Build, vet and test
     needs: plan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Check out the tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ github.ref }}
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27'
+          go-version: ${{ needs.plan.outputs.go-version }}
+          cache: false # see the plan job
+
+      # Every module comes fresh from the proxy, checked against go.sum as
+      # it downloads; go mod verify then re-hashes what landed in the module
+      # cache before anything is built from it.
+      - name: Download and verify modules
+        run: |
+          go mod download
+          go mod verify
 
       - name: Build, vet and test
         run: |
           go build ./...
           go vet ./...
-          go test ./...
+          go test -timeout=20m ./...
 
   build:
     name: Build ${{ matrix.goos }}
     needs: plan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       # Every operating system reports its own result: one port that stops
       # building should not hide the state of the others. The publish job
@@ -199,9 +289,9 @@ jobs:
       TARGET_GOARCHS: ${{ matrix.goarchs }}
     steps:
       - name: Check out the tag
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ github.ref }}
           # Since Go 1.24 the go command stamps the main module's version
           # into each binary from the tag on HEAD. That stamp is what
           # `servo version` prints and what the stale-file report tells two
@@ -210,20 +300,34 @@ jobs:
           # regardless of which event checked the commit out; the repository
           # is small, since the tutorial's binaries are not committed.
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.27'
+          go-version: ${{ needs.plan.outputs.go-version }}
+          cache: false # see the plan job
+
+      - name: Download and verify modules
+        run: |
+          go mod download
+          go mod verify
 
       # One archive per port, both binaries in each, files at the archive's
       # root so `tar xzf … servo` drops the binary where you stand. Pure Go
       # throughout, so CGO_ENABLED=0 cross-compiles every port from one
       # runner, and -trimpath keeps the runner's paths out of panics and
-      # `servo version`'s VCS stamp alike.
+      # `servo version`'s VCS stamp alike. RELEASING.md spells this recipe
+      # out for anyone rebuilding a binary to compare it with ours.
       - name: Build the archives
         run: |
           set -euo pipefail
+          # The plan job checked the tag against the run's commit; this
+          # checkout fetched it again by name, so check again.
+          if [ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]; then
+            echo "::error::refs/tags/$TAG has moved to $(git rev-parse HEAD) since this run started for $GITHUB_SHA"
+            exit 1
+          fi
           export CGO_ENABLED=0 GOOS="$TARGET_GOOS"
           # Both outside the checkout. An archive written into it is an
           # untracked file, `git status` reports it, and the go command
@@ -296,35 +400,70 @@ jobs:
           done
           ls -l "$out"
 
-      - name: Keep the archives for the publish job
-        uses: actions/upload-artifact@v7
+      - name: Keep the archives for the attest and publish jobs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: archives-${{ matrix.goos }}
           path: ${{ runner.temp }}/dist/*
           retention-days: 1
           if-no-files-found: error
 
+  # Signed SLSA build provenance for every archive: the workflow, tag and
+  # commit that built it, on a GitHub-hosted runner, signed through Sigstore
+  # and stored with the repository, where `gh attestation verify` finds it.
+  # A job of its own, so the only job that can mint the OIDC token the
+  # signature rests on runs no repository code and cannot write to the
+  # repository; after the test job, so nothing is attested that failed it.
+  attest:
+    name: Attest build provenance
+    needs: [ test, build ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # The OIDC token Sigstore issues the signing certificate against.
+      id-token: write
+      # Storing the attestation with the repository.
+      attestations: write
+    steps:
+      - name: Collect the archives
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: archives-*
+          merge-multiple: true
+          path: dist
+
+      - name: Attest the archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+
   publish:
     name: Publish the release
-    needs: [ plan, test, build ]
+    needs: [ plan, test, build, attest ]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       # Creating the release and attaching its assets is the only write.
       contents: write
+      # Reading the attestations back, to prove each archive verifies.
+      attestations: read
     env:
       EXPECTED: ${{ needs.plan.outputs.archives }}
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
     steps:
       - name: Collect the archives
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: archives-*
           merge-multiple: true
           path: dist
 
       - name: Collect the notes
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: notes
           path: ${{ runner.temp }}/notes
@@ -343,6 +482,18 @@ jobs:
             ls -l dist
             exit 1
           fi
+
+          # The exact command RELEASING.md gives users, run on every archive
+          # before anyone can download one: an attestation that does not
+          # verify, or names another workflow or ref, stops the release.
+          shopt -s nullglob
+          for archive in dist/*.tar.gz dist/*.zip; do
+            gh attestation verify "$archive" --repo "$GH_REPO" \
+              --signer-workflow "$GH_REPO/.github/workflows/release.yml" \
+              --source-ref "refs/tags/$TAG" > /dev/null
+          done
+          echo "every archive's provenance verifies"
+
           (cd dist && sha256sum -- * > "servo_${TAG}_checksums.txt")
           ls -l dist
 
@@ -352,21 +503,23 @@ jobs:
           fi
 
           # A draft left behind by a failed run is replaced. A published
-          # release is not: its URL and checksums may already be in use, so
-          # rebuilding one is a deliberate act — delete it by hand, then
-          # dispatch this workflow for the tag.
+          # release is never rebuilt: its URL, checksums and attestations
+          # may already be in use, and once release immutability is on, its
+          # tag can never carry another release at all. A wrong release is
+          # retracted and superseded by the next patch — RELEASING.md.
           if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
             if [ "$draft" = true ]; then
               gh release delete "$TAG" --yes
             else
-              echo "::error::release $TAG is already published; delete it by hand first if it must be rebuilt"
+              echo "::error::release $TAG is already published, and a published release is not rebuilt: retract it and cut the next patch (RELEASING.md)"
               exit 1
             fi
           fi
 
           # Created as a draft and published only once every asset is
           # attached, so nobody sees — or is notified about — a release
-          # with half its files.
+          # with half its files, and so the assets are all in place before
+          # an immutable release locks them.
           gh release create "$TAG" --draft --verify-tag "${flags[@]}" dist/*
           gh release edit "$TAG" --draft=false
           echo "published https://github.com/$GH_REPO/releases/tag/$TAG"

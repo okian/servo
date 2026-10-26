@@ -65,7 +65,7 @@ though: real Postgres, real Redis, real NATS, a real JWT, not simplified stand-i
 | `GET /orders` | Bearer JWT | List the authenticated user's orders, paginated |
 | `GET /me/recent` | Bearer JWT | Orders this user viewed recently, from a per-user session scope |
 | `GET /openapi.yaml` / `GET /swagger/` | none | The API contract, embedded in the binary, and a UI for it |
-| `GET /healthz` / `GET /readyz` | none | Liveness / readiness, from servo's capability system |
+| `GET /livez` / `GET /readyz` / `GET /healthz` | none | Liveness, readiness and a per-dependency health report, on a separate admin port |
 | `GET /metrics` | none | Prometheus scrape endpoint |
 
 ## Technology choices
@@ -106,7 +106,7 @@ If you're deciding whether to reach for this shape at all:
 - **A service that's mostly a thin proxy** to another API doesn't need a repository layer at all;
   forcing one in adds a file with no logic in it.
 - **A service under real, sustained load** benefits from this shape specifically *because* it makes
-  the resilience and observability chapters ([13](16-observability.md), [14](17-resilience.md))
+  the observability and resilience chapters ([16](16-observability.md), [17](17-resilience.md))
   possible to reason about — they hook in at layer boundaries.
 
 ## Next

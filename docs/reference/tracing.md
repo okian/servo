@@ -231,3 +231,10 @@ and the recorded error — in particular no argument values, which could be anyt
 password to a megabyte. No tracing of concrete-typed edges, by design, and no wildcard: each
 traced interface is a line in the spec, shared across injectors through
 [`servo.Include`](spec.md#include) when the list gets long.
+
+The wrapper also carries only the traced interface's methods. A consumer that holds the traced
+`store.Store` and type-asserts it to another interface — `if c, ok := s.(io.Closer); ok` — gets
+`ok == false`, even when the implementation underneath has a `Close`, because the value it holds
+is the generated `traced<I>` type. Methods of I itself, `Close` included when I declares it, are
+forwarded. If a consumer needs to discover optional behavior, put that method on the interface
+it depends on, or give it the implementation's concrete type instead.

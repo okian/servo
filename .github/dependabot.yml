@@ -1,0 +1,58 @@
+# Version updates, on top of the security updates the repository already
+# receives. Every action in .github/workflows is pinned to a commit SHA and
+# every module and gem to an exact version, and none of those pins moves by
+# itself; this is what moves them, as reviewable pull requests that run the
+# full CI like any other change.
+#
+# Updates are grouped, one pull request per ecosystem and directory per
+# run, and wait out a cooldown after each upstream release: most hijacked
+# releases are found and pulled within days, and a pin that lags a week
+# behind never installs one. Security updates ignore the cooldown.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: [ '*' ]
+
+  # The root module and every example module. A dependency whose new
+  # version needs a newer Go makes go raise that module's go directive,
+  # and the oldest toolchain in go.yml's matrix then fails the pull
+  # request: the support window is changed on purpose, not by an update.
+  - package-ecosystem: gomod
+    directories:
+      - /
+      - /examples/basic
+      - /examples/diagnostics
+      - /examples/http
+      - /examples/mocking
+      - /examples/scoped
+      - /examples/tutorial
+      - /examples/variants
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      go-modules:
+        patterns: [ '*' ]
+    ignore:
+      # Every example replaces servo with this checkout, so the version
+      # its go.mod requires is never the one it builds against.
+      - dependency-name: github.com/okian/servo/v3
+
+  # The docs site's gems (docs/Gemfile.lock), for the docs job in go.yml.
+  - package-ecosystem: bundler
+    directory: /docs
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    groups:
+      docs-gems:
+        patterns: [ '*' ]

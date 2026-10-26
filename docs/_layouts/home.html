@@ -27,7 +27,7 @@ layout: default
       on a plain function — and the HTTP server is generated too.
     </p>
     <p class="hero__negative">no reflection · no runtime registry · no init() · no hand-written wiring</p>
-    <div class="hero__install">go install {{ site.go_module }}/cmd/servo@latest</div>
+    <div class="hero__install">go get -tool {{ site.go_module }}/cmd/servo</div>
     <div class="hero__cta">
       <a class="cta" href="{{ '/preface.html' | relative_url }}">Start with the preface</a>
       <a class="cta cta--quiet" href="{{ '/tutorial/' | relative_url }}">Read the tutorial</a>
@@ -152,29 +152,10 @@ func main() {
 {% endhighlight %}
         </figure>
         <figure>
-          <figcaption>main.go — with servo<span class="fig-count">22 lines</span></figcaption>
+          <figcaption>main.go — with servo<span class="fig-count">3 lines</span></figcaption>
 {% highlight go %}
 func main() {
-    ctx, stop := signal.NotifyContext(
-        context.Background(), os.Interrupt, syscall.SIGTERM)
-    defer stop()
-
-    app, err := New(ctx)
-    if err != nil {
-        log.Fatal(err)
-    }
-    if err := app.Run(ctx); err != nil {
-        log.Print(err)
-    }
-
-    // Not ctx: it is already cancelled, and that
-    // is what started the shutdown.
-    sctx, cancel := context.WithTimeout(
-        context.Background(), 30*time.Second)
-    defer cancel()
-    if r := app.Shutdown(sctx); !r.Clean() {
-        log.Print(r)
-    }
+    servo.Main(New) // signals, shutdown deadline, exit code
 }
 {% endhighlight %}
         </figure>
@@ -194,9 +175,9 @@ func main() {
       <p class="section-eyebrow">Why before you build</p>
       <h2 class="section-title">A missing dependency stops the build, not the deployment.</h2>
       <p class="section-lede">
-        Runtime containers catch the same mistakes — later, through a reflection
-        stack trace, in whichever environment ran the binary first. Servo reports
-        them with a file and a line, like any other compile error.
+        Runtime containers catch the same mistakes when the program starts, or in a
+        test written to build the graph. Servo reports them when you generate, with a
+        file and a line, like any other compile error.
       </p>
       {%- comment -%}
         Real output, not a mock-up. Reproduce by deleting the
@@ -204,18 +185,20 @@ func main() {
         examples/basic/cmd/basic/spec.go and running
         `go run ./cmd/servo generate --dir examples/basic/cmd/basic`.
         The only edit is stripping the `example.com/servobasic/` module
-        prefix from the type names, which servo prints in full. Two
-        candidates, not three: examples/basic/memory also implements
-        store.Store, but nothing imports it, so it is not in the package
-        set servo loads and never appears as a candidate.
+        prefix from the type names, which servo prints in full. Three
+        candidates: servo loads the whole module whatever --dir names, so
+        examples/basic/memory, which nothing imports, is one too.
       {%- endcomment -%}
-      <div class="terminal">api/api.go:15:6: servo: no provider for store.Store
+      <div class="terminal">api/api.go:15:6: servo: ambiguous provider for store.Store
   needed by *api.Server  api/api.go:15:6
   root                   cmd/basic/spec.go:17:3
 
-  2 types implement store.Store — add one of:
+  3 types in this module implement store.Store — pick one with servo.Bind:
+      servo.Bind[store.Store, *memory.Store]()     memory/memory.go:18:6
       servo.Bind[store.Store, *mockstore.Store]()  mockstore/mockstore.go:29:6
-      servo.Bind[store.Store, *postgres.DB]()      postgres/postgres.go:13:6</div>
+      servo.Bind[store.Store, *postgres.DB]()      postgres/postgres.go:13:6
+  with these imports in the spec file:
+      "example.com/servobasic/memory"</div>
       <p class="section-lede">
         Ambiguity, dependency cycles and unreachable providers fail the same way.
         <a href="{{ '/limitations.html' | relative_url }}">Limitations</a> is honest

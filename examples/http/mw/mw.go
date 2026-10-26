@@ -26,6 +26,24 @@ func (m *Auth) Middleware(next http.Handler) http.Handler {
 	})
 }
 
+// NoSniff is middleware in the shape most of the ecosystem ships —
+// otelhttp.NewMiddleware's result, chi's middleware, gorilla/handlers — a
+// plain func(http.Handler) http.Handler. servo.Use attaches it as it is:
+// the generated chain calls the node itself where a struct would need a
+// Middleware method, so none of those packages needs a wrapper type. The
+// named type is what gives the node a provider; a func type of your own
+// around a third-party function works the same way.
+type NoSniff func(http.Handler) http.Handler
+
+func NewNoSniff() NoSniff {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // User is the extracted type: any handler parameter of type *User is
 // produced per request by UserExtractor.Extract.
 type User struct{ Name string }

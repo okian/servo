@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
@@ -48,8 +49,25 @@ const generateTemplate = `package %s
 
 const generateFileName = "servo_generate.go"
 
+// mainTemplate is the main.go init writes beside a package main spec
+// when nothing there declares func main yet: the documented one, so that
+// `go generate ./... && go run .` works in the first minute instead of
+// after the reader has gone looking for how a generated App is run.
+const mainTemplate = `package main
+
+import "github.com/okian/servo/v3/servo"
+
+// servo.Main builds the App with New, runs it until the process is told
+// to stop, shuts it down within a deadline, and exits non-zero when
+// anything along the way failed.
+func main() { servo.Main(New) }
+`
+
+const mainFileName = "main.go"
+
 // runInit scaffolds the spec file with the correct build tag, blank-line
-// placement, and go:generate directive.
+// placement, and go:generate directive — and, for a package main that
+// has no main function yet, the main.go that runs what gets generated.
 func runInit(dir string, tags []string) error {
 	specPath := filepath.Join(dir, specFileName(tags))
 	if _, err := os.Stat(specPath); err == nil {
@@ -82,6 +100,25 @@ func runInit(dir string, tags []string) error {
 		}
 		fmt.Printf("servo init: wrote %s\n", genPath)
 	}
+
+	// After the spec and directive files, so the check for an existing
+	// func main reads the directory as it now stands.
+	wroteMain := false
+	if pkgName == "main" && !declaresMain(dir) {
+		mainPath := filepath.Join(dir, mainFileName)
+		if _, err := os.Stat(mainPath); os.IsNotExist(err) {
+			if err := os.WriteFile(mainPath, []byte(mainTemplate), 0o644); err != nil {
+				return err
+			}
+			fmt.Printf("servo init: wrote %s\n", mainPath)
+			wroteMain = true
+		}
+	}
+
+	runLine := ""
+	if wroteMain {
+		runLine = "    go run " + goRunTarget(dir) + "\n"
+	}
 	fmt.Printf(`
 Next, once per module, so that go generate can run the generator and so
 that every machine runs the same one:
@@ -91,7 +128,7 @@ that every machine runs the same one:
 Then declare your roots in %s and run:
 
     go generate ./...
-`, path.Dir(graph.ServoPackagePath), specPath)
+%s`, path.Dir(graph.ServoPackagePath), specPath, runLine)
 
 	// Scaffolding a variant is exactly where the one mistake this feature
 	// allows gets made: a sibling spec that does not exclude the new tags
@@ -141,6 +178,46 @@ func warnAboutUnexcludedSiblings(dir, ownPath string, tags []string) {
 		fmt.Printf("servo init: %s is also visible with --tags=%s, so both would generate a file and the two would compile together.\n", e.Name(), strings.Join(tags, ","))
 		fmt.Printf("            Narrow it to `//go:build %s && !%s` (or otherwise exclude the new tags) before running servo generate.\n", load.BuildTag, strings.Join(tags, " && !"))
 	}
+}
+
+// declaresMain reports whether any non-test .go file in dir declares a
+// top-level func main — whatever the file is called, since a second main
+// beside it would not compile. A file that does not parse is skipped, as
+// detectPackageName skips one: it is more likely being edited than
+// holding the program's entry point.
+func declaresMain(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	fset := token.NewFileSet()
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		for _, d := range f.Decls {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == "main" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// goRunTarget spells dir the way `go run` needs a relative directory
+// spelled — with a leading ./, without which it is read as an import
+// path.
+func goRunTarget(dir string) string {
+	clean := filepath.Clean(dir)
+	if filepath.IsAbs(clean) || clean == "." || strings.HasPrefix(clean, "..") {
+		return clean
+	}
+	return "./" + filepath.ToSlash(clean)
 }
 
 // detectPackageName peeks at any existing .go file in dir for its package

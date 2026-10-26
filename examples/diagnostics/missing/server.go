@@ -3,7 +3,7 @@
 package missing
 
 type Store interface {
-	Get(key string) string
+	Lookup(key string) (string, bool)
 }
 
 type Server struct{ store Store }

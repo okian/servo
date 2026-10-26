@@ -13,10 +13,11 @@ import (
 type ImportManager struct {
 	byPath map[string]string // import path -> alias ("" = use the package's own name)
 	byName map[string]string // identifier currently in use -> the import path that claimed it
+	ident  map[string]string // import path -> the identifier call sites use
 }
 
 func NewImportManager() *ImportManager {
-	return &ImportManager{byPath: map[string]string{}, byName: map[string]string{}}
+	return &ImportManager{byPath: map[string]string{}, byName: map[string]string{}, ident: map[string]string{}}
 }
 
 // Reserve claims an identifier that generated code hard-codes — a
@@ -27,8 +28,9 @@ func NewImportManager() *ImportManager {
 // (`chat.RoomKey`) inside functions whose own parameters and locals are
 // fixed strings. A user package named `app` would otherwise take the
 // identifier the scope constructor's `app *App` parameter needs, and the
-// generated file would not compile — with `servo generate` reporting
-// success, since it formats the output but does not type-check it.
+// generated file would not compile: generate's own compile check
+// (load.Verify) would stop on it, and the run would fail on a file the
+// user never wrote.
 func (m *ImportManager) Reserve(names ...string) {
 	for _, name := range names {
 		if _, taken := m.byName[name]; !taken {
@@ -65,23 +67,32 @@ func (m *ImportManager) Idents() []string {
 	return out
 }
 
+// Imports is every registered import path and the identifier the file
+// refers to it by, its alias or its own package name.
+func (m *ImportManager) Imports() map[string]string {
+	out := make(map[string]string, len(m.ident))
+	for path, ident := range m.ident {
+		out[path] = ident
+	}
+	return out
+}
+
 // Add registers path (whose default package identifier is pkgName) and
 // returns the identifier to use at call sites.
 func (m *ImportManager) Add(path, pkgName string) string {
-	if alias, ok := m.byPath[path]; ok {
-		if alias == "" {
-			return pkgName
-		}
-		return alias
+	if ident, ok := m.ident[path]; ok {
+		return ident
 	}
 	if claimedBy, taken := m.byName[pkgName]; !taken || claimedBy == path {
 		m.byPath[path] = ""
 		m.byName[pkgName] = path
+		m.ident[path] = pkgName
 		return pkgName
 	}
 	alias := m.aliasFor(path)
 	m.byPath[path] = alias
 	m.byName[alias] = path
+	m.ident[path] = alias
 	return alias
 }
 

@@ -2,7 +2,9 @@
 // turns them into a typed route model. It is module-wide and
 // injector-agnostic — like capability loading, and unlike the constructor
 // scan — because a directive names an exported handler that any injector
-// declaring servo.HTTP() may serve.
+// declaring servo.HTTP() may serve. Its scan is also the one pass that
+// judges every //servo: line, the config directive's included: a line no
+// reader claims is reported here (see graph.Directive.Unclaimed).
 package route
 
 import (

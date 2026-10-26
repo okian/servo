@@ -5,12 +5,23 @@
 // ServoConfig fills ListenConfig from the process environment.
 // Settings:
 //
-//	HTTP_ADDR string, default :8080
+//	HTTP_ADDR           string, default :8080
+//	HTTP_SHUTDOWN_DELAY time.Duration
 package servoapi
 
 import (
+	"fmt"
 	"os"
+	"time"
+
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 // ServoConfig builds ListenConfig. Precedence per setting: default, then the HTTP_* environment
 // variable — the environment always wins.
@@ -21,6 +32,15 @@ func ServoConfig() (ListenConfig, error) {
 	cfg.Addr = ":8080"
 	if v, ok := os.LookupEnv("HTTP_ADDR"); ok {
 		cfg.Addr = v
+	}
+
+	// shutdown_delay — HTTP_SHUTDOWN_DELAY
+	if v, ok := os.LookupEnv("HTTP_SHUTDOWN_DELAY"); ok {
+		val, err := time.ParseDuration(v)
+		if err != nil {
+			return ListenConfig{}, fmt.Errorf("HTTP_SHUTDOWN_DELAY: not a valid time.Duration: %q", v)
+		}
+		cfg.ShutdownDelay = val
 	}
 	return cfg, nil
 }

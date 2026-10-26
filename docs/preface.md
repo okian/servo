@@ -97,9 +97,11 @@ A **container** here just means an object you register constructors with, which 
 you at runtime. This is the model used by `uber-go/fx` and `uber-go/dig`, and they're good at it.
 
 The trade is that a wiring mistake stops being a compile error. Forget to register something and
-the code still builds, still passes review, still ships. It fails when the process starts — in a
-stack trace that runs through reflection, in whichever environment ran it first. Often that's
-staging. Sometimes it isn't.
+the code still builds, still passes review, still ships. It fails when the process starts — with a
+clear enough error naming the missing type, in whichever environment ran it first. Often that's
+staging. Sometimes it isn't. (fx can check a graph without running it, in a test you write and keep
+in step with `main`; that test is the difference between this failing in CI and failing in a
+deploy.)
 
 ## Answer three: a tool works it out before you build
 
@@ -167,8 +169,10 @@ If the only benefit were "fewer lines in main.go," this wouldn't be worth a tool
 matter more.
 
 **Mistakes move to build time.** A missing implementation, an ambiguous interface, a dependency
-cycle — each one stops the build and points at a line. None of them can reach production, because
-none of them can get past `go build`.
+cycle — each one stops `servo generate` and points at a line, so the generated file never exists in
+a broken state. A file somebody forgot to regenerate is the remaining gap, and `servo check` in CI
+closes it: it fails the build whenever the committed file no longer matches the code. Between the
+two, none of these mistakes has to be discovered in production.
 
 **Lifecycle comes free with the ordering.** This is the part that pays for itself. servo already
 worked out the order to construct things in — which means it also knows the order to *start* them
@@ -191,9 +195,9 @@ process; the one exception is a [scope](reference/scopes.md), where a type gets 
 key and servo generates the reference counting and the per-instance lifecycle around it.
 
 It also has real boundaries, and some of them will rule it out for some projects. Outside a scope,
-you can't have two instances of the same type in one graph. You can't depend on "every
-implementation of this interface." You can't generate a different graph for staging than for
-production.
+two instances of the same type have to become two distinct types; there are no names or tags. You
+can't depend on "every implementation of this interface." You can't choose a different graph at run
+time for staging than for production — only at build time, with a build tag.
 
 Those aren't oversights — they follow from resolving everything before the program runs — but they
 are limits, and you should know about them before you commit rather than after. They're all written
@@ -211,7 +215,12 @@ more convincing once you've got nine packages sitting there needing to be wired.
 
 **If you're choosing between tools:** [How servo compares](comparison.md) puts it side by side with
 `google/wire`, `uber-go/fx`, `uber-go/dig`, and writing it by hand — including the cases where one
-of those is the better answer.
+of those is the better answer. If you already use wire or fx,
+[Coming from wire or fx](coming-from-wire-and-fx.md) translates their vocabulary into servo's.
+
+**If you're about to ship it:** [servo in CI](servo-in-ci.md) covers pinning, exit codes and the
+check that keeps generated files honest, and [Running in production](running-in-production.md)
+covers containers, probes and shutdown.
 
 **If you need one specific answer:** the [reference](reference/) covers every command, every
 marker, the lifecycle contract, the generated API, and every exported identifier — organised to be

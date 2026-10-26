@@ -448,27 +448,25 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 ```
 
-This compiles, and it even works — right up until the process needs to actually shut down.
-Sending it a real `SIGTERM` hangs forever. Here's why, and it's worth understanding rather than
-just copying the fix: servo's generated `App.Run` waits for *every* `Runner` via an `errgroup`, and
-only calls `Shutdown` (which calls `Stop`, which calls `http.Server.Shutdown`) once every `Runner`
-has already returned:
-
-```go
-func (a *App) Run(ctx context.Context) error {
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error { return a.server.Run(gctx) })
-	g.Go(func() error { return a.notifier.Run(gctx) })
-	return g.Wait()
-}
-```
+This compiles, and it even works — right up until the process needs to actually shut down. Send it
+a real `SIGTERM` and nothing happens for five seconds; then it logs an error reporting `api.Server`
+as still running, and exits 1. Here's why, and it's worth understanding rather than just copying
+the fix: servo's
+generated `App.Run` starts every `Runner` and waits for all of them to return, and `Shutdown` —
+which calls `Stop`, which calls `http.Server.Shutdown` — only runs after `Run` has returned.
 
 `ListenAndServe` never observes `ctx` cancellation on its own — it only returns once something
 calls `Shutdown` or `Close` on the server. So with the naive `Run` above: `ctx` gets cancelled,
-`Run` doesn't notice, `ListenAndServe` keeps blocking, `errgroup.Wait()` never returns, `App.Run`
-never returns, and `main()` — which calls `app.Shutdown()` only *after* `app.Run()` returns — never
-reaches the line that would have called `Stop`. Everything is waiting for something that's waiting
-for it.
+`Run` doesn't notice, `ListenAndServe` keeps blocking, and the one call that would unblock it,
+`Stop`, is queued behind the very `Run` it would unblock. Each is waiting for the other.
+
+servo breaks that wait rather than hanging forever. Once its context is done, `App.Run` gives each
+runner `servo.DefaultRunGrace` — five seconds by default — to return; then it stops waiting,
+returns an error reporting each runner that hadn't as still running, and lets `Shutdown` begin.
+`servo.Main` logs that error and exits 1.
+So the naive version costs a shutdown five seconds late, a listener that keeps accepting requests
+for those five seconds, and a failure report for a server that was merely written wrong — the grace
+period is a safety net, not a design.
 
 The fix is for `Run` to watch `ctx` itself, and simply stop waiting once it's cancelled — `Stop`
 still does the actual socket close, moments later, once `Shutdown` is finally reached:
@@ -495,9 +493,9 @@ func (s *Server) Run(ctx context.Context) error {
 
 `notifier.Run`, back in [chapter 7](07-messaging-layer.md#build-the-consuming-side), already had
 the correct shape (`<-ctx.Done(); return nil`) — the lesson generalizes: **any `Run` your own code
-writes must return when its context is cancelled, on its own.** Nothing external can force it to;
-`errgroup` only waits, it never interrupts. A regression test pins this down by never calling
-`Stop` at all:
+writes must return when its context is cancelled, on its own.** Nothing external can force it to:
+servo waits, and eventually stops waiting, but it never interrupts a goroutine. A regression test
+pins this down by never calling `Stop` at all:
 
 ```go
 func TestRunReturnsPromptlyWhenContextIsCancelled(t *testing.T) {
@@ -546,11 +544,15 @@ two chapters.
 
 ## What `app.Ready` actually reports
 
-`Health` and `Ready` are two different questions, and an orchestrator does two very different
-things with the answers. `Health` means "this process is not broken" — a failure gets the container
-restarted. `Ready` means "send me traffic" — a failure only takes the instance out of the load
-balancer, and is expected to be temporary. Conflating them is how a slow warm-up turns into a
-restart loop.
+`Health` and `Ready` are two different questions, and an orchestrator does very different things
+with the answers. `Ready` means "send me traffic" — a failure takes the instance out of the load
+balancer, and is expected to be temporary. `Health`, as servo generates it, collects each
+component's own check — Postgres answered a ping, Redis answered — which makes it a report about
+dependencies, not about this process. Wire it to restarts and a database failover restarts every
+replica at once, each of which then fails to start until the database is back. Whether to restart
+is a third, much narrower question — liveness: can this process answer at all? — and the admin
+port below answers it on its own. [Probes](../reference/lifecycle.md#probes) in the lifecycle
+reference has the whole guidance, Kubernetes settings included.
 
 This server has an honest answer to the second question, and giving it requires one change to
 `Run`. `ListenAndServe` hides the moment the port is bound inside itself, so bind explicitly:
@@ -584,92 +586,45 @@ decide when it runs — which is what the next section wires up.
 
 ## Health and readiness live outside the graph
 
-`GET /healthz` and `GET /readyz` need `app.Health(ctx)` and `app.Ready(ctx)` — but those are
-methods on the fully-*constructed* `App`, and nothing inside the graph (including `api.Server`
-itself) can get a reference to `App`, because `App` doesn't exist yet at the point any single
-component inside it is being built. This isn't a limitation to work around with a clever
-constructor trick; it's just outside what dependency injection is for. The straightforward answer
-is to wire these two routes by hand, on a *separate* listener from the API's own — which also
-means health checks never compete with real traffic for the same connection pool.
+`app.Health(ctx)` and `app.Ready(ctx)` are methods on the fully-*constructed* `App`, and nothing
+inside the graph (including `api.Server` itself) can get a reference to `App`, because `App`
+doesn't exist yet at the point any single component inside it is being built. This isn't a
+limitation to work around with a clever constructor trick; it's just outside what dependency
+injection is for. So the routes that serve them are wired around the `App`, not inside it, on a
+*separate* listener from the API's own — which also means probes never compete with real traffic
+for the same connection pool.
 
-It goes in its own package, `transport/admin/`, rather than in `main.go`. That looks like over-engineering
-for two routes until you notice the two companion transports need exactly the same thing: three
-copies of a security boundary is three chances to get one wrong. `admin.New` takes an interface
-rather than a concrete `*App` precisely so one implementation serves every injector.
+They go in their own package, `transport/admin/`, rather than in `main.go`. That looks like
+over-engineering for a handful of routes until you notice the two companion transports need
+exactly the same thing: three copies of a security boundary is three chances to get one wrong. The
+package takes the `App` through a small interface, so one implementation serves every injector,
+each of which generates its own `App` type. It serves four routes:
 
-```go
-// transport/admin/admin.go
-package admin
+| Route | Answers | For |
+| --- | --- | --- |
+| `GET /livez` | 200 whenever the process can answer at all; checks nothing else | the liveness probe: restart me if this fails |
+| `GET /readyz` | `app.Ready`: the API listener is bound | the readiness probe: send me traffic |
+| `GET /healthz` | `app.Health`: every component's own check | dashboards and alerts — never a probe |
+| `GET /metrics` | [chapter 16](16-observability.md)'s Prometheus registry | scraping |
 
-// Checker is the part of a generated servo App this package needs. Taking
-// an interface rather than *App is what lets one implementation serve
-// every injector, each of which generates its own App type.
-type Checker interface {
-	Health(context.Context) servo.Report
-	Ready(context.Context) servo.Report
-}
+`/readyz` and `/healthz` answer with the report as servo encodes it — each node's name and status,
+and its error when it has one — inside an object that adds `clean`, and with a 503 when the report
+is not clean.
 
-func New(addr string, app Checker, metrics http.Handler) *http.Server {
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", reportHandler(app.Health))
-	mux.HandleFunc("GET /readyz", reportHandler(app.Ready))
-	mux.Handle("GET /metrics", metrics)
-	return &http.Server{Addr: addr, Handler: mux}
-}
-```
+`servo.Main` runs one thing and shuts one thing down, so `admin.Mount` wraps the `App` in a value
+it can drive: its `Run` binds the admin port before running the `App` — a port clash then fails
+startup instead of leaving a service nobody can probe — and its `Shutdown` stops the `App` first and
+the admin listener last, so probes keep answering while the service drains. `main` stays a single
+call: `servo.Main`, with a closure that builds the `App` with `New` and hands it to `admin.Mount`.
+The address comes off `api.Server`, through `AdminAddr`, rather than being parsed a second time:
+the loaded config is a local inside the generated `New`, so the one component that received it
+answers for it.
 
-The `metrics` handler is [chapter 16](16-observability.md)'s; it is on this listener for exactly
-the same reason the health routes are. Everything served here describes the service's internals —
-`/healthz` names every component in the graph along with its status — which is why the deployment
-binds this listener to the cluster network and never to the internet.
-
-`reportHandler` renders a `servo.Report` as JSON — but not by encoding it directly.
-`servo.NodeStatus` has a `String()` method, but `encoding/json` only ever calls
-`MarshalJSON`/`MarshalText`, neither of which it implements, so a bare `json.Marshal(report)`
-prints `"Status":0` instead of `"Status":"ok"`. Re-rendering it into a small local type fixes that:
-
-```go
-type response struct {
-	Clean bool         `json:"clean"`
-	Nodes []node `json:"nodes"`
-}
-
-type node struct {
-	Name   string `json:"name"`
-	Status string `json:"status"`
-	Error  string `json:"error,omitempty"`
-}
-
-func reportHandler(check func(context.Context) servo.Report) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		report := check(r.Context())
-
-		resp := response{Clean: report.Clean()}
-		for _, n := range report.Nodes {
-			node := node{Name: n.Name, Status: n.Status.String()}
-			if n.Err != nil {
-				node.Error = n.Err.Error()
-			}
-			resp.Nodes = append(resp.Nodes, node)
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if !report.Clean() {
-			w.WriteHeader(http.StatusServiceUnavailable)
-		}
-		json.NewEncoder(w).Encode(resp)
-	}
-}
-```
-
-`AdminAddr` is already on the transport's own `Config`, alongside `HTTPAddr` — the listener is
-wired in `main` rather than by the graph, but the address belongs to the same concern.
-
-### These three endpoints stay off the public port
+### These endpoints stay off the public port
 
 That separation is the point, and it is worth stating plainly: `/healthz` and `/readyz` enumerate
-every component in the graph by name along with its status, and `/metrics` ([chapter
-15](16-observability.md)) exposes request rates, latencies and error counts per route. Together
+every component in the graph by name along with its status, and `/metrics`
+([chapter 16](16-observability.md)) exposes request rates, latencies and error counts per route. Together
 they describe the shape and health of the system precisely enough to be worth hiding, so the
 deployment binds this listener to the cluster network and no ingress rule points at it.
 
@@ -691,7 +646,13 @@ that test.
 
 ## Try the whole thing
 
-Set every required variable and start the service:
+This runs `cmd/orders`, the binary [chapter 14](14-wiring-with-servo.md) builds — its spec file,
+its `main.go`, and the files `servo generate` writes from them. In your own module, read this now
+and run it after chapter 14; to run it today, use the finished module in a clone of servo (see
+[Following along in your own module](README.md#following-along-in-your-own-module)). Either way,
+start Postgres, Redis and NATS first —
+`docker compose -f deploy/docker-compose.yml up -d postgres redis nats` from `examples/tutorial` —
+then set every required variable and start the service:
 
 ```
 $ POSTGRES_DSN="postgres://orders:orders@localhost:5432/orders?sslmode=disable" \
@@ -727,11 +688,18 @@ $ curl -s http://localhost:8081/healthz
 {"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/repository/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/internal/cache/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/internal/broker/natsbroker.Publisher","status":"ok"}]}
 ```
 
-`/readyz` responds too, but with an empty node list (`{"clean":true,"nodes":null}`) — nothing in
-this graph implements `Readier` yet, so there's nothing distinct from `Health` for it to report.
-That's not a bug to fix; it's what "no component needs a separately-meaningful readiness signal"
-honestly looks like. [Chapter 14](14-wiring-with-servo.md) covers every capability this graph
-actually uses, side by side.
+`/readyz` reports the graph's one `Readier`, the server whose `Run` has bound port 8080:
+
+```
+$ curl -s http://localhost:8081/readyz
+{"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/transport/api.Server","status":"ok"}]}
+```
+
+and `/livez` answers 200 for as long as the process can answer anything. Stop Redis and the
+difference between the three shows: `/healthz` reports `redis.Cache` failed, `/readyz` stays clean
+— orders are still served from Postgres — and `/livez` never notices, which is exactly why it, and
+not `/healthz`, is the one allowed to restart the container.
+[Chapter 14](14-wiring-with-servo.md) covers every capability this graph actually uses, side by side.
 
 ## Write it down: openapi/openapi.yaml
 
@@ -797,11 +765,11 @@ aspirational enum of statuses nothing here implements yet. A spec that describes
 the code actually serves is worse than no spec at all: it fails silently, by lying, exactly where a
 missing spec at least fails honestly by not existing.
 
-The spec deliberately covers only the business API on `HTTPAddr` (port 8080) — `/healthz`,
-`/readyz`, and `/metrics` on `AdminAddr` are operational surface for load balancers and Prometheus,
-not part of the contract an API consumer integrates against, and none of them take a request body
-worth documenting beyond "GET it, read the status code." Validate the spec itself the same way you'd
-validate any other generated artifact, rather than trusting it by inspection:
+The spec deliberately covers only the business API on `HTTPAddr` (port 8080) — `/livez`,
+`/readyz`, `/healthz` and `/metrics` on `AdminAddr` are operational surface for orchestrators and
+Prometheus, not part of the contract an API consumer integrates against, and none of them take a
+request body worth documenting beyond "GET it, read the status code." Validate the spec itself the
+same way you'd validate any other generated artifact, rather than trusting it by inspection:
 
 ```
 $ npx @redocly/cli lint openapi/openapi.yaml
@@ -832,7 +800,7 @@ Embedding means the binary and its documentation cannot drift apart in a deploym
 file to forget to copy into the image.
 
 It is mounted on the **public** listener, beside the API it describes, which is a deliberate split
-from the three endpoints above: the contract tells a caller how to use endpoints they are already
+from the admin endpoints above: the contract tells a caller how to use endpoints they are already
 allowed to reach, while health and metrics describe the service's internals. Two more lines at the
 top of `api.New`'s mux, above the routes it documents:
 
@@ -844,7 +812,7 @@ mux.Handle("GET /swagger/", openapi.Handler())
 That is a defensible default and not the only one. Publishing the UI publishes your full endpoint
 list, DTO shapes and auth scheme — fine for a public API, not fine for an internal one whose
 surface is itself sensitive. `openapi.Handler()` is an ordinary `http.Handler`, so moving it is one
-line: mount it in `admin.New` instead, and consumers fetch the spec from inside the cluster or get
+line: mount it on the admin listener instead, and consumers fetch the spec from inside the cluster or get
 it handed to them out of band.
 
 One caveat worth knowing: the UI loads Swagger UI's JavaScript from a CDN rather than vendoring
@@ -854,9 +822,10 @@ air-gapped network should vendor the assets and serve them from `transport/opena
 
 ## Diagnostics
 
-- **A client hangs waiting for the process to exit after Ctrl+C** — this chapter's own bug. Check
-  every `Run` you write blocks on `<-ctx.Done()` (directly, or via a `select` like `api.Server`'s
-  above) rather than only on something that has no idea `ctx` exists.
+- **Ctrl+C takes five seconds, then the process exits 1 reporting a runner as still running** —
+  this chapter's own bug: that runner's `Run` never returned, and `App.Run` gave up waiting after
+  `servo.DefaultRunGrace`. Check every `Run` you write blocks on `<-ctx.Done()` (directly, or via a
+  `select` like `api.Server`'s above) rather than only on something that has no idea `ctx` exists.
 - **`missing or malformed Authorization header` on a request you're sure has a token** — the header
   value must be exactly `Bearer <token>`, one space, case-sensitive on `Bearer`. A common mistake:
   sending just the raw token with no `Bearer ` prefix at all.

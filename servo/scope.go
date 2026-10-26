@@ -167,6 +167,9 @@ var LingerOverride time.Duration = -1
 
 // LingerWindow returns declared unless LingerOverride is active. Generated
 // code calls it once per scope, in New.
+//
+// Deprecated: generated code calls servoimpl.LingerWindow since v3.5.0;
+// this remains for files generated earlier.
 func LingerWindow(declared time.Duration) time.Duration {
 	if LingerOverride >= 0 {
 		return LingerOverride

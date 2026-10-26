@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
@@ -90,25 +91,12 @@ func checkGolden(t *testing.T, name string, out []byte) {
 }
 
 // typecheckLoader compiles the emitted loader together with the struct it
-// fills — the strongest promise a unit test can make about generated code,
-// since `servo generate` itself only formats it.
-func typecheckLoader(t *testing.T, loader []byte, extraPkgs ...string) {
+// fills. `servo generate` compiles what it writes too (load.Verify), but
+// only for the configs a real module declares; this reaches every shape
+// the loader emitter can produce, in a unit test.
+func typecheckLoader(t *testing.T, loader []byte) {
 	t.Helper()
-	fset := token.NewFileSet()
-	structFile, err := parser.ParseFile(fset, "settings.go", loaderStructSrc, 0)
-	if err != nil {
-		t.Fatalf("parse struct fixture: %v", err)
-	}
-	loaderFile, err := parser.ParseFile(fset, ConfigLoaderFileName, string(loader), 0)
-	if err != nil {
-		t.Fatalf("parse emitted loader: %v", err)
-	}
-	deps := []string{"os", "fmt", "errors", "strconv", "strings", "time"}
-	roots := loadPackages(t, append(deps, extraPkgs...))
-	conf := types.Config{Importer: newPkgImporter(roots...)}
-	if _, err := conf.Check("example.com/app", fset, []*ast.File{structFile, loaderFile}, nil); err != nil {
-		t.Fatalf("emitted loader does not type-check: %v\n---\n%s", err, loader)
-	}
+	typecheckGenerated(t, loader, fixturePkg{"example.com/app", loaderStructSrc})
 }
 
 func TestEmitConfigLoaderEnvOnly(t *testing.T) {
@@ -182,21 +170,67 @@ func TestEmitConfigLoaderWithFile(t *testing.T) {
 		t.Errorf("environment must be read after the file section so it wins")
 	}
 
-	typecheckLoader(t, out, confPackagePath)
+	typecheckLoader(t, out)
 	checkGolden(t, "configloader_file.go.golden", out)
 }
 
+// TestEmitConfigLoaderForATypeNamedLikeWhatItWrites: the loader's locals
+// and imports used to be fixed strings, and its error paths name the
+// config type after they exist — so a type called cfg opened the loader
+// with `var cfg cfg`, one called missing or section was shadowed before
+// `return missing{}, err` could reach it, and one called conf collided
+// with the conf runtime's import. Every one has to compile, in both
+// loader shapes.
+func TestEmitConfigLoaderForATypeNamedLikeWhatItWrites(t *testing.T) {
+	for _, typeName := range []string{"cfg", "missing", "section", "file", "err", "v", "ok", "val", "dsnSet", "conf", "servoimpl", "os", "fmt", "strings", "strconv", "errors", "time"} {
+		for _, withFile := range []bool{false, true} {
+			decl := loaderDecl()
+			decl.TypeName = typeName
+			decl.Key = graph.Key{Type: "example.com/app." + typeName}
+			out, err := EmitConfigLoader(decl, withFile)
+			if err != nil {
+				t.Fatalf("EmitConfigLoader(%s, withFile=%v): %v", typeName, withFile, err)
+			}
+			src := strings.ReplaceAll(loaderStructSrc, "settings", typeName)
+			src = strings.ReplaceAll(src, `import "time"`, `import stdtime "time"`)
+			src = strings.ReplaceAll(src, "time.Duration", "stdtime.Duration")
+			typecheckGenerated(t, out, fixturePkg{"example.com/app", src})
+		}
+	}
+	out, err := EmitConfigLoader(func() *graph.ConfigDecl { d := loaderDecl(); d.TypeName = "cfg"; return d }(), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "var cfg2 cfg\n") {
+		t.Errorf("a config type named cfg should move the local aside, to cfg2:\n%s", out)
+	}
+}
+
 // loadPackages loads several dependency packages in one go/packages call,
-// so type-checking emitted code shares object identity with them.
+// so type-checking emitted code shares object identity with them. A set
+// loaded once is reused: the result is only ever read, and the tests
+// type-check one generated shape after another against the same imports.
 func loadPackages(t *testing.T, paths []string) []*packages.Package {
 	t.Helper()
+	key := strings.Join(paths, ",")
+	loadedMu.Lock()
+	defer loadedMu.Unlock()
+	if pkgs, ok := loadedPackages[key]; ok {
+		return pkgs
+	}
 	cfg := &packages.Config{Mode: packages.NeedName | packages.NeedTypes | packages.NeedDeps | packages.NeedImports}
 	pkgs, err := packages.Load(cfg, paths...)
 	if err != nil {
 		t.Fatalf("load %v: %v", paths, err)
 	}
+	loadedPackages[key] = pkgs
 	return pkgs
 }
+
+var (
+	loadedMu       sync.Mutex
+	loadedPackages = map[string][]*packages.Package{}
+)
 
 // configEmitSrc is the injector-side fixture: an unexported config type
 // consumed by the root, in the injector's own package.
@@ -274,14 +308,18 @@ func TestEmitInjectorWithEnvOnlyConfig(t *testing.T) {
 
 	for _, want := range []string{
 		// Loaded in the preamble, bare-named (config lives in the
-		// injector's own package), held as a local — never an App field.
-		"settings, err := ServoConfig()",
+		// injector's own package), held as a local — never an App field —
+		// and checked only once every loader has run.
+		"settings, settingsErr := ServoConfig()\n\tif err := errors.Join(settingsErr); err != nil {\n\t\treturn nil, err\n\t}\n",
+		// The same loaders, run without building anything.
+		"func ValidateConfig() error {\n\t_, settingsErr := ServoConfig()\n\treturn errors.Join(settingsErr)\n}\n",
 		"server := NewServer(settings)",
 		// The graph header and Graph() carry it at level 0 (gofmt renders
-		// the header block tab-indented).
+		// the header block tab-indented), named by its generated loader
+		// rather than by a position that moves with every edit above it.
 		"//\t[L0] example.com/app.settings",
-		"servo:config (prefix APP)",
-		`{Type: "example.com/app.settings", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Pos: "app.go:3"},`,
+		"servo:config (prefix APP) | app.ServoConfig",
+		`{Type: "example.com/app.settings", Level: 0, Deps: nil, Capabilities: nil, Binding: "config directive", Provider: "app.ServoConfig"},`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("generated source missing %q\n---\n%s", want, src)
@@ -308,7 +346,7 @@ func TestEmitInjectorWithJSONConfigFile(t *testing.T) {
 
 	for _, want := range []string{
 		"configFile, err := servoLoadConfigFile()",
-		"settings, err := ServoConfig(configFile)",
+		"settings, settingsErr := ServoConfig(configFile)",
 		"func servoLoadConfigFile() (map[string]any, error) {",
 		`path, explicit := "config.json", false`,
 		`if v, ok := os.LookupEnv("CONFIG_FILE"); ok {`,

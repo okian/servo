@@ -341,6 +341,11 @@ This is the first chapter where there's something worth actually running. Start 
 $ make up
 ```
 
+(In your own module, `make up` needs `deploy/docker-compose.yml`, which chapter 20 explains; copy
+it from the finished module now and start the dependencies by name —
+[Following along in your own module](README.md#following-along-in-your-own-module) has the command
+and the reason.)
+
 And run the tests:
 
 ```

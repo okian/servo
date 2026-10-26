@@ -4,7 +4,8 @@
 // //servo: route directives — the default group plus the two declared
 // ones, each on its own listener — and attaches middleware, shipped and
 // hand-written alike: Recover and RequestID (from servo's middleware
-// package, zero config) wrap every group, CORS (configured by
+// package, zero config) wrap every group, as does the module's own
+// mw.NoSniff, a plain func(http.Handler) http.Handler; CORS (configured by
 // api.NewCORSConfig) wraps only the public default group, and the module's
 // own mw.Auth guards the internal one. Extract makes every handler
 // parameter of type *mw.User a per-request value. No servo.Root is needed —
@@ -25,6 +26,7 @@ func wire() {
 			servo.Group("internal"),
 			servo.Use[*middleware.Recover](),
 			servo.Use[*middleware.RequestID](),
+			servo.Use[mw.NoSniff](),
 			servo.Use[*middleware.CORS](servo.Group("default")),
 			servo.Use[*mw.Auth](servo.Group("internal")),
 		),

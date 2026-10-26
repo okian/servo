@@ -15,6 +15,7 @@ Create `auth/auth.go`. Start with what a verified token tells the rest of the se
 package auth
 
 import (
+	"errors"
 	"fmt"
 	"time"
 	"uuid"
@@ -39,8 +40,11 @@ type Config struct {
 	Expiry time.Duration `config:"expiry,default=1h"`
 }
 
-func New(cfg Config) *Issuer {
-	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}
+func New(cfg Config) (*Issuer, error) {
+	if len(cfg.Secret) < minSecretLen { // 32 bytes: HS256's own hash size
+		return nil, fmt.Errorf("auth: JWT_SECRET is %d bytes; HS256 needs a key of at least %d", len(cfg.Secret), minSecretLen)
+	}
+	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}, nil
 }
 ```
 
@@ -48,6 +52,13 @@ The `secret` tag on `Secret` is doing real work: the generated loader's error pa
 value for a field tagged secret, so a malformed `JWT_SECRET` cannot leak into a log line. And
 `default=1h` is validated as a `time.Duration` when `servo generate` runs — a typo there fails the
 build, not a deploy at 3am.
+
+The length check is the constructor's because nothing else can make it. `required` only proves
+`JWT_SECRET` is set, and a variable set to nothing — what a compose file's `${JWT_SECRET}` gives
+when the variable is unset — is set ([chapter 3](03-configuration.md#required-means-present)); the
+JWT library will happily sign with an empty key. RFC 7518 asks for an HS256 key at least as long as
+the hash it feeds, 256 bits, so `New` refuses anything shorter, and because it returns the error,
+servo's generated `New` stops there, before anything has connected.
 
 `Issuer` has no lifecycle capabilities — no `Init`, no `Stop`, no `Health`. It's pure logic, same
 as `OrderService` from the last chapter: nothing about signing or verifying a token needs a
@@ -135,7 +146,10 @@ isn't a compromise, it's the only correct answer.
 
 ```go
 func TestIssueThenVerifyRoundTrips(t *testing.T) {
-	issuer := auth.New(&Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	userID := uuid.New()
 
 	token, err := issuer.Issue(userID, "alice")
@@ -158,7 +172,10 @@ secret than the one verifying it:
 
 ```go
 func TestVerifyRejectsAnExpiredToken(t *testing.T) {
-	issuer := auth.New(&Config{Secret: "test-secret", Expiry: -time.Hour}) // already expired
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: -time.Hour}) // already expired
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	token, err := issuer.Issue(uuid.New(), "alice")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -170,8 +187,14 @@ func TestVerifyRejectsAnExpiredToken(t *testing.T) {
 }
 
 func TestVerifyRejectsATokenSignedWithADifferentSecret(t *testing.T) {
-	issuerA := auth.New(&Config{Secret: "secret-a", Expiry: time.Hour})
-	issuerB := auth.New(&Config{Secret: "secret-b", Expiry: time.Hour})
+	issuerA, err := auth.New(auth.Config{Secret: "test-secret-a-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	issuerB, err := auth.New(auth.Config{Secret: "test-secret-b-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	token, err := issuerA.Issue(uuid.New(), "alice")
 	if err != nil {
@@ -184,7 +207,7 @@ func TestVerifyRejectsATokenSignedWithADifferentSecret(t *testing.T) {
 ```
 
 A negative `Expiry` is a neat trick worth remembering: it produces an already-expired token
-without needing to sleep in the test or fake the clock. Run all four:
+without needing to sleep in the test or fake the clock. Run them:
 
 ```
 $ go test ./auth/... -v
@@ -278,7 +301,10 @@ gets identical responses either way.
 func TestLoginSucceedsWithCorrectPassword(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	users := mocks.NewMockUserRepository(ctrl)
-	issuer := auth.New(&Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	hash, err := auth.HashPassword("password123")
 	if err != nil {
@@ -313,7 +339,10 @@ outcome, proving the two failure paths really are indistinguishable from the out
 func TestLoginFailsWithUnknownUsernameTheSameWayAsWrongPassword(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	users := mocks.NewMockUserRepository(ctrl)
-	issuer := auth.New(&Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 
 	users.EXPECT().GetByUsername(gomock.Any(), "nobody").Return(nil, domain.ErrNotFound)
 
@@ -357,9 +386,14 @@ belongs to the HTTP layer, not here — that's [chapter 10](10-api-layer.md), ne
   it only takes one layer accidentally leaking the distinction (a differently-worded error message,
   a different HTTP status, even a measurably different response time) to make the other layers'
   carefulness pointless.
-- **Do** keep `Secret` long and random — generated with a real CSPRNG, not typed by hand. A short
-  or guessable HMAC secret defeats the whole scheme regardless of how correct the surrounding code
+- **Do** keep `Secret` long and random — generated with a real CSPRNG, not typed by hand. `New`
+  refuses anything under 32 bytes, but 32 bytes typed by a person is still a guessable secret, and
+  a guessable HMAC secret defeats the whole scheme regardless of how correct the surrounding code
   is.
+- **Do** keep invariants like that length in the constructor, not the config tag. `required` only
+  checks that `JWT_SECRET` is set, and `JWT_SECRET=` with nothing after it is set
+  ([chapter 3](03-configuration.md#required-means-present)); the constructor is the one place every
+  source of the value passes through.
 - **Don't** put a password anywhere in a log line, an error message, or a returned struct — not
   even hashed. `PasswordHash` exists on `domain.User` for the repository to read and write; nothing
   above the service layer should ever see it.

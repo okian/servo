@@ -36,8 +36,22 @@ type Config struct {
 	Expiry time.Duration `config:"expiry,default=1h"`
 }
 
-func New(cfg Config) *Issuer {
-	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}
+// minSecretLen is the shortest HMAC key New accepts: 32 bytes, the size of
+// HS256's own hash, which is the minimum RFC 7518 §3.2 sets for it.
+const minSecretLen = 32
+
+// New refuses a secret too short to sign with. The check lives here, not in
+// the config tag: `required` only means JWT_SECRET is set, and an empty value
+// is set — an unset Helm value or compose variable arrives exactly like
+// that. golang-jwt signs and verifies with an empty key without complaint,
+// so without this the service would boot and accept tokens anyone can forge.
+// The error gives the length, never the value, for the same reason the tag
+// says secret.
+func New(cfg Config) (*Issuer, error) {
+	if len(cfg.Secret) < minSecretLen {
+		return nil, fmt.Errorf("auth: JWT_SECRET is %d bytes; HS256 needs a key of at least %d", len(cfg.Secret), minSecretLen)
+	}
+	return &Issuer{secret: []byte(cfg.Secret), expiry: cfg.Expiry}, nil
 }
 
 type tokenClaims struct {

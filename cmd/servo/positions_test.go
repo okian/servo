@@ -55,9 +55,14 @@ func wire() {
 	if strings.Contains(string(gen), root) {
 		t.Errorf("generated file embeds this checkout's path %s:\n%s", root, gen)
 	}
-	const want = "github.com/okian/servo/v3/middleware/recover.go:"
+	// Committed output names a provider by its function, never by a
+	// position, so it is the same on every machine and every Go patch.
+	const want = "binding: sole candidate | middleware.NewRecover"
 	if !strings.Contains(string(gen), want) {
-		t.Errorf("expected the provider to be named by its import path %q, got:\n%s", want, gen)
+		t.Errorf("expected the provider to be named by its function %q, got:\n%s", want, gen)
+	}
+	if strings.Contains(string(gen), "recover.go:") {
+		t.Errorf("generated file embeds a source position:\n%s", gen)
 	}
 	// The same rule is what lets `servo check` agree with a file generated
 	// on another machine; here it at least has to agree with its own output.

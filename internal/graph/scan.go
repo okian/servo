@@ -47,6 +47,9 @@ func scanFuncs(pkg *packages.Package, injectorPkgPath string, accepted *[]*Provi
 
 		pos := pkg.Fset.Position(fn.Pos())
 		qualifiedName := pkg.Types.Name() + "." + name
+		reject := func(reason string) {
+			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: reason, Result: wouldBeResult(sig)})
+		}
 
 		// A function declared in some other package main can never be
 		// called from the injector: a main package is not importable, so a
@@ -57,35 +60,35 @@ func scanFuncs(pkg *packages.Package, injectorPkgPath string, accepted *[]*Provi
 		// this graph asks for — and `servo generate` would exit 0 on a file
 		// `go build` then rejects.
 		if pkg.Types.Name() == "main" && pkg.PkgPath != injectorPkgPath {
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "declared in another package main, which nothing can import"})
+			reject("declared in another package main, which nothing can import")
 			continue
 		}
 		if !fn.Exported() && pkg.PkgPath != injectorPkgPath {
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "unexported, outside injector package"})
+			reject("unexported, outside injector package")
 			continue
 		}
 		if sig.TypeParams().Len() > 0 {
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "generic function — unsupported"})
+			reject("generic function — unsupported")
 			continue
 		}
 		if sig.Variadic() {
 			// The variadic parameter's static type is a slice (e.g.
 			// ...Option becomes []Option), and slices are never valid
-			// provider results (validResultType), so it could never
+			// provider results (ValidResultType), so it could never
 			// resolve anyway — reject it here with a specific reason
 			// instead of a confusing "no provider for []T" at resolve
 			// time. Emission has no spread-call support for it either.
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "variadic parameter — unsupported"})
+			reject("variadic parameter — unsupported")
 			continue
 		}
 
 		resultType, hasCleanup, hasErr, reason := classifyResults(sig)
 		if reason != "" {
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: reason})
+			reject(reason)
 			continue
 		}
-		if ok, reason := validResultType(resultType); !ok {
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: reason})
+		if ok, reason := ValidResultType(resultType); !ok {
+			reject(reason)
 			continue
 		}
 
@@ -134,8 +137,9 @@ func scanMethods(pkg *packages.Package, rejected *[]Rejected) {
 				continue
 			}
 			pos := pkg.Fset.Position(m.Pos())
-			qualifiedName := fmt.Sprintf("%s.%s.%s", pkg.Types.Name(), recvString(sig), m.Name())
-			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "method, not a function"})
+			recv := recvString(sig)
+			qualifiedName := fmt.Sprintf("%s.%s.%s", pkg.Types.Name(), recv, m.Name())
+			*rejected = append(*rejected, Rejected{Pkg: pkg.PkgPath, Name: qualifiedName, Pos: pos, Reason: "method, not a function", Result: wouldBeResult(sig), Recv: recv})
 		}
 	}
 }
@@ -157,35 +161,55 @@ func recvString(sig *types.Signature) string {
 // T; (T, error); (T, func()); (T, func(), error). The second (or third)
 // result must be the error interface itself, not merely a type that
 // satisfies it — a concrete error type gets a specific rejection reason
-// via errorPositionReason rather than falling into the generic
-// "does not match a supported result shape".
+// via errorPositionReason. Every other mismatch is "does not match a
+// supported result shape", followed by what is wrong with this one: the
+// reason ends up beside the function's name in a "no provider" diagnostic,
+// and "the error comes last" is something to act on where the bare phrase
+// is not.
 func classifyResults(sig *types.Signature) (result types.Type, hasCleanup, hasErr bool, reason string) {
 	res := sig.Results()
+	shape := func(detail string) (types.Type, bool, bool, string) {
+		return nil, false, false, "does not match a supported result shape: " + detail
+	}
 	switch res.Len() {
 	case 1:
 		return res.At(0).Type(), false, false, ""
 	case 2:
-		second := res.At(1).Type()
+		first, second := res.At(0).Type(), res.At(1).Type()
 		switch {
 		case IsErrorType(second):
-			return res.At(0).Type(), false, true, ""
+			return first, false, true, ""
 		case isCleanupFunc(second):
-			return res.At(0).Type(), true, false, ""
+			return first, true, false, ""
 		case ImplementsError(second):
 			return nil, false, false, errorPositionReason("second", second)
+		case IsErrorType(first):
+			return shape("the error comes last — return (T, error)")
 		}
+		return shape(fmt.Sprintf("the second result is %s, and must be error or a func() cleanup", second.String()))
 	case 3:
 		second, third := res.At(1).Type(), res.At(2).Type()
-		if isCleanupFunc(second) {
-			if IsErrorType(third) {
-				return res.At(0).Type(), true, true, ""
-			}
-			if ImplementsError(third) {
-				return nil, false, false, errorPositionReason("third", third)
-			}
+		switch {
+		case isCleanupFunc(second) && IsErrorType(third):
+			return res.At(0).Type(), true, true, ""
+		case isCleanupFunc(second) && ImplementsError(third):
+			return nil, false, false, errorPositionReason("third", third)
+		case IsErrorType(second) && isCleanupFunc(third):
+			return shape("the cleanup func comes before the error — return (T, func(), error)")
 		}
+		return shape("three results must be (T, func(), error)")
 	}
-	return nil, false, false, "does not match a supported result shape"
+	return shape(fmt.Sprintf("%d results — a provider returns one value, optionally followed by a func() cleanup and an error", res.Len()))
+}
+
+// wouldBeResult is the type a rejected function would provide were it
+// accepted: its first result — or, for the (error, T) mistake, the T.
+func wouldBeResult(sig *types.Signature) types.Type {
+	res := sig.Results()
+	if res.Len() == 2 && IsErrorType(res.At(0).Type()) && !IsErrorType(res.At(1).Type()) {
+		return res.At(1).Type()
+	}
+	return res.At(0).Type()
 }
 
 // IsErrorType reports whether t is the predeclared error interface itself
@@ -214,11 +238,13 @@ func isCleanupFunc(t types.Type) bool {
 	return ok && sig.Params().Len() == 0 && sig.Results().Len() == 0 && !sig.Variadic()
 }
 
-// validResultType enforces that the primary result must be a named type,
+// ValidResultType enforces that the primary result must be a named type,
 // pointer-to-named, or a non-empty interface. Bare primitives, slices,
 // arrays, maps, and the empty interface (any) are rejected outright —
-// there is no opt-in mechanism to admit them.
-func validResultType(t types.Type) (ok bool, reason string) {
+// there is no opt-in mechanism to admit them. Exported because the same
+// question, asked of a type nothing provides, is the reason a "no
+// provider" diagnostic gives for it.
+func ValidResultType(t types.Type) (ok bool, reason string) {
 	switch u := types.Unalias(t).(type) {
 	case *types.Named:
 		return true, ""

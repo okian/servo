@@ -76,10 +76,10 @@ func Unrelated() {}
 	if len(got) != 1 {
 		t.Fatalf("got %d diagnostics, want 1: %v", len(got), got)
 	}
-	// servovet sees both directive families, so an unknown //servo: name
-	// is reported with the one message that names them both — config on a
-	// type, the route verbs on a function.
-	if !strings.Contains(got[0], "//servo:pots") || !strings.Contains(got[0], "route verbs") {
+	// An unknown //servo: name gets the message `servo generate` prints for
+	// it, from the same pass, naming both families — config on a type, the
+	// route verbs on a function.
+	if !strings.Contains(got[0], `unknown //servo: directive "pots"`) || !strings.Contains(got[0], "route verbs") {
 		t.Fatalf("diagnostic = %q", got[0])
 	}
 }

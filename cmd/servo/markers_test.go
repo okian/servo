@@ -16,7 +16,7 @@ func valueAndIncludeModule(t *testing.T) string {
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "go.mod", `module example.com/mk
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -165,7 +165,7 @@ func TestValueBeatsAProviderForTheSameType(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "go.mod", `module example.com/vb
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -221,7 +221,7 @@ func TestUnusedValueIsADiagnostic(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "go.mod", `module example.com/uv
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -399,7 +399,7 @@ func TestValueInTheOverrideVariant(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "go.mod", `module example.com/tv
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -481,7 +481,7 @@ func TestOverrideMayDropAValuesOnlyConsumer(t *testing.T) {
 	dir := t.TempDir()
 	mustWriteFile(t, dir, "go.mod", `module example.com/tv
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -542,10 +542,13 @@ func wire() {
 	if !strings.Contains(gen, "func NewTestApp(ctx context.Context) (*TestApp, error)") {
 		t.Errorf("override variant missing NewTestApp:\n%s", gen)
 	}
-	for _, unwanted := range []string{"TestValues", "NewTestAppWith", "Flags"} {
-		if strings.Contains(gen, unwanted) {
-			t.Errorf("override variant still carries %q, which nothing in the test graph reads:\n%s", unwanted, gen)
-		}
+	// TestValues and NewTestAppWith stay, because the Override gives
+	// TestValues a per-call field; the dropped Value must not ride along.
+	if !strings.Contains(gen, "type TestValues struct {") || !strings.Contains(gen, "Store app.Store") {
+		t.Errorf("override variant lost the Override's per-call TestValues field:\n%s", gen)
+	}
+	if strings.Contains(gen, "Flags") {
+		t.Errorf("override variant still carries the Flags value, which nothing in the test graph reads:\n%s", gen)
 	}
 
 	cmd := exec.Command("go", "test", "./...")

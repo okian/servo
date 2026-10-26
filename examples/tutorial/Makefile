@@ -36,8 +36,14 @@ run-grpc:
 run-servo:
 	go run ./cmd/ordersservo
 
+# `go tool servo` runs the generator go.mod pins with its tool directive
+# (`go get -tool github.com/okian/servo/v3/cmd/servo` adds it), so every
+# machine generates with the same version. `go run <the generator's path>`
+# would not work outside the servo repository: a module requires servo for
+# its marker package alone, so the generator's own dependencies are not
+# in its build list.
 generate:
-	go run github.com/okian/servo/v3/cmd/servo generate
+	go tool servo generate
 
 check:
-	go run github.com/okian/servo/v3/cmd/servo check
+	go tool servo check

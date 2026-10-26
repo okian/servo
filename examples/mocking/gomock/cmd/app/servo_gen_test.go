@@ -6,10 +6,10 @@
 //
 //	[L1] *example.com/servomocking/gomock/mockgenstore.MockStoreForServo
 //	      deps: none
-//	      capabilities: none | binding: explicit bind | gomock/mockgenstore/adapter.go:22:6
+//	      capabilities: none | binding: explicit bind | mockgenstore.NewMockStoreForServo
 //	[L2] *example.com/servomocking/api.Server
 //	      deps: *example.com/servomocking/gomock/mockgenstore.MockStoreForServo
-//	      capabilities: none | binding: sole candidate | api/api.go:7:6
+//	      capabilities: none | binding: sole candidate | api.New
 package main
 
 import (
@@ -20,22 +20,53 @@ import (
 
 	"example.com/servomocking/api"
 	"example.com/servomocking/gomock/mockgenstore"
+	"example.com/servomocking/store"
 	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servoimpl"
 )
+
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
 
 type TestApp struct {
 	mockStoreForServo *mockgenstore.MockStoreForServo
+	storeOverride     store.Store
 	server            *api.Server
 	startupReport     servo.StartupReport
 }
 
+// TestValues carries, per servo.Override, an implementation to use in place
+// of the one the Override's constructor would build.
+type TestValues struct {
+	// Store, when set, is the store.Store every consumer gets, in place of
+	// the *mockgenstore.MockStoreForServo the Override would build; nothing in its
+	// lifecycle is called. Nil builds the Override as usual.
+	Store store.Store
+}
+
+// NewTestApp builds the app with every servo.Override built by its own
+// constructor. NewTestAppWith supplies implementations per call instead.
 func NewTestApp(ctx context.Context) (*TestApp, error) {
+	return NewTestAppWith(ctx, TestValues{})
+}
+
+func NewTestAppWith(ctx context.Context, v TestValues) (*TestApp, error) {
 	a := &TestApp{}
 
-	mockStoreForServo := mockgenstore.NewMockStoreForServo()
-	a.mockStoreForServo = mockStoreForServo
+	var storeOverride store.Store
+	if v.Store != nil {
+		storeOverride = v.Store
+	} else {
+		mockStoreForServo := mockgenstore.NewMockStoreForServo()
+		a.mockStoreForServo = mockStoreForServo
+		storeOverride = mockStoreForServo
+	}
+	a.storeOverride = storeOverride
 
-	server := api.New(mockStoreForServo)
+	server := api.New(storeOverride)
 	a.server = server
 
 	return a, nil
@@ -53,8 +84,8 @@ func (a *TestApp) Shutdown(ctx context.Context) servo.Report {
 	defer close(watcherDone)
 	go func() {
 		select {
-		case <-forceExit:
-			os.Exit(1)
+		case sig := <-forceExit:
+			servoimpl.ForceExit(sig)
 		case <-watcherDone:
 		}
 	}()
@@ -75,8 +106,8 @@ func (a *TestApp) Ready(ctx context.Context) servo.Report {
 
 func (a *TestApp) Graph() servo.Graph {
 	return servo.Graph{Nodes: []servo.GraphNode{
-		{Type: "*example.com/servomocking/gomock/mockgenstore.MockStoreForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Pos: "gomock/mockgenstore/adapter.go:22:6"},
-		{Type: "*example.com/servomocking/api.Server", Level: 2, Deps: []string{"*example.com/servomocking/gomock/mockgenstore.MockStoreForServo"}, Capabilities: nil, Binding: "sole candidate", Pos: "api/api.go:7:6"},
+		{Type: "*example.com/servomocking/gomock/mockgenstore.MockStoreForServo", Level: 1, Deps: nil, Capabilities: nil, Binding: "explicit bind", Provider: "mockgenstore.NewMockStoreForServo"},
+		{Type: "*example.com/servomocking/api.Server", Level: 2, Deps: []string{"*example.com/servomocking/gomock/mockgenstore.MockStoreForServo"}, Capabilities: nil, Binding: "sole candidate", Provider: "api.New"},
 	}}
 }
 

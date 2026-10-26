@@ -72,6 +72,28 @@ $ docker inspect servoorders:test --format '{{.Config.User}}'
 65532
 ```
 
+### Why `ENTRYPOINT` is in exec form
+
+`ENTRYPOINT ["/orders"]` — the JSON-array form — runs the binary directly, as PID 1 of the
+container. That is what lets `docker stop`, `docker compose down` and a Kubernetes rollout stop the
+service cleanly: each sends SIGTERM to PID 1, and `servo.Main` turns it into the same orderly stop
+Ctrl+C gives under `go run` — runners return, `Shutdown` drains the listener and stops every
+component in reverse order, and the process exits 0, or 1 if any of that failed.
+
+The shell form, `ENTRYPOINT /orders`, would make `/bin/sh -c` PID 1 instead, and the shell does not
+pass SIGTERM on: the service would never hear it, and would be killed outright when the stop
+timeout ran out. In this image it would not even get that far — distroless has no `/bin/sh`, so the
+container would fail to start.
+
+Nor does the binary need an init process such as `tini` in front of it. The kernel does not deliver
+to PID 1 any signal it has left at the default, but Go installs its own handlers at startup and
+`servo.Main` subscribes to SIGINT, SIGTERM and SIGHUP, so SIGTERM arrives like anywhere else; and the
+service starts no child processes, so there is nothing to reap.
+
+One number to keep in mind locally: `docker stop` and `docker compose down` wait 10 seconds before
+SIGKILL, while `servo.Main` allows a stop up to 25. That only matters for a stop slow enough to
+need more than 10 seconds; for one that is, raise `stop_grace_period` in the compose file.
+
 ## docker-compose.yml: the whole stack in one command
 
 ```yaml
@@ -221,6 +243,12 @@ Every dependency reports healthy before `orders` even starts — exactly the ord
 chapters did against `go run`, this time against the containerized binary:
 
 ```
+$ curl -s http://localhost:8081/livez
+ok
+
+$ curl -s http://localhost:8081/readyz
+{"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/transport/api.Server","status":"ok"}]}
+
 $ curl -s http://localhost:8081/healthz
 {"clean":true,"nodes":[{"name":"*example.com/servoorders/internal/repository/postgres.Store","status":"ok"},{"name":"*example.com/servoorders/internal/cache/redis.Cache","status":"ok"},{"name":"*example.com/servoorders/internal/broker/natsbroker.Publisher","status":"ok"}]}
 
@@ -269,7 +297,7 @@ Every variable the service reads, gathered from the per-package `Config` types o
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `HTTP_ADDR` | No | `:8080` | The public API — login, orders |
-| `HTTP_ADMIN_ADDR` | No | `:8081` | `/healthz`, `/readyz`, `/metrics` — chapter 10, 15 |
+| `HTTP_ADMIN_ADDR` | No | `:8081` | `/livez`, `/readyz`, `/healthz`, `/metrics` — chapter 10, 15, and the probes below |
 | `POSTGRES_DSN` | **Yes** | — | e.g. `postgres://user:pass@host:5432/db?sslmode=disable` |
 | `REDIS_ADDR` | **Yes** | — | `host:port`, no scheme |
 | `NATS_URL` | **Yes** | — | e.g. `nats://host:4222` |
@@ -353,19 +381,29 @@ drifts from the code.
   service's OTLP exporter among them, the moment `OBS_OTLP_ENDPOINT` points at something that isn't
   `--insecure`.
 - **Don't** assume a healthy container is a ready one, or vice versa. `orders` itself deliberately
-  has no Docker-level healthcheck at all (see the compose file's own comment) — its readiness is
-  real and checkable at `:8081/healthz`, just not through a mechanism distroless has the tools to
-  run from inside the container.
+  has no Docker-level healthcheck at all (see the compose file's own comment) — its liveness and
+  readiness are real and checkable at `:8081/livez` and `:8081/readyz`, just not through a
+  mechanism distroless has the tools to run from inside the container.
+- **Don't** point a liveness probe at `/healthz`. It pings Postgres, Redis and NATS, and a restart
+  cannot fix any of them: a dependency outage would fail it on every replica at once and restart
+  the whole fleet into an `Init` that fails until the dependency is back. Liveness is `/livez`, which
+  checks only that the process answers.
 
 ## Alternatives
 
 - **Kubernetes instead of docker-compose.** `docker-compose.yml` here is a local-development
   convenience, not a production deployment target. A real Kubernetes deployment would translate
-  each service into a `Deployment` (or a `StatefulSet` for Postgres), the health checks into
-  `livenessProbe`/`readinessProbe` hitting the same `/healthz`/`/readyz` this service already
-  exposes, and `JWT_SECRET` into a `Secret` mounted as an environment variable rather than written
-  into a manifest. [Chapter 22](22-alternatives-and-further-reading.md) goes further into what
-  changes at that scale.
+  each service into a `Deployment` (or a `StatefulSet` for Postgres) and `JWT_SECRET` into a
+  `Secret` mounted as an environment variable rather than written into a manifest. The probes map
+  onto the admin port as `livenessProbe` → `/livez` and `readinessProbe` → `/readyz`, with a
+  `startupProbe` on `/livez` covering the migrations `Init` runs; `/healthz` stays for dashboards
+  and the person on call, polled by no probe. `terminationGracePeriodSeconds` must cover the whole
+  stop — the default 30 leaves `servo.Main`'s 25-second shutdown deadline a 5-second margin. Why each
+  of those is the way it is, and how to size the numbers, is in
+  [Probes](../reference/lifecycle.md#probes) and
+  [Sizing the grace period](../reference/lifecycle.md#sizing-the-grace-period).
+  [Chapter 22](22-alternatives-and-further-reading.md) goes further into what changes at that
+  scale.
 - **A registry and a real image tag instead of a local-only build.** Nothing here pushes an image
   anywhere — chapter 19's `docker-build` job proves the image builds, and that's the limit of what
   this tutorial's CI has credentials to do. A real pipeline would tag with the commit SHA (or a

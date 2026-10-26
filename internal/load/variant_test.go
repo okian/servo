@@ -1,6 +1,7 @@
 package load
 
 import (
+	"fmt"
 	"go/build/constraint"
 	"path/filepath"
 	"strings"
@@ -299,6 +300,80 @@ func TestGeneratedConstraintRefusesToMirrorANonRequiringConstraint(t *testing.T)
 	_, err := GeneratedConstraint(parseWithComments(t, "//go:build servoinject || !prod\n\npackage spec\n"), nil)
 	if err == nil || !strings.Contains(err.Error(), "servo would read its own output") {
 		t.Fatalf("got err=%v, want a refusal naming the self-read hazard", err)
+	}
+}
+
+// manyTags is n distinct tag names, t01 through tNN, for constraints wider
+// than the enumeration ceiling.
+func manyTags(n int) []string {
+	tags := make([]string, n)
+	for i := range tags {
+		tags[i] = fmt.Sprintf("t%02d", i+1)
+	}
+	return tags
+}
+
+// TestGeneratedConstraintRefusesWhatItCannotDecide: the self-read check
+// enumerates tag combinations, and past the ceiling it used to answer "not
+// satisfiable" — a pass. A spec gated `servoinject || (!prod && t01 && …)`
+// naming eighteen tags then generated `!servoinject || (!prod && t01 && …)`,
+// which is true with servoinject set, so the next scan would have read
+// servo's own output as a spec file.
+func TestGeneratedConstraintRefusesWhatItCannotDecide(t *testing.T) {
+	src := "//go:build servoinject || (!prod && " + strings.Join(manyTags(16), " && ") + ")\n\npackage spec\n"
+	_, err := GeneratedConstraint(parseWithComments(t, src), nil)
+	if err == nil {
+		t.Fatal("GeneratedConstraint = nil error for a constraint it cannot decide, want a refusal")
+	}
+	for _, want := range []string{"18 distinct build tags", "cannot prove", "//go:build servoinject && ..."} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error does not mention %q:\n%v", want, err)
+		}
+	}
+}
+
+// TestGeneratedConstraintDecidesAWideConjunctionWithoutEnumerating: the
+// ceiling must not cost anyone a spec that is plainly fine. A spec gated
+// `servoinject && ...` mirrors to `!servoinject && ...`, false with
+// servoinject set on its face, however many tags the rest names.
+func TestGeneratedConstraintDecidesAWideConjunctionWithoutEnumerating(t *testing.T) {
+	tags := manyTags(24)
+	src := "//go:build servoinject && " + strings.Join(tags, " && ") + "\n\npackage spec\n"
+	got, err := GeneratedConstraint(parseWithComments(t, src), nil)
+	if err != nil {
+		t.Fatalf("GeneratedConstraint: %v", err)
+	}
+	if want := "!servoinject && " + strings.Join(tags, " && "); got != want {
+		t.Errorf("GeneratedConstraint = %q, want %q", got, want)
+	}
+}
+
+func TestSatisfiableWith(t *testing.T) {
+	wide := strings.Join(manyTags(17), " || ")
+	cases := []struct {
+		name  string
+		expr  string
+		value bool
+		want  satisfiability
+	}{
+		{"a negated top-level conjunct pins the tag", "!servoinject && prod", true, neverTrue},
+		{"pinned however deep the conjunction", "(a && (b && !servoinject)) && c", true, neverTrue},
+		{"pinned the other way", "servoinject && prod", false, neverTrue},
+		{"a disjunct that escapes", "!servoinject || prod", true, sometimesTrue},
+		{"decided by enumeration when small", "!servoinject || (prod && !prod)", true, neverTrue},
+		{"past the ceiling without a pin", "!servoinject || (" + wide + ")", true, cantTell},
+		{"past the ceiling with a pin", "!servoinject && (" + wide + ")", true, neverTrue},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			expr, err := ParseConstraint("//go:build " + c.expr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := satisfiableWith(expr, BuildTag, c.value); got != c.want {
+				t.Errorf("satisfiableWith(%q, %s=%v) = %v, want %v", c.expr, BuildTag, c.value, got, c.want)
+			}
+		})
 	}
 }
 

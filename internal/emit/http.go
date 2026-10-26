@@ -3,9 +3,11 @@ package emit
 import (
 	"fmt"
 	"go/types"
+	"path"
 	"slices"
 	"strings"
 
+	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/resolve"
 	"github.com/okian/servo/v3/internal/route"
 )
@@ -28,12 +30,21 @@ type httpEmit struct {
 	groupUses  map[string][]*resolve.HTTPUse
 	routeUses  map[*resolve.HTTPRoute][]*resolve.HTTPUse
 
-	RespondFunc  string // httpRespond
-	WriteError   string // httpWriteError
-	WriteFailure string // httpWriteFailure
-	BodyError    string // httpBodyError, allocated only when needed
-	MaxBodyConst string // defaultMaxBodyBytes, allocated only when needed
-	needsBody    bool
+	// Impl is the identifier generated code reaches servoimpl by: building,
+	// serving and stopping a listener, the status contract and the error
+	// envelope are the same for every server, so they live in the runtime
+	// rather than in each generated file. URL is net/url's, set only when
+	// a route binds a query parameter.
+	Impl string
+	URL  string
+
+	// StopAll is the App method that stops every group's server at once
+	// and StopOnce the App field guarding it, allocated only when there is
+	// more than one group: Shutdown reaches the servers one stop method at
+	// a time, and whichever comes first stops them all, so their
+	// ShutdownDelays run side by side instead of end to end.
+	StopAll  string
+	StopOnce string
 }
 
 // httpGroupEmit is one group's emitted server.
@@ -58,8 +69,8 @@ type httpRouteEmit struct {
 // declares itself; adapters share the namespace (a Go field and method
 // collide), so they are claimed before any adapter gets a name.
 var httpServerReservedMembers = []string{
-	"app", "lc", "srv", "ready", "maxBody",
-	"run",
+	"app", "lc", "srv", "ready", "maxBody", "cancel",
+	"run", "stop",
 	"s", "w", "r",
 }
 
@@ -68,9 +79,8 @@ var httpServerReservedMembers = []string{
 // one of these identifiers would shadow it exactly where generated code
 // qualifies a type with it.
 var httpReservedIdents = []string{
-	"w", "r", "req", "res", "raw", "v", "q", "hs",
-	"mux", "ln", "cfg", "lc", "ok", "h", "handler",
-	"serveErr", "code", "msg", "payload", "s",
+	"w", "r", "req", "res", "raw", "v", "q", "err",
+	"mux", "lc", "h", "handler", "s", "wg",
 }
 
 // stopName is the NodeResult name a group's server reports under.
@@ -89,13 +99,7 @@ func (e *emitter) planHTTP() {
 	if plan == nil {
 		return
 	}
-	e.imports.Add("errors", "errors")
-	e.imports.Add("fmt", "fmt")
-	e.imports.Add("encoding/json", "json")
-	e.imports.Add("log/slog", "slog")
-	e.imports.Add("net", "net")
 	e.imports.Add("net/http", "http")
-	e.imports.Add("strconv", "strconv")
 	e.imports.Add("sync", "sync")
 	e.imports.Add("sync/atomic", "atomic")
 	e.imports.Reserve(httpReservedIdents...)
@@ -105,9 +109,42 @@ func (e *emitter) planHTTP() {
 		groupUses: map[string][]*resolve.HTTPUse{},
 		routeUses: map[*resolve.HTTPRoute][]*resolve.HTTPUse{},
 	}
-	h.RespondFunc = e.types.AllocateName(e.testPrefixed("httpRespond"))
-	h.WriteError = e.types.AllocateName(e.testPrefixed("httpWriteError"))
-	h.WriteFailure = e.types.AllocateName(e.testPrefixed("httpWriteFailure"))
+	// The same expression the lifecycle emitter registers servoimpl with:
+	// Add is idempotent, so whichever asks first, the alias is one.
+	h.Impl = e.imports.Add(path.Join(path.Dir(graph.ServoPackagePath), "servoimpl"), "servoimpl")
+
+	// The rest of the standard library the adapters hard-code, registered
+	// only when a route needs it — a file that imports encoding/json
+	// without decoding a body does not compile — and here rather than at
+	// first use, so each wins its identifier against a user package of
+	// the same name before any adapter qualifies a type.
+	var jsonBody, form, parsed, query bool
+	for _, hr := range plan.Routes {
+		req := hr.Route.Req
+		if req == nil {
+			continue
+		}
+		jsonBody = jsonBody || req.HasBody
+		form = form || req.HasForm
+		for _, f := range req.Fields {
+			query = query || f.Kind == route.BindQuery
+			if b, ok := types.Unalias(f.Type).(*types.Basic); ok && b.Kind() != types.String && f.Kind != route.BindBody {
+				parsed = true
+			}
+		}
+	}
+	if jsonBody {
+		e.imports.Add("encoding/json", "json")
+	}
+	if form {
+		e.imports.Add("errors", "errors")
+	}
+	if parsed {
+		e.imports.Add("strconv", "strconv")
+	}
+	if query {
+		h.URL = e.imports.Add("net/url", "url")
+	}
 
 	for _, u := range plan.Uses {
 		switch {
@@ -167,14 +204,16 @@ func (e *emitter) planHTTP() {
 			g.Routes = append(g.Routes, &httpRouteEmit{R: hr, Adapter: adapterNames.AllocateName("handle" + capitalize(adapterBase))})
 			if req := hr.Route.Req; req != nil && (req.HasBody || req.HasForm) {
 				g.needsBody = true
-				h.needsBody = true
 			}
 		}
 		h.Groups = append(h.Groups, g)
 	}
-	if h.needsBody {
-		h.MaxBodyConst = e.types.AllocateName(e.testPrefixed("defaultMaxBodyBytes"))
-		h.BodyError = e.types.AllocateName(e.testPrefixed("httpBodyError"))
+	// After every group's field has claimed its derived stop names, so a
+	// node or group whose own stop method happens to be called
+	// stopHttpServers is never shadowed by this one.
+	if len(h.Groups) > 1 {
+		h.StopOnce = e.names.AllocateName("httpServersStopOnce")
+		h.StopAll = e.names.AllocateName("stopHttpServers")
 	}
 	e.http = h
 }
@@ -194,7 +233,9 @@ func exportedIdent(name string) string {
 }
 
 // httpAppFields renders each group server's App field and its stop
-// bookkeeping, the same triple every stoppable node gets.
+// bookkeeping: the same triple every stoppable node gets when there is one
+// group, and one sync.Once shared by every group when there are several —
+// the servers stop together, so they are guarded together.
 func (e *emitter) httpAppFields() string {
 	if e.http == nil {
 		return ""
@@ -202,8 +243,13 @@ func (e *emitter) httpAppFields() string {
 	var b strings.Builder
 	for _, g := range e.http.Groups {
 		fmt.Fprintf(&b, "\t%s *%s\n", g.Field, g.ServerType)
-		fmt.Fprintf(&b, "\t%sStopOnce sync.Once\n", g.Field)
+		if e.http.StopOnce == "" {
+			fmt.Fprintf(&b, "\t%sStopOnce sync.Once\n", g.Field)
+		}
 		fmt.Fprintf(&b, "\t%sStopResult %s.NodeResult\n", g.Field, e.servoAlias)
+	}
+	if e.http.StopOnce != "" {
+		fmt.Fprintf(&b, "\t%s sync.Once\n", e.http.StopOnce)
 	}
 	return b.String()
 }
@@ -286,69 +332,23 @@ func (e *emitter) httpHeader() string {
 	return b.String()
 }
 
-// httpDecls renders every group's server type, constructor, adapters and
-// run method, then the shared package-level helpers.
+// httpDecls renders every group's server type, constructor, adapters, and
+// run and stop methods. What they share — writing a response, the status
+// contract, serving and draining a listener — is servoimpl's, so nothing
+// here is package-level.
 func (e *emitter) httpDecls() string {
 	if e.http == nil {
 		return ""
 	}
-	h := e.http
 	var b strings.Builder
-
-	if h.needsBody {
-		fmt.Fprintf(&b, "const %s = 1 << 20\n\n", h.MaxBodyConst)
-	}
-
-	for _, g := range h.Groups {
+	for _, g := range e.http.Groups {
 		e.writeHTTPGroup(&b, g)
 	}
-
-	fmt.Fprintf(&b, "// %s writes one success response; a nil response means status only,\n", h.RespondFunc)
-	b.WriteString("// no body. Encoding lives in the runtime's sealed Response family, so a\n")
-	b.WriteString("// handler may return any of its kinds through this one helper.\n")
-	fmt.Fprintf(&b, "func %s(w http.ResponseWriter, code int, res %s.Response) {\n", h.RespondFunc, e.servoAlias)
-	b.WriteString("\tif res == nil {\n\t\tw.WriteHeader(code)\n\t\treturn\n\t}\n")
-	fmt.Fprintf(&b, "\tif err := %s.WriteResponse(w, code, res); err != nil {\n", e.servoAlias)
-	b.WriteString("\t\tslog.Error(\"servo: writing response failed\", \"error\", err)\n\t}\n}\n\n")
-
-	fmt.Fprintf(&b, "// %s maps a handler or extractor error onto the response: a status in\n", h.WriteFailure)
-	b.WriteString("// the chain picks the code, 4xx bodies carry the message, 5xx bodies only\n")
-	b.WriteString("// the canonical text — the wrapped detail is for the log, not the client.\n")
-	fmt.Fprintf(&b, "func %s(w http.ResponseWriter, handler, route string, err error) {\n", h.WriteFailure)
-	fmt.Fprintf(&b, "\tvar hs %s.HTTPStatus\n", e.servoAlias)
-	b.WriteString("\tif !errors.As(err, &hs) {\n")
-	b.WriteString("\t\tslog.Error(\"servo: handler \"+handler+\" failed\", \"route\", route, \"error\", err)\n")
-	fmt.Fprintf(&b, "\t\t%s(w, http.StatusInternalServerError, \"Internal Server Error\")\n\t\treturn\n\t}\n", h.WriteError)
-	b.WriteString("\tcode := hs.Code()\n")
-	b.WriteString("\tif code < 400 {\n")
-	b.WriteString("\t\t// A success or redirect status with no response to carry it — an\n")
-	b.WriteString("\t\t// extractor returns a value or an error, never a body — is the code alone.\n")
-	b.WriteString("\t\tw.WriteHeader(code)\n\t\treturn\n\t}\n")
-	b.WriteString("\tif code >= 500 {\n")
-	b.WriteString("\t\tslog.Error(\"servo: handler \"+handler+\" failed\", \"route\", route, \"status\", code, \"error\", err)\n")
-	fmt.Fprintf(&b, "\t\t%s(w, code, hs.Error())\n\t\treturn\n\t}\n", h.WriteError)
-	fmt.Fprintf(&b, "\t%s(w, code, err.Error())\n}\n\n", h.WriteError)
-
-	fmt.Fprintf(&b, "func %s(w http.ResponseWriter, code int, msg string) {\n", h.WriteError)
-	b.WriteString("\tw.Header().Set(\"Content-Type\", \"application/json\")\n")
-	b.WriteString("\tw.WriteHeader(code)\n")
-	b.WriteString("\t_ = json.NewEncoder(w).Encode(struct {\n\t\tError string `json:\"error\"`\n\t}{Error: msg})\n}\n\n")
-
-	if h.needsBody {
-		fmt.Fprintf(&b, "// %s maps a body decoding failure onto the response: a body over the\n", h.BodyError)
-		b.WriteString("// configured limit is a 413, anything else is the 400 the caller describes.\n")
-		fmt.Fprintf(&b, "func %s(w http.ResponseWriter, err error, msg string) {\n", h.BodyError)
-		b.WriteString("\tvar tooLarge *http.MaxBytesError\n")
-		b.WriteString("\tif errors.As(err, &tooLarge) {\n")
-		fmt.Fprintf(&b, "\t\t%s(w, http.StatusRequestEntityTooLarge, \"request body too large\")\n\t\treturn\n\t}\n", h.WriteError)
-		fmt.Fprintf(&b, "\t%s(w, http.StatusBadRequest, msg)\n}\n\n", h.WriteError)
-	}
-
 	return b.String()
 }
 
 // writeHTTPGroup renders one group's server: struct, constructor with the
-// middleware chain, adapters, and run method.
+// middleware chain, adapters, and run and stop methods.
 func (e *emitter) writeHTTPGroup(b *strings.Builder, g *httpGroupEmit) {
 	h := e.http
 	cfgField := e.varName[h.Plan.Config.Key]
@@ -367,34 +367,24 @@ func (e *emitter) writeHTTPGroup(b *strings.Builder, g *httpGroupEmit) {
 	if g.needsBody {
 		b.WriteString("\tmaxBody int64\n")
 	}
+	b.WriteString("\t// cancel ends the context every request's context descends from —\n")
+	b.WriteString("\t// the stop path's last resort when a drain outlives its deadline.\n")
+	b.WriteString("\tcancel context.CancelCauseFunc\n")
 	b.WriteString("\t// ready flips once the listener is bound, which is the precise moment\n")
 	fmt.Fprintf(b, "\t// Ready starts reporting ok for the %q node.\n", g.stopName())
 	b.WriteString("\tready atomic.Bool\n")
 	b.WriteString("}\n\n")
 
+	// servoimpl.Listener reads the flat HTTPConfig fields for the default
+	// group and fails New, naming the group, when a declared group has no
+	// Groups entry; servoimpl.NewServer loads a TLS key pair here too, so
+	// a bad certificate fails New rather than Run.
 	fmt.Fprintf(b, "func %s(a *%s) (*%s, error) {\n", g.NewFunc, e.appType(), g.ServerType)
-	fmt.Fprintf(b, "\tcfg := a.%s\n", cfgField)
-	if g.Name == "" {
-		fmt.Fprintf(b, "\tlc := %s.HTTPListener{\n", e.servoAlias)
-		b.WriteString("\t\tIP:           cfg.IP,\n")
-		b.WriteString("\t\tPort:         cfg.Port,\n")
-		b.WriteString("\t\tCertFile:     cfg.CertFile,\n")
-		b.WriteString("\t\tKeyFile:      cfg.KeyFile,\n")
-		b.WriteString("\t\tMaxBodyBytes: cfg.MaxBodyBytes,\n")
-		b.WriteString("\t\tReadHeaderTimeout: cfg.ReadHeaderTimeout,\n")
-		b.WriteString("\t\tReadTimeout:  cfg.ReadTimeout,\n")
-		b.WriteString("\t\tWriteTimeout: cfg.WriteTimeout,\n")
-		b.WriteString("\t\tIdleTimeout:  cfg.IdleTimeout,\n")
-		b.WriteString("\t}\n")
-	} else {
-		fmt.Fprintf(b, "\tlc, ok := cfg.Groups[%q]\n", g.Name)
-		b.WriteString("\tif !ok {\n")
-		fmt.Fprintf(b, "\t\treturn nil, fmt.Errorf(\"http: group %%q declared in the spec but missing from HTTPConfig.Groups\", %q)\n", g.Name)
-		b.WriteString("\t}\n")
-	}
+	fmt.Fprintf(b, "\tlc, err := %s.Listener(a.%s, %q)\n", h.Impl, cfgField, g.Name)
+	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 	fmt.Fprintf(b, "\ts := &%s{app: a, lc: lc}\n", g.ServerType)
 	if g.needsBody {
-		fmt.Fprintf(b, "\ts.maxBody = lc.MaxBodyBytes\n\tif s.maxBody <= 0 {\n\t\ts.maxBody = %s\n\t}\n", h.MaxBodyConst)
+		fmt.Fprintf(b, "\ts.maxBody = %s.BodyLimit(lc)\n", h.Impl)
 	}
 	b.WriteString("\tmux := http.NewServeMux()\n")
 	for _, re := range g.Routes {
@@ -408,7 +398,7 @@ func (e *emitter) writeHTTPGroup(b *strings.Builder, g *httpGroupEmit) {
 		// first-declared middleware is outermost.
 		fmt.Fprintf(b, "\t{\n\t\tvar h http.Handler = http.HandlerFunc(s.%s)\n", re.Adapter)
 		for _, u := range slices.Backward(uses) {
-			fmt.Fprintf(b, "\t\th = a.%s.Middleware(h)\n", e.varName[u.Node.Key])
+			fmt.Fprintf(b, "\t\th = %s\n", e.httpWrap(u, "h"))
 		}
 		fmt.Fprintf(b, "\t\tmux.Handle(%q, h)\n\t}\n", pattern)
 	}
@@ -420,44 +410,65 @@ func (e *emitter) writeHTTPGroup(b *strings.Builder, g *httpGroupEmit) {
 		// Group wraps sit inside server wraps, and within each level the
 		// first-declared is outermost — hence reverse application order.
 		for _, u := range slices.Backward(wraps) {
-			fmt.Fprintf(b, "\thandler = a.%s.Middleware(handler)\n", e.varName[u.Node.Key])
+			fmt.Fprintf(b, "\thandler = %s\n", e.httpWrap(u, "handler"))
 		}
 		handlerExpr = "handler"
 	}
-	b.WriteString("\ts.srv = &http.Server{\n")
-	b.WriteString("\t\tAddr:         net.JoinHostPort(lc.IP, strconv.FormatUint(uint64(lc.Port), 10)),\n")
-	fmt.Fprintf(b, "\t\tHandler:      %s,\n", handlerExpr)
-	b.WriteString("\t\tReadHeaderTimeout: lc.ReadHeaderTimeout,\n")
-	b.WriteString("\t\tReadTimeout:  lc.ReadTimeout,\n")
-	b.WriteString("\t\tWriteTimeout: lc.WriteTimeout,\n")
-	b.WriteString("\t\tIdleTimeout:  lc.IdleTimeout,\n")
-	b.WriteString("\t}\n")
+	fmt.Fprintf(b, "\ts.srv, s.cancel, err = %s.NewServer(%q, lc, %s)\n", h.Impl, g.stopName(), handlerExpr)
+	b.WriteString("\tif err != nil {\n\t\treturn nil, err\n\t}\n")
 	b.WriteString("\treturn s, nil\n}\n\n")
 
 	for _, re := range g.Routes {
 		e.writeHTTPAdapter(b, g, re)
 	}
 
-	e.writeHTTPRun(b, g)
+	e.writeHTTPRunStop(b, g)
 }
 
-// writeHTTPRun emits one group server's Run half: bind explicitly (so
-// ready is a precise moment), serve on a goroutine, return when ctx ends
-// or serving fails — the same shape a hand-written server component has.
-func (e *emitter) writeHTTPRun(b *strings.Builder, g *httpGroupEmit) {
+// httpWrap renders one middleware application around inner: a call to the
+// node's Middleware method, or — for a node that has none and is itself a
+// func(http.Handler) http.Handler, the shape otelhttp, chi and
+// gorilla/handlers ship — a call to the node. resolveUses has already
+// checked that one of the two fits, on the same terms.
+func (e *emitter) httpWrap(u *resolve.HTTPUse, inner string) string {
+	node := "a." + e.varName[u.Node.Key]
+	if httpMiddlewareIsFunc(u.Decl.TypeT) {
+		return fmt.Sprintf("%s(%s)", node, inner)
+	}
+	return fmt.Sprintf("%s.Middleware(%s)", node, inner)
+}
+
+// httpMiddlewareIsFunc reports whether a servo.Use type attaches as a
+// plain middleware function. A Middleware method wins when a func type
+// declares one: it is the explicit form.
+func httpMiddlewareIsFunc(t types.Type) bool {
+	if obj, _, _ := types.LookupFieldOrMethod(t, true, nil, "Middleware"); obj != nil {
+		if _, ok := obj.(*types.Func); ok {
+			return false
+		}
+	}
+	_, ok := types.Unalias(t).Underlying().(*types.Signature)
+	return ok
+}
+
+// writeHTTPRunStop emits one group server's Run half and its stop, both
+// servoimpl's: Serve binds explicitly, so ready flips at a precise moment,
+// and returns when ctx ends or serving fails; StopServer drops readiness,
+// serves out the listener's ShutdownDelay, drains for what is left of the
+// shutdown deadline, and cancels and closes what is still running when
+// that runs out.
+func (e *emitter) writeHTTPRunStop(b *strings.Builder, g *httpGroupEmit) {
+	h := e.http
 	fmt.Fprintf(b, "func (s *%s) run(ctx context.Context) error {\n", g.ServerType)
-	b.WriteString("\tln, err := net.Listen(\"tcp\", s.srv.Addr)\n")
-	fmt.Fprintf(b, "\tif err != nil {\n\t\treturn fmt.Errorf(\"%s: listen %%s: %%w\", s.srv.Addr, err)\n\t}\n", g.stopName())
-	b.WriteString("\ts.ready.Store(true)\n")
-	b.WriteString("\tserveErr := make(chan error, 1)\n")
-	b.WriteString("\tgo func() {\n")
-	b.WriteString("\t\tvar err error\n")
-	b.WriteString("\t\tif s.lc.CertFile != \"\" && s.lc.KeyFile != \"\" {\n")
-	b.WriteString("\t\t\terr = s.srv.ServeTLS(ln, s.lc.CertFile, s.lc.KeyFile)\n")
-	b.WriteString("\t\t} else {\n\t\t\terr = s.srv.Serve(ln)\n\t\t}\n")
-	b.WriteString("\t\tif err != nil && !errors.Is(err, http.ErrServerClosed) {\n\t\t\tserveErr <- err\n\t\t\treturn\n\t\t}\n")
-	b.WriteString("\t\tserveErr <- nil\n\t}()\n")
-	b.WriteString("\tselect {\n\tcase <-ctx.Done():\n\t\treturn nil\n\tcase err := <-serveErr:\n\t\treturn err\n\t}\n}\n\n")
+	fmt.Fprintf(b, "\treturn %s.Serve(ctx, %q, s.srv, &s.ready)\n}\n\n", h.Impl, g.stopName())
+
+	b.WriteString("// stop takes the server out of service. The nil receiver is the setup\n")
+	b.WriteString("// failure path: a group missing its HTTPConfig.Groups entry unwinds\n")
+	b.WriteString("// through Shutdown while its server, and every one after it, is still nil.\n")
+	fmt.Fprintf(b, "func (s *%s) stop(ctx context.Context) %s.NodeResult {\n", g.ServerType, e.servoAlias)
+	b.WriteString("\tif s == nil {\n")
+	fmt.Fprintf(b, "\t\treturn %s.NodeResult{Name: %q, Status: %s.StatusOK}\n\t}\n", e.servoAlias, g.stopName(), e.servoAlias)
+	fmt.Fprintf(b, "\treturn %s.StopServer(ctx, %q, s.srv, &s.ready, s.lc.ShutdownDelay, s.cancel)\n}\n\n", h.Impl, g.stopName())
 }
 
 // httpHandlerFunc emits the test seam: each group's fully wrapped handler,
@@ -486,37 +497,48 @@ func (e *emitter) httpHandlerFunc() string {
 	return b.String()
 }
 
-// httpStopMethods are the App-level stops, sequenced first in Shutdown:
+// httpStopMethod renders the App-level stops, sequenced first in Shutdown:
 // the servers are the inbound edges, so they drain before anything they
-// depend on. The nil guard covers the setup failure path: a group missing
-// its HTTPConfig.Groups entry unwinds through Shutdown while that server,
-// and every one after it, is still nil.
+// depend on. Each runs under sync.Once, so rollback and Shutdown can both
+// reach it. With several groups the first call stops every group at once
+// and the rest return what it recorded — one after another, each group's
+// ShutdownDelay would add to the last.
 func (e *emitter) httpStopMethod() string {
 	if e.http == nil {
 		return ""
 	}
+	h := e.http
 	var b strings.Builder
-	for _, g := range e.http.Groups {
-		name := g.stopName()
+	if h.StopAll == "" {
+		g := h.Groups[0]
 		fmt.Fprintf(&b, "func (a *%s) %s(ctx context.Context) %s.NodeResult {\n", e.appType(), g.StopMethod, e.servoAlias)
-		fmt.Fprintf(&b, "\ta.%sStopOnce.Do(func() {\n", g.Field)
-		fmt.Fprintf(&b, "\t\tif a.%s == nil {\n", g.Field)
-		fmt.Fprintf(&b, "\t\t\ta.%sStopResult = %s.NodeResult{Name: %q, Status: %s.StatusOK}\n", g.Field, e.servoAlias, name, e.servoAlias)
-		b.WriteString("\t\t\treturn\n\t\t}\n")
-		b.WriteString("\t\t// Readiness drops first: a probe that lands during the drain must not\n")
-		b.WriteString("\t\t// be told the listener is open when Shutdown has already closed it.\n")
-		fmt.Fprintf(&b, "\t\ta.%s.ready.Store(false)\n", g.Field)
-		fmt.Fprintf(&b, "\t\ta.%sStopResult = %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.srv.Shutdown)\n", g.Field, e.servoAlias, e.servoAlias, name, g.Field)
-		b.WriteString("\t})\n")
-		fmt.Fprintf(&b, "\treturn a.%sStopResult\n", g.Field)
-		b.WriteString("}\n\n")
+		fmt.Fprintf(&b, "\ta.%sStopOnce.Do(func() { a.%sStopResult = a.%s.stop(ctx) })\n", g.Field, g.Field, g.Field)
+		fmt.Fprintf(&b, "\treturn a.%sStopResult\n}\n\n", g.Field)
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "// %s stops every group's server together, the first time Shutdown\n", h.StopAll)
+	b.WriteString("// reaches any of them: each serves out its own ShutdownDelay and drains\n")
+	b.WriteString("// while the others do, so several groups' delays overlap instead of\n")
+	b.WriteString("// adding up.\n")
+	fmt.Fprintf(&b, "func (a *%s) %s(ctx context.Context) {\n", e.appType(), h.StopAll)
+	fmt.Fprintf(&b, "\ta.%s.Do(func() {\n", h.StopOnce)
+	b.WriteString("\t\tvar wg sync.WaitGroup\n")
+	for _, g := range h.Groups {
+		fmt.Fprintf(&b, "\t\twg.Go(func() { a.%sStopResult = a.%s.stop(ctx) })\n", g.Field, g.Field)
+	}
+	b.WriteString("\t\twg.Wait()\n\t})\n}\n\n")
+	for _, g := range h.Groups {
+		fmt.Fprintf(&b, "func (a *%s) %s(ctx context.Context) %s.NodeResult {\n", e.appType(), g.StopMethod, e.servoAlias)
+		fmt.Fprintf(&b, "\ta.%s(ctx)\n", h.StopAll)
+		fmt.Fprintf(&b, "\treturn a.%sStopResult\n}\n\n", g.Field)
 	}
 	return b.String()
 }
 
 // writeHTTPAdapter emits one route's http.HandlerFunc: per-request
-// extraction, typed decode, the handler call with graph-resolved arguments,
-// and the status contract.
+// extraction, typed decode, and the handler call with graph-resolved
+// arguments, whose result servoimpl.Respond turns into the response.
 func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *httpRouteEmit) {
 	h := e.http
 	rt := re.R.Route
@@ -546,7 +568,7 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 	// `user.Me(r.Context(), user)`, which the compiler reads as a method on
 	// the local. Every import identifier is claimed ahead of the locals.
 	extractedNames := NewNameAllocator()
-	for _, reserved := range []string{"w", "r", "req", "q", "raw", "v", "res", "err", "hs", "s"} {
+	for _, reserved := range []string{"w", "r", "req", "q", "raw", "v", "res", "err", "s"} {
 		extractedNames.AllocateName(reserved)
 	}
 	for _, ident := range e.imports.Idents() {
@@ -561,7 +583,7 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 		local := extractedNames.AllocateName(baseName(arg.Extractor.ProducesType))
 		fmt.Fprintf(b, "\t%s, err := s.app.%s.Extract(r)\n", local, e.varName[arg.Extractor.Node.Key])
 		b.WriteString("\tif err != nil {\n")
-		fmt.Fprintf(b, "\t\t%s(w, %q, %q, err)\n\t\treturn\n\t}\n", h.WriteFailure, rt.Name, routeLabel)
+		fmt.Fprintf(b, "\t\t%s.WriteFailure(w, r, %q, %q, err)\n\t\treturn\n\t}\n", h.Impl, rt.Name, routeLabel)
 		depArgs = append(depArgs, local)
 	}
 
@@ -573,17 +595,22 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 			b.WriteString("\t// overwrite anything it could smuggle into a same-named field.\n")
 			b.WriteString("\tr.Body = http.MaxBytesReader(w, r.Body, s.maxBody)\n")
 			b.WriteString("\tif err := json.NewDecoder(r.Body).Decode(req); err != nil {\n")
-			fmt.Fprintf(b, "\t\t%s(w, err, \"malformed request body\")\n\t\treturn\n\t}\n", h.BodyError)
+			fmt.Fprintf(b, "\t\t%s.BodyError(w, err, \"malformed request body\")\n\t\treturn\n\t}\n", h.Impl)
 		}
 		if rt.Req.HasForm {
 			b.WriteString("\tr.Body = http.MaxBytesReader(w, r.Body, s.maxBody)\n")
 			b.WriteString("\t// ParseMultipartForm falls through to ParseForm on urlencoded\n")
 			b.WriteString("\t// bodies, reporting ErrNotMultipart after already parsing them.\n")
 			b.WriteString("\tif err := r.ParseMultipartForm(s.maxBody); err != nil && !errors.Is(err, http.ErrNotMultipart) {\n")
-			fmt.Fprintf(b, "\t\t%s(w, err, \"malformed form body\")\n\t\treturn\n\t}\n", h.BodyError)
+			fmt.Fprintf(b, "\t\t%s.BodyError(w, err, \"malformed form body\")\n\t\treturn\n\t}\n", h.Impl)
 		}
 		if httpNeedsQuery(rt) {
-			b.WriteString("\tq := r.URL.Query()\n")
+			b.WriteString("\t// Parsed here for the error r.URL.Query() throws away: a query\n")
+			b.WriteString("\t// net/url refuses — a bad escape, a semicolon, too many parameters —\n")
+			b.WriteString("\t// would otherwise bind every field to its zero value and answer 200.\n")
+			fmt.Fprintf(b, "\tq, err := %s.ParseQuery(r.URL.RawQuery)\n", h.URL)
+			b.WriteString("\tif err != nil {\n")
+			fmt.Fprintf(b, "\t\t%s.WriteError(w, http.StatusBadRequest, \"malformed query string\")\n\t\treturn\n\t}\n", h.Impl)
 		}
 		for _, f := range rt.Req.Fields {
 			e.writeHTTPFieldDecode(b, f)
@@ -593,14 +620,7 @@ func (e *emitter) writeHTTPAdapter(b *strings.Builder, g *httpGroupEmit, re *htt
 	args = append(args, depArgs...)
 
 	fmt.Fprintf(b, "\tres, err := %s(%s)\n", funcRef, strings.Join(args, ", "))
-	b.WriteString("\tif err != nil {\n")
-	fmt.Fprintf(b, "\t\tvar hs %s.HTTPStatus\n", e.servoAlias)
-	b.WriteString("\t\tif errors.As(err, &hs) && hs.Code() < 400 {\n")
-	b.WriteString("\t\t\t// A 2xx or 3xx status in the error position is the contract's\n")
-	b.WriteString("\t\t\t// way of picking a success or redirect code.\n")
-	fmt.Fprintf(b, "\t\t\t%s(w, hs.Code(), res)\n\t\t\treturn\n\t\t}\n", h.RespondFunc)
-	fmt.Fprintf(b, "\t\t%s(w, %q, %q, err)\n\t\treturn\n\t}\n", h.WriteFailure, rt.Name, routeLabel)
-	fmt.Fprintf(b, "\t%s(w, http.StatusOK, res)\n", h.RespondFunc)
+	fmt.Fprintf(b, "\t%s.Respond(w, r, %q, %q, res, err)\n", h.Impl, rt.Name, routeLabel)
 	b.WriteString("}\n\n")
 }
 
@@ -642,7 +662,7 @@ func (e *emitter) writeHTTPFieldDecode(b *strings.Builder, f route.Field) {
 	fmt.Fprintf(b, "\tif raw := %s; raw != \"\" {\n", raw)
 	fmt.Fprintf(b, "\t\tv, err := %s\n", parse)
 	b.WriteString("\t\tif err != nil {\n")
-	fmt.Fprintf(b, "\t\t\t%s(w, http.StatusBadRequest, %q)\n", e.http.WriteError, fmt.Sprintf("%s is not a valid %s", httpSourceLabel(f), basic.Name()))
+	fmt.Fprintf(b, "\t\t\t%s.WriteError(w, http.StatusBadRequest, %q)\n", e.http.Impl, fmt.Sprintf("%s is not a valid %s", httpSourceLabel(f), basic.Name()))
 	b.WriteString("\t\t\treturn\n\t\t}\n")
 	fmt.Fprintf(b, "\t\treq.%s = %s\n", f.Name, convert)
 	b.WriteString("\t}\n")

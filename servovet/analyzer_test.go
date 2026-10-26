@@ -191,6 +191,36 @@ func wire() {
 	}
 }
 
+// A dot import makes every marker a bare identifier — Build, Root[T],
+// Bind[I, C] — and an untagged file calling them panics at runtime exactly
+// as a qualified one does. They are resolved through TypesInfo.Uses like
+// any other call, so this is flagged too.
+func TestFlagsDotImportedMarkerCalls(t *testing.T) {
+	const src = `package fixture
+
+import . "github.com/okian/servo/v3/servo"
+
+type Server struct{}
+
+func wire() {
+	Build(
+		Root[*Server](),
+		Bind[interface{ M() }, *Server](),
+	)
+}
+`
+	got := runOn(t, src)
+	if len(got) != 3 {
+		t.Fatalf("got %d diagnostics, want 3 (Build, Root and Bind): %v", len(got), got)
+	}
+	joined := strings.Join(got, "\n")
+	for _, want := range []string{"servo.Build", "servo.Root", "servo.Bind"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("diagnostics %v do not mention %q", got, want)
+		}
+	}
+}
+
 func TestDoesNotFlagUnqualifiedGenericCall(t *testing.T) {
 	const src = `package fixture
 

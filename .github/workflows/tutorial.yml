@@ -1,9 +1,16 @@
 name: Tutorial
 
-# Scoped to examples/tutorial and its docs, separately from the main Go
-# workflow (go.yml): this module needs real Postgres/Redis/NATS service
-# containers and a Docker build, both of which would slow down every push
-# to the rest of the repo for no benefit if bundled into the fast pipeline.
+# Scoped to examples/tutorial, its docs, and the root packages it builds
+# against, separately from the main Go workflow (go.yml): this module needs
+# real Postgres/Redis/NATS service containers and a Docker build, both of
+# which would slow down every push to the rest of the repo for no benefit
+# if bundled into the fast pipeline.
+#
+# The module replaces github.com/okian/servo/v3 with the repository root,
+# so the root's runtime packages are compiled into every binary and image
+# built here, and the generator its servo check runs is the root's
+# cmd/servo: a change to either is a change to the tutorial, and is
+# filtered in.
 on:
   push:
     branches: [ master ]
@@ -11,44 +18,92 @@ on:
       - 'examples/tutorial/**'
       - 'docs/tutorial/**'
       - '.github/workflows/tutorial.yml'
+      - 'servo/**'
+      - 'servoimpl/**'
+      - 'servotest/**'
+      - 'middleware/**'
+      - 'conf/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
   pull_request:
     branches: [ master ]
     paths:
       - 'examples/tutorial/**'
       - 'docs/tutorial/**'
       - '.github/workflows/tutorial.yml'
+      - 'servo/**'
+      - 'servoimpl/**'
+      - 'servotest/**'
+      - 'middleware/**'
+      - 'conf/**'
+      - 'internal/**'
+      - 'cmd/**'
+      - 'go.mod'
+      - 'go.sum'
 
+# Read-only, as in go.yml: nothing here writes to the repository, and the
+# repository's default token could.
+permissions:
+  contents: read
+
+# As in go.yml: a newer push to a pull request supersedes the older run;
+# every other run is a group of its own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # As in go.yml: build with the toolchain setup-go installed, never one a
+  # go directive makes the go command download.
+  GOTOOLCHAIN: local
+
+# No Go cache in this workflow: setup-go's would be keyed on the root
+# go.sum alone, the flaw go.yml's "Caching" note describes, and the jobs
+# here are short.
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
+          cache: false
       # v6 defaults to golangci-lint v1.64.8, which is a v1 binary built with
       # go1.24: it cannot read this module's v2-schema .golangci.yml, and it
       # refuses a module targeting go 1.27.0 outright ("the Go language
       # version used to build golangci-lint is lower than the targeted Go
       # version"). v9 runs on node24 and pairs with the v2 line, so the
-      # version is pinned rather than floating on the action's default.
-      - uses: golangci/golangci-lint-action@v9
+      # version is pinned rather than floating on the action's default. The
+      # action keeps golangci-lint's own cache; only a push to master saves
+      # it, as in go.yml.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14
           working-directory: examples/tutorial
+          skip-save-cache: ${{ github.event_name != 'push' }}
 
   build-and-unit-test:
     name: Build, vet, and unit test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: examples/tutorial
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
+          cache: false
 
       - name: Build
         run: go build ./...
@@ -64,11 +119,11 @@ jobs:
       # integration test (see e.g. postgres/postgres_test.go) skips itself
       # when its env var isn't set, rather than failing, so this step only
       # ever exercises the mock-backed unit tests. See
-      # docs/tutorial/17-testing-strategy.md for why the split matters:
+      # docs/tutorial/18-testing-strategy.md for why the split matters:
       # this job has no services: block at all, so a test that forgot to
       # skip would fail here with a connection error, not silently pass.
       - name: Unit test
-        run: go test ./...
+        run: go test -timeout=10m ./...
 
       # The reference check every consumer of servo should run in CI:
       # verifies every injector's servo_gen.go still matches what `servo
@@ -78,16 +133,18 @@ jobs:
       # cmd/orders, cmd/ordersgin, cmd/ordersgrpc and cmd/ordersservo, one
       # per transport (docs/tutorial/11-gin-transport.md through
       # 13-directive-transport.md) — and `check` covers all of them in one
-      # pass. Run from the repo root, same as go.yml does
-      # for examples/basic and examples/mocking, since cmd/servo is a
-      # root-module binary.
+      # pass. Run exactly as a consumer runs it, through the tool directive
+      # in this module's go.mod; the module replaces servo with this
+      # checkout, so the generator `go tool` builds is the one under test.
       - name: servo check
-        working-directory: .
-        run: go run ./cmd/servo check --dir examples/tutorial
+        run: go tool servo check
 
   integration-test:
     name: Integration test (real Postgres/Redis/NATS)
     runs-on: ubuntu-latest
+    # Service containers start, and pass their health checks, before the
+    # first step; this bounds that wait too.
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: examples/tutorial
@@ -124,10 +181,13 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'
+          cache: false
 
       # GitHub Actions publishes service container ports to the runner's
       # own localhost, so these are the same values docker-compose.yml
@@ -138,13 +198,16 @@ jobs:
           TEST_POSTGRES_DSN: postgres://orders:orders@localhost:5432/orders?sslmode=disable
           TEST_REDIS_ADDR: localhost:6379
           TEST_NATS_URL: nats://localhost:4222
-        run: go test ./... -v
+        run: go test -timeout=10m ./... -v
 
   docker-build:
     name: Docker build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Built with the repo root as context, not examples/tutorial/ — see
       # deploy/Dockerfile's own top comment: this module's go.mod replaces

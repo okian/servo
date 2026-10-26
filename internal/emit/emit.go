@@ -8,6 +8,7 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
+	"path"
 	"sort"
 	"strings"
 
@@ -32,9 +33,38 @@ var (
 		{"sync", "sync"},
 		{"sync/atomic", "atomic"},
 		{"time", "time"},
-		{"golang.org/x/sync/errgroup", "errgroup"},
 	}
 )
+
+// servoimplPath is the runtime only generated code calls (package
+// servoimpl), beside package servo in the servo module.
+var servoimplPath = path.Join(path.Dir(graph.ServoPackagePath), "servoimpl")
+
+// contractConst and contractVersion name the runtime contract this
+// generator writes against and the first servo release that provides it.
+// A generator that starts relying on runtime behaviour an older servoimpl
+// lacks moves to the next ContractN, declared in servoimpl beside the
+// earlier ones, and to the release that adds it.
+const (
+	contractConst   = "Contract1"
+	contractVersion = "v3.5.0"
+)
+
+// contractGuard is the line every generated file carries, impl being the
+// identifier the file imports servoimpl under. A file is generated against
+// the servo version that wrote it and compiled against whichever version
+// go.mod pins; when that is older, the file fails right here, beside a
+// comment that says what to do, instead of somewhere inside a helper
+// whose signature moved — or, worse, compiling and misbehaving.
+func contractGuard(impl string) string {
+	return fmt.Sprintf(`// This file needs %s %s or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `+"`go tool servo generate`"+`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = %s.%s
+
+`, path.Dir(graph.ServoPackagePath), contractVersion, impl, contractConst)
+}
 
 type emitter struct {
 	resolved *resolve.Resolved
@@ -75,6 +105,21 @@ type emitter struct {
 	// a servo.ConfigFile and the graph uses a config.
 	configFileFn  string
 	configFileVar string
+	// configErrVar is the local each config loader's error lands in.
+	configErrVar map[*resolve.Node]string
+	// undoVar and unwindMethod name New's construction undo list and the
+	// App method that runs it, set only when some constructor that can
+	// fail runs after a node that has something to stop; firstStoppable
+	// is that node's position, before which a failure has nothing to undo.
+	// See writeConstructionRollback.
+	undoVar        string
+	unwindMethod   string
+	firstStoppable int
+	// overrides is every servo.Override a test can supply per call, in
+	// declaration order — set only in the override variant, and only for
+	// the Overrides planOverrideNodes found suppliable.
+	overrides      []*overrideField
+	overrideByNode map[*resolve.Node]*overrideField
 }
 
 // Emit renders the full generated file for resolved. When testMode is true,
@@ -96,8 +141,14 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 		rootByAccessor: map[*resolve.ScopeRoot]*rootEmit{},
 		memberField:    map[*resolve.Node]string{},
 		tracedByNode:   map[*resolve.Node]*tracedEmit{},
+		overrideByNode: map[*resolve.Node]*overrideField{},
+		configErrVar:   map[*resolve.Node]string{},
 	}
 	e.servoAlias = e.imports.Add(graph.ServoPackagePath, "servo")
+	// Every file names the runtime contract, so servoimpl is always
+	// imported, and registered this early it wins the identifier against a
+	// user package of the same name the way servo itself does.
+	impl := e.imports.Add(servoimplPath, "servoimpl")
 	e.imports.Add("context", "context")
 	// Registered here rather than where they are first used, so they win
 	// the identifier against a user package of the same name: Shutdown
@@ -116,6 +167,18 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	for _, p := range lateStdlibIdents {
 		e.imports.Claim(p.Path, p.Ident)
 	}
+	// The generated file joins the injector package, so everything that
+	// package already declares is taken: a package-level name the file
+	// would declare, an import identifier (Go allows no name in both the
+	// file and the package block), or a field or method on a hand-written
+	// method set of App. The names the emitters choose move around these;
+	// the few they cannot move — the documented API, App's methods, and
+	// the packages the emitters write by their own names, all registered
+	// above — are reported by collisions once the file is written.
+	user := collectUserDecls(spec.InjectorPkg, e.appType())
+	e.imports.Reserve(user.names()...)
+	e.types.Reserve(user.names()...)
+	e.names.Reserve(user.methodNames(e.appType())...)
 	// Claimed before anything else can take them: both are emitted
 	// unconditionally, and a scope type derived from a key type called
 	// "App" would otherwise redeclare one of them.
@@ -125,10 +188,10 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	// Claimed before any node can take them. New's own locals are bare
 	// identifiers in the same scope as every node's, so a type named A,
 	// Ctx or Err would otherwise emit `a := m.NewA()` beside `a := &App{}`
-	// — a redeclaration the generator writes and the compiler rejects,
-	// with `servo generate` reporting success because it formats the
-	// output rather than type-checking it. (Pre-existing: this is the
-	// singleton half of the same collision the entry allocator guards.)
+	// — a redeclaration the compiler rejects, which generate's compile
+	// check would then report against a file the user never wrote. (This
+	// is the singleton half of the same collision the entry allocator
+	// guards.)
 	e.names.AllocateName("a")
 	e.names.AllocateName("ctx")
 	e.names.AllocateName("err")
@@ -145,6 +208,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	// are handled separately, by shadowingBaseNames; this is the fixed set
 	// the emitters name themselves.
 	e.names.AllocateName(e.servoAlias)
+	e.names.AllocateName(impl)
 	for _, p := range lateStdlibIdents {
 		e.names.AllocateName(p.Ident)
 	}
@@ -153,8 +217,10 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	}
 	// The Values parameter, claimed only when there is one: reserving it
 	// unconditionally would rename a node in a graph that declares no
-	// servo.Value, and every such graph must emit the file it always did.
-	if len(resolved.Supplied) > 0 {
+	// servo.Value and no Override a test can supply, and every such graph
+	// must emit the file it always did.
+	e.planOverrideNodes()
+	if e.takesValues() {
 		e.names.AllocateName("v")
 	}
 	// The config-file loader and its local, claimed under the same rule:
@@ -181,6 +247,9 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 		}
 		e.varName[n.Key] = allocateAppField(e.names, base[n])
 	}
+	e.planConstructionRollback()
+	e.planOverrideFields()
+	e.planConfigErrs()
 	e.planValues()
 	e.planScopes()
 	e.planHTTP()
@@ -192,7 +261,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	valuesDecl := e.valuesDecl()
 	configFileDecl := e.configFileDecl()
 	appStruct := e.appStruct()
-	newFunc := e.newFunc()
+	newFunc := e.newFunc() + e.unwindMethodDecl() + e.validateConfigDecl()
 	stopMethods := e.stopMethods() + e.scopeStopMethods() + e.httpStopMethod()
 	runFunc := e.runFunc()
 	shutdownFunc := e.shutdownFunc()
@@ -207,6 +276,7 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	fmt.Fprintf(&body, "package %s\n\n", e.pkgName)
 	body.WriteString(e.imports.RenderImports())
 	body.WriteString("\n")
+	body.WriteString(contractGuard(impl))
 	body.WriteString(appStruct)
 	body.WriteString(valuesDecl)
 	body.WriteString(configFileDecl)
@@ -223,6 +293,9 @@ func Emit(resolved *resolve.Resolved, spec *load.Spec, testMode bool) ([]byte, e
 	body.WriteString(graphFunc)
 	body.WriteString(reportFunc)
 
+	if err := e.collisions(user); err != nil {
+		return nil, err
+	}
 	formatted, err := format.Source([]byte(body.String()))
 	if err != nil {
 		return nil, fmt.Errorf("emit: generated source failed to format (this is a servo bug, not a user error):\n%w\n---\n%s", err, body.String())
@@ -243,16 +316,24 @@ func (e *emitter) buildConstraint() string {
 }
 
 // header documents the resolved graph: every node, its level, dependencies,
-// detected capabilities, and how its provider was selected.
+// detected capabilities, how its provider was selected, and the function
+// that builds it.
+//
+// The function, not its position. A position moves when a comment is
+// added above a constructor, and a standard-library provider's moves with
+// the toolchain's patch release, so a header that carried positions made
+// `servo check` fail on edits that changed nothing about the graph, and
+// teammates on different Go releases kept overwriting each other's file.
+// `servo graph`, `explain` and `why` print the live positions instead.
 func (e *emitter) header() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "//go:build %s\n\n", e.buildConstraint())
 	b.WriteString("// Code generated by servo generate. DO NOT EDIT.\n//\n// Resolved graph:\n")
-	for _, n := range e.resolved.Supplied {
-		fmt.Fprintf(&b, "//   [L0] %s\n//         supplied by the caller  %s\n", n.Key.String(), e.posString(n.SuppliedPos))
+	for i, n := range e.resolved.Supplied {
+		fmt.Fprintf(&b, "//   [L0] %s\n//         supplied by the caller, as %s.%s\n", n.Key.String(), e.valuesType(), e.values[i].Name)
 	}
 	for _, n := range e.resolved.Configs {
-		fmt.Fprintf(&b, "//   [L0] %s\n//         servo:config (prefix %s)  %s\n", n.Key.String(), n.Config.Prefix, e.posString(n.Config.Pos))
+		fmt.Fprintf(&b, "//   [L0] %s\n//         servo:config (prefix %s) | %s.%s\n", n.Key.String(), n.Config.Prefix, n.Config.PkgName, ConfigLoaderFuncName)
 	}
 	for _, n := range e.resolved.Order {
 		deps := "none"
@@ -268,7 +349,7 @@ func (e *emitter) header() string {
 			caps = strings.Join(n.Capabilities, ", ")
 		}
 		fmt.Fprintf(&b, "//   [L%d] %s\n//         deps: %s\n//         capabilities: %s | binding: %s | %s\n",
-			n.Level, n.Key.String(), deps, caps, n.Binding, e.posString(nodeDeclPos(n)))
+			n.Level, n.Key.String(), deps, caps, n.Binding, e.builtBy(n))
 	}
 	b.WriteString(e.scopeHeader())
 	b.WriteString(e.httpHeader())
@@ -349,6 +430,12 @@ func (e *emitter) appStruct() string {
 		name := e.varName[n.Key]
 		if n.Kind == resolve.NodeTraced {
 			fmt.Fprintf(&b, "\t%s *%s\n", name, e.tracedByNode[n].TypeName)
+			continue
+		}
+		if f := e.overrideByNode[n]; f != nil {
+			// A suppliable Override has no lifecycle, so it never has the
+			// stop bookkeeping below either.
+			fmt.Fprintf(&b, "\t%s %s\n\t%s %s\n", f.Built, e.qualifiedTypeString(n.Provider.ResultType), f.Var, f.IfaceType)
 			continue
 		}
 		fmt.Fprintf(&b, "\t%s %s\n", name, e.qualifiedTypeString(n.Provider.ResultType))
@@ -453,17 +540,6 @@ func (e *emitter) qualifiedFuncString(p *graph.Provider) string {
 	return p.Func.Name()
 }
 
-func stringSliceLiteral(ss []string) string {
-	if len(ss) == 0 {
-		return "nil"
-	}
-	quoted := make([]string, len(ss))
-	for i, s := range ss {
-		quoted[i] = fmt.Sprintf("%q", s)
-	}
-	return "[]string{" + strings.Join(quoted, ", ") + "}"
-}
-
 // levelGroups groups nodes satisfying pred by Level, ascending, preserving
 // each level's relative (DFS post-order) sequence.
 func levelGroups(nodes []*resolve.Node, pred func(*resolve.Node) bool) [][]*resolve.Node {
@@ -537,12 +613,12 @@ func qualifiesWith(later *resolve.Node, ident string) bool {
 	return pkg != nil && pkg.Name() == ident
 }
 
-// nodeDeclPos is the position the header and the graph data report for a
-// node: its provider's declaration, or for a wrapper the servo.Trace
-// declaration that asked for it.
-func nodeDeclPos(n *resolve.Node) token.Position {
+// builtBy names the function that constructs n, for the header: its
+// provider, qualified by package name (postgres.New), or for a trace
+// wrapper the constructor generated for it in this same file.
+func (e *emitter) builtBy(n *resolve.Node) string {
 	if n.Kind == resolve.NodeTraced {
-		return n.Traced.Decl.Pos
+		return e.tracedByNode[n].NewFunc
 	}
-	return n.Provider.Pos
+	return n.Provider.Name
 }

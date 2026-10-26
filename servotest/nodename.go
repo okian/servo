@@ -1,0 +1,144 @@
+package servotest
+
+import (
+	"reflect"
+	"strconv"
+	"strings"
+)
+
+// NodeName returns the name servo gives T's node: the string a generated
+// App's Report, StartupReport and Graph use for it, and so the string
+// AssertStopOrder and AssertInitOrder match.
+//
+//	servotest.AssertStopOrder(t, rec,
+//		servotest.NodeName[*api.Server](),
+//		servotest.NodeName[*postgres.DB](),
+//	)
+//
+// Nodes are named by type, with full import paths, and a pointer keeps
+// its star: *api.Server in a module example.com/app is
+// "*example.com/app/api.Server", never the "*api.Server" source code
+// spells. Writing the short form by hand is the mistake this exists to
+// prevent — it never matches, and the assertion fails on an order that
+// was right.
+//
+// It is computed at run time, from T itself, so a renamed or moved type
+// keeps its assertion in step without an edit. That covers what a node
+// can be — a defined type, a pointer to one, an instantiated generic
+// type, whose type arguments are spelled with full import paths too —
+// with two exceptions. Run time keeps no parameter names, so a func or
+// interface literal among a generic's type arguments is spelled without
+// any its source gave. And a binary built from package main names that
+// package "main", where servo uses its import path; under go test the
+// package being tested carries its import path, so a test's own types
+// are named as servo names them.
+func NodeName[T any]() string {
+	return typeName(reflect.TypeFor[T]())
+}
+
+// typeName renders t the way go/types renders it with full import paths,
+// which is how the generator names a node.
+func typeName(t reflect.Type) string {
+	if t.Name() != "" {
+		if t.PkgPath() == "" {
+			return t.Name() // a predeclared type: error, int, string
+		}
+		return t.PkgPath() + "." + typeArgs(t.Name())
+	}
+	switch t.Kind() {
+	case reflect.Pointer:
+		return "*" + typeName(t.Elem())
+	case reflect.Slice:
+		return "[]" + typeName(t.Elem())
+	case reflect.Array:
+		return "[" + strconv.Itoa(t.Len()) + "]" + typeName(t.Elem())
+	case reflect.Map:
+		return "map[" + typeName(t.Key()) + "]" + typeName(t.Elem())
+	case reflect.Chan:
+		switch t.ChanDir() {
+		case reflect.RecvDir:
+			return "<-chan " + typeName(t.Elem())
+		case reflect.SendDir:
+			return "chan<- " + typeName(t.Elem())
+		}
+		return "chan " + typeName(t.Elem())
+	case reflect.Func:
+		return "func" + signature(t)
+	case reflect.Interface:
+		if t.NumMethod() == 0 {
+			return "any"
+		}
+		methods := make([]string, t.NumMethod())
+		for i := range t.NumMethod() {
+			m := t.Method(i)
+			methods[i] = m.Name + signature(m.Type)
+		}
+		return "interface{" + strings.Join(methods, "; ") + "}"
+	case reflect.Struct:
+		fields := make([]string, t.NumField())
+		for i := range t.NumField() {
+			f := t.Field(i)
+			fields[i] = typeName(f.Type)
+			if !f.Anonymous {
+				fields[i] = f.Name + " " + fields[i]
+			}
+			if f.Tag != "" {
+				fields[i] += " " + strconv.Quote(string(f.Tag))
+			}
+		}
+		return "struct{" + strings.Join(fields, "; ") + "}"
+	}
+	return t.String()
+}
+
+// signature renders a func type's parameters and results, go/types style.
+func signature(t reflect.Type) string {
+	in := make([]string, t.NumIn())
+	for i := range t.NumIn() {
+		if t.IsVariadic() && i == t.NumIn()-1 {
+			in[i] = "..." + typeName(t.In(i).Elem())
+			continue
+		}
+		in[i] = typeName(t.In(i))
+	}
+	s := "(" + strings.Join(in, ", ") + ")"
+	switch t.NumOut() {
+	case 0:
+		return s
+	case 1:
+		return s + " " + typeName(t.Out(0))
+	}
+	out := make([]string, t.NumOut())
+	for i := range t.NumOut() {
+		out[i] = typeName(t.Out(i))
+	}
+	return s + " (" + strings.Join(out, ", ") + ")"
+}
+
+// typeArgs respaces an instantiated generic type's name: the runtime
+// spells the type-argument list `Pair[string,int]`, go/types — and so the
+// generator — `Pair[string, int]`, and the arguments' own literal types
+// `struct { A int }` where go/types writes `struct{A int}`. The arguments
+// already carry full import paths, which is the part that matters most.
+func typeArgs(name string) string {
+	open := strings.IndexByte(name, '[')
+	if open < 0 {
+		return name
+	}
+	var b strings.Builder
+	b.WriteString(name[:open])
+	args := name[open:]
+	for i := 0; i < len(args); i++ {
+		b.WriteByte(args[i])
+		if args[i] == ',' && i+1 < len(args) && args[i+1] != ' ' {
+			b.WriteByte(' ')
+		}
+	}
+	return strings.NewReplacer(
+		"interface {}", "any",
+		"struct {}", "struct{}",
+		"struct { ", "struct{",
+		"interface { ", "interface{",
+		" }", "}",
+	).Replace(b.String())
+}

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/okian/servo/v3/servo"
+	"github.com/okian/servo/v3/servoimpl"
 )
 
 func TestLingerOverridesAndRestores(t *testing.T) {
@@ -15,7 +16,7 @@ func TestLingerOverridesAndRestores(t *testing.T) {
 		if servo.LingerOverride != 3*time.Millisecond {
 			t.Fatalf("LingerOverride = %s, want the override", servo.LingerOverride)
 		}
-		if got := servo.LingerWindow(time.Hour); got != 3*time.Millisecond {
+		if got := servoimpl.LingerWindow(time.Hour); got != 3*time.Millisecond {
 			t.Fatalf("LingerWindow = %s, want the override to win", got)
 		}
 	})

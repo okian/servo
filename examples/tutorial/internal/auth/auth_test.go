@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 	"uuid"
@@ -9,7 +10,10 @@ import (
 )
 
 func TestIssueThenVerifyRoundTrips(t *testing.T) {
-	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: time.Hour})
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
 	userID := uuid.New()
 
 	token, err := issuer.Issue(userID, "alice")
@@ -27,7 +31,10 @@ func TestIssueThenVerifyRoundTrips(t *testing.T) {
 }
 
 func TestVerifyRejectsAnExpiredToken(t *testing.T) {
-	issuer := auth.New(auth.Config{Secret: "test-secret", Expiry: -time.Hour}) // already expired
+	issuer, err := auth.New(auth.Config{Secret: "test-secret-of-at-least-32-bytes", Expiry: -time.Hour}) // already expired
+	if err != nil {
+		t.Fatal(err)
+	}
 	token, err := issuer.Issue(uuid.New(), "alice")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
@@ -39,8 +46,14 @@ func TestVerifyRejectsAnExpiredToken(t *testing.T) {
 }
 
 func TestVerifyRejectsATokenSignedWithADifferentSecret(t *testing.T) {
-	issuerA := auth.New(auth.Config{Secret: "secret-a", Expiry: time.Hour})
-	issuerB := auth.New(auth.Config{Secret: "secret-b", Expiry: time.Hour})
+	issuerA, err := auth.New(auth.Config{Secret: "secret-a-padded-to-32-bytes-long", Expiry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuerB, err := auth.New(auth.Config{Secret: "secret-b-padded-to-32-bytes-long", Expiry: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	token, err := issuerA.Issue(uuid.New(), "alice")
 	if err != nil {
@@ -61,5 +74,20 @@ func TestHashPasswordThenCheckPasswordRoundTrips(t *testing.T) {
 	}
 	if err := auth.CheckPassword(hash, "wrong-password"); err == nil {
 		t.Error("CheckPassword with the wrong password: got nil, want an error")
+	}
+}
+
+// TestNewRefusesAShortSecret pins the constructor's invariant: `required` on
+// the config tag accepts an empty JWT_SECRET, so New is where it is refused.
+func TestNewRefusesAShortSecret(t *testing.T) {
+	for _, secret := range []string{"", "short", "thirty-one-bytes-is-one-too-few"} {
+		if _, err := auth.New(auth.Config{Secret: secret, Expiry: time.Hour}); err == nil {
+			t.Errorf("New accepted a %d-byte secret", len(secret))
+		} else if secret != "" && strings.Contains(err.Error(), secret) {
+			t.Errorf("New's error echoes the secret: %v", err)
+		}
+	}
+	if _, err := auth.New(auth.Config{Secret: "exactly-thirty-two-bytes-long-ok", Expiry: time.Hour}); err != nil {
+		t.Errorf("New refused a 32-byte secret: %v", err)
 	}
 }

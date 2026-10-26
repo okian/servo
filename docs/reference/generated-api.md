@@ -7,12 +7,16 @@ incidental.
 The generated file is ordinary Go. It is compiler-checked, IDE-navigable, steppable in a debugger,
 and reviewable like any other file. What follows is exactly what it contains.
 
+From `main.go` it is normally reached through one call, `func main() { servo.Main(New) }`:
+[`servo.Main`](servo-package.md#main) calls `New`, `Run` and `Shutdown` in turn, handles the
+signals, and exits with a status that says whether they succeeded. See [Your `main`](lifecycle.md#your-main).
+
 ## What gets written, and where
 
 | File | When | Contains |
 | --- | --- | --- |
 | `servo_gen.go` | Always | `App`, `New`, the full method set, one registry per declared scope, one `http*Server` per served group when the spec declares `servo.HTTP()`, `Values`/`NewWith` when the spec declares a [`servo.Value`](spec.md#value), and the config-file reader when it declares a [`servo.ConfigFile`](spec.md#configfile) |
-| `servo_gen_test.go` | Only when the spec declares at least one `servo.Override` | `TestApp`, `NewTestApp`, the same method set, and `TestValues`/`NewTestAppWith` under the same condition |
+| `servo_gen_test.go` | Only when the spec declares at least one `servo.Override` | `TestApp`, `NewTestApp`, the same method set, and `TestValues`/`NewTestAppWith`: one `TestValues` field per Override, to pass an implementation per call, plus any Values |
 | `servo_config_gen.go` | One per [`//servo:config`](config.md) type the graph uses | The `ServoConfig` loader — written beside the **config type**, not the spec, which is what lets the type and its fields stay unexported |
 
 The first two land in the **same directory as the spec file**, in that directory's package — which
@@ -53,30 +57,39 @@ Every generated file documents the graph it was generated from:
 //
 //	[L1] *example.com/servobasic/logger.Logger
 //	      deps: none
-//	      capabilities: Finalizer | binding: sole candidate | logger/logger.go:10:6
+//	      capabilities: Finalizer | binding: sole candidate | logger.New
 //	[L2] *example.com/servobasic/postgres.DB
 //	      deps: *example.com/servobasic/logger.Logger
-//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | postgres/postgres.go:13:6
+//	      capabilities: Initializer, Finalizer, Healther | binding: explicit bind | postgres.New
 //	[L3] *example.com/servobasic/api.Server
 //	      deps: *example.com/servobasic/postgres.DB
-//	      capabilities: Runner, Drainer, Finalizer, Readier | binding: sole candidate | api/api.go:15:6
+//	      capabilities: Runner, Drainer, Finalizer, Readier | binding: sole candidate | api.New
 ```
 
 `[Ln]` is the [level](resolution.md#construction-order-and-levels), `binding` is why that provider
-was chosen, and the position is **relative to the module root** so the file is byte-identical across
-checkouts. A provider from another module is named by its package's import path instead
-(`github.com/okian/servo/v3/middleware/recover.go:17:6`), and one from the standard library by
-`$GOROOT/src/…`, so where a machine keeps its dependencies never reaches the file either. This block
-is the reason a reviewer can see the effect of a signature change in the diff: a new dependency
-shows up here, not just in a call site.
+was chosen, and the last entry is the function that builds the node, qualified by its package's
+name. This block is the reason a reviewer can see the effect of a signature change in the diff: a
+new dependency shows up here, not just in a call site.
 
-A [supplied value](spec.md#value) is listed first, at `[L0]`, with the `servo.Value[…]()` call site
-in place of a provider:
+The header names functions, never source positions, and so does everything else in a committed
+file. A position moves whenever a comment is added above a constructor, and a standard-library
+provider's moves with the Go patch release, so a file that carried positions went stale — and
+failed `servo check` — on edits that changed nothing about the graph, and teammates on different
+toolchains kept overwriting each other's copy. `servo graph`, `servo explain` and `servo why` print
+the live positions when you need them.
+
+A [supplied value](spec.md#value) is listed first, at `[L0]`, with the `Values` field that carries
+it in place of a provider; a [config](config.md) next, with its generated loader:
 
 ```go
 //	[L0] example.com/app/conf.Flags
-//	      supplied by the caller  cmd/api/spec.go:13:3
+//	      supplied by the caller, as Values.Flags
+//	[L0] example.com/app/internal/postgres.dbConfig
+//	      servo:config (prefix POSTGRES) | postgres.ServoConfig
 ```
+
+A [trace wrapper](tracing.md) names the constructor generated for it in the same file
+(`newTracedStore`).
 
 An app with a [scope](scopes.md) gets a second block per scope, below the node list — its policy,
 the accessors that expose it, what one instance holds (`[Sn]` is the level *within* that scope),
@@ -101,18 +114,45 @@ route naming its handler and the arguments it receives, with extracted parameter
 real output:
 
 ```go
-// http (servo.HTTP() at cmd/app/spec.go:23:3):
+// http (servo.HTTP()):
 //
 //	config: *github.com/okian/servo/v3/servo.HTTPConfig
 //	groups: internal, telemetry
 //	use: *github.com/okian/servo/v3/middleware.Recover -> every group
 //	use: *example.com/servohttp/mw.Auth -> group internal
 //	extract: *example.com/servohttp/mw.UserExtractor -> *example.com/servohttp/mw.User
-//	POST /order/{category}/ -> api.Order (api/api.go:94:1)
+//	POST /order/{category}/ -> api.Order
 //	      args: *example.com/servohttp/store.Store
-//	GET /whoami -> api.Whoami (api/api.go:145:1)
+//	GET /whoami -> api.Whoami
 //	      args: *example.com/servohttp/mw.User (extracted)
 ```
+
+### The contract line
+
+Below its imports, every generated file — `servo_gen.go`, the test variant, every build variant
+and every `servo_config_gen.go` — names the runtime contract it was written against:
+
+```go
+// This file needs github.com/okian/servo/v3 v3.5.0 or later. If the line
+// below does not compile, go.mod pins an older servo than the one that
+// generated this file: regenerate it with `go tool servo generate`, which
+// runs the servo go.mod pins, or upgrade the module.
+const _ = servoimpl.Contract1
+```
+
+A generated file calls into the servo runtime of the version that generated it, and compiles
+against whichever version `go.mod` pins. The two agree whenever generation runs through
+`go tool servo` (the tool directive and the runtime are the same module version), and can drift
+apart when it runs through a globally installed binary. When the pinned runtime is too old, the
+build fails on exactly this line, beside a comment saying what to do, rather than inside a helper
+whose signature moved, or not at all and wrongly at run time.
+
+[`servoimpl`](https://pkg.go.dev/github.com/okian/servo/v3/servoimpl) is the package only
+generated code calls; nothing else should import it, and it is exempt from servo's compatibility
+promise — except for its `ContractN` constants. A generator that comes to need runtime behaviour
+an older `servoimpl` lacks emits `Contract2`, declared beside `Contract1`; none is ever removed
+within a major version, so a file generated by any v3 release keeps compiling against every later
+one.
 
 ## The `App` type
 
@@ -144,7 +184,8 @@ One field per node, in construction order, plus bookkeeping only where it's need
 | `<name>Cleanup func()` | The constructor returned a cleanup func |
 | `<name>StopOnce sync.Once` | The node has something to stop (`Drain`, `Flush`, `Stop`, or a cleanup func) |
 | `<name>StopResult servo.NodeResult` | Same condition — memoises the result so the stop path is idempotent |
-| `http<Group>Server`, with its own `StopOnce`/`StopResult` pair | The spec declares `servo.HTTP()` — one triple per served group (`httpServer` for the default group) |
+| `http<Group>Server`, with its own `StopResult` | The spec declares `servo.HTTP()` — one per served group (`httpServer` for the default group), with a `StopOnce` of its own when it is the only group |
+| `httpServersStopOnce sync.Once` | The spec declares `servo.HTTP()` with more than one group — the groups stop together, so one guard serves them all |
 | `startupReport` | Always |
 
 In the example above, `consumer` implements only `Runner` and the two queue accounts implement
@@ -163,14 +204,17 @@ When the spec declares a [scope](scopes.md), the `App` gains four more fields pe
 The registry, its entry type and its accessors are package-level declarations in the same file. The
 override variant prefixes all of them with `test`, since both files land in the same package.
 
-When the spec declares [`servo.HTTP()`](http.md), the `App` gains one server triple per served
-group — `httpServer` for the default group, `httpTelemetryServer` for a group named `telemetry` —
-with the same `StopOnce`/`StopResult` bookkeeping every stoppable node gets. The server types are
+When the spec declares [`servo.HTTP()`](http.md), the `App` gains one server per served group —
+`httpServer` for the default group, `httpTelemetryServer` for a group named `telemetry` — with the
+stop bookkeeping every stoppable node gets; with several groups, one `sync.Once` guards them all,
+because the first stop `Shutdown` reaches stops every group at once. The server types are
 package-level declarations in the same file, and like a scope registry they are emitted machinery
-rather than graph nodes: each holds its listener config, its `*http.Server` and a readiness flag.
-They are constructed after every node and **before** the Init phase — fallibly, because a declared
-group missing from `HTTPConfig.Groups` is the one wiring error only runtime values can reveal, and
-it fails `New` with the same rollback any `Init` failure gets, before any `Init` has run.
+rather than graph nodes: each holds its listener config, its `*http.Server`, a readiness flag and
+the cancel for its requests' contexts, and calls the runtime helpers in `servoimpl` to serve, stop
+and answer requests. They are constructed after every node and **before** the Init phase —
+fallibly, because a declared group missing from `HTTPConfig.Groups` and a TLS key pair that does
+not load are the wiring errors only runtime values can reveal, and either fails `New` with the
+same rollback any `Init` failure gets, before any `Init` has run.
 
 **Every field is unexported.** The generated file is part of *your* package, so code in that package
 — including its tests — can reach any component directly, and code outside it cannot. That boundary
@@ -185,7 +229,9 @@ Derived from the type's own name, so the generated code reads like something a p
 | --- | --- | --- |
 | First letter lowercased | `*api.Server` | `server` |
 | All-caps names lowercase entirely | `*postgres.DB` | `db` (not `dB`) |
-| Collisions get a readable numeric suffix | two `Pool` types | `pool`, `pool2` |
+| Two types sharing a name are both qualified by package | `*db.Pool`, `*cache.Pool` | `dbPool`, `cachePool` |
+| A generic instantiation is named for its arguments | `*repo.Repo[User]`, `*repo.Repo[Order]` | `repoUser`, `repoOrder` |
+| Anything still colliding gets a numeric suffix | two packages named `db`, each with a `Pool` | `dbPool`, `dbPool2` |
 | Keywords and predeclared names are avoided | `*pkg.Range`, `*pkg.New` | `range2`, `new2` |
 | A scope is named for its key type | `chat.RoomKey` | `roomKeyScope` |
 | An accessor is named for its interface | `chat.Rooms` | `rooms` |
@@ -198,6 +244,15 @@ into generated code).
 Field names are an implementation detail: they can change if you rename a type, and they are not
 part of the stable API. Tests that reach into fields are reaching into your own package, which is
 fine — just expect to update them when you rename things.
+
+One case is less obvious: a field's name depends on the other types in the graph, not only its
+own. While `*observability.Logger` is the only `Logger`, its field is `logger`. Add an
+`*audit.Logger` anywhere in the graph and both become qualified, `observabilityLogger` and
+`auditLogger`, in every file generated for that injector, which renames a field a test may read.
+servo has no memory of the previous generation, so it can't keep the old name for the old type;
+the alternative, qualifying every foreign type from the start, would rename almost every field
+on upgrade. For a test that swaps a dependency, `NewTestAppWith` takes the replacement as a
+value (see [The test variant](#the-test-variant)), and needs no field name at all.
 
 ## Method set
 
@@ -215,9 +270,12 @@ Constructs every node in dependency order, then runs the `Init` phase. Returns a
 or `nil` and an error. Never a partially initialised app. Full semantics, including the two distinct
 rollback paths, in [Lifecycle](lifecycle.md#construct).
 
-The `ctx` is used for `Init`; the rollback paths strip its cancellation, so a signal arriving during
-a slow startup unwinds properly instead of abandoning every node at once. Pass the context that
-carries your signal handling.
+The `ctx` is the parent of every `Init`'s context — each `Init` gets one of its own, cancelled when
+that call returns. If `ctx` ends before the `Init` phase finishes, `New` rolls back and fails with an
+error wrapping `context.Cause(ctx)`, rather than handing back an app its caller has already asked to
+stop. The rollback paths strip its cancellation, so a signal arriving during a slow startup unwinds
+properly instead of abandoning every node at once. Pass the context that carries your signal
+handling. An `Init` failure is a [`*servo.NodeError`](servo-package.md#nodeerror) naming its node.
 
 ### `Values` and `NewWith`
 
@@ -233,8 +291,8 @@ type Values struct {
 
 // New builds the app with the zero value of every servo.Value.
 // Prefer NewWith: the zero value is a real value for a struct of
-// options and a nil pointer for anything else, so this is right only when
-// the zero value is what you meant.
+// options, but a nil pointer, interface, map, func or chan is refused,
+// so this is right only when the zero value is what you meant.
 func New(ctx context.Context) (*App, error) {
 	return NewWith(ctx, Values{})
 }
@@ -247,11 +305,23 @@ assignment per supplied value at the very top of construction, before any constr
 supplied value is one per app, held for the life of the process, exactly like a constructed
 singleton.
 
+**A nil it cannot use is refused.** A value of pointer, interface, map, func or chan type that the
+caller left nil fails `NewWith` before anything is built, with an error naming the field and the
+marker:
+
+```
+servo: Values.DB is nil, but servo.Value[*database/sql.DB]() declares it supplied by the caller: set it in the Values passed to NewWith (New supplies only zero values)
+```
+
+A struct's zero value and a nil slice are real values and pass through, as does a non-nil pointer
+to anything — what the constructor does with the value is its own business.
+
 **`New` still exists, and delegates with a zero `Values{}`.** That is deliberate: the alternative —
 dropping `New` from a graph that declares a value — would make the presence of a marker change the
 generated package's public API, which is the one thing the method set is supposed to pin down. It
 cannot do better than the zero value and its doc comment says so; for a struct of options that is
-often exactly right, and for a `*sql.DB` it is nil.
+often exactly right, and for a `*sql.DB` it is the error above, where it used to be a nil pointer
+handed to every consumer and a crash somewhere inside one of them.
 
 **Field names are exported and allocated separately** from `App`'s. They come from the type's own
 name (`conf.Flags` → `Flags`), in a namespace of their own, because `Values` is a struct you write a
@@ -268,9 +338,14 @@ func (a *App) Run(ctx context.Context) error
 ```
 
 Runs every `Runner` until they return, one failing runner cancelling the rest. Emitted HTTP
-servers join the same errgroup: each binds its listener, flips its readiness flag, and serves
-until the context ends. Returns `nil` immediately if the graph has no runners and no servers.
-Does not shut anything down — see [Lifecycle](lifecycle.md#run).
+servers are supervised alongside them: each binds its listener, flips its readiness flag, and
+serves until the context ends. Returns `nil` immediately if the graph has no runners and no
+servers. A panicking runner is recovered and treated as a failure, and once the context is done
+each runner has [`servo.DefaultRunGrace`](servo-package.md#defaultinitbudget-and-defaultrungrace)
+to return before `Run` stops waiting for it. Failures come back as
+[`*servo.NodeError`](servo-package.md#nodeerror)s naming the runner; after an ordinary shutdown
+`Run` returns `nil`, or the cancellation a runner returned. Does not shut anything down — see
+[Lifecycle](lifecycle.md#run).
 
 ### `Shutdown`
 
@@ -281,8 +356,11 @@ func (a *App) Shutdown(ctx context.Context) servo.Report
 Stops every stoppable node in reverse dependency order, each phase under a budget, and returns a
 per-node [`servo.Report`](servo-package.md#report). Emitted HTTP servers stop **first**, before
 every singleton — they are the inbound edges, and draining them is what lets everything beneath
-quiesce. Idempotent. Never returns an error type; check `report.Clean()`. Details, including the
-second-signal force-exit, in [Lifecycle](lifecycle.md#shutdown).
+quiesce. Idempotent. Never returns an error type; check `report.Clean()`, or use `report.Err()`,
+which is `nil` exactly when the report is clean. Once the context's deadline has passed, the nodes
+still to come are reported abandoned without being started. A second interrupt or SIGTERM while it
+runs exits the process with 128 plus the signal's number, after one line on stderr. Details in
+[Lifecycle](lifecycle.md#shutdown).
 
 ### `Health` and `Ready`
 
@@ -296,10 +374,18 @@ transitive aggregation, and not called automatically by anything. A graph with n
 returns an empty report, which is `Clean()`. See
 [Lifecycle](lifecycle.md#health-and-ready).
 
+`Ready` is the one a readiness probe calls. `Health` is a status report — each component's own
+check, for dashboards and alerts — and no liveness probe should call it: the dependency outage its
+checks usually report is one a restart cannot fix, and restarting every replica at once turns it
+into a crash loop. A liveness probe checks the process alone. Both reports encode to JSON as
+`{"nodes": [...]}`, ready to serve as they are. Probe guidance and grace-period sizing:
+[Probes](lifecycle.md#probes).
+
 An emitted HTTP server adds one entry per group to `Ready` — named `"http"` for the default group,
-`"http:<group>"` for the rest — meaning exactly "that listener is bound"; the entry drops back to
-failed the moment `Shutdown` starts draining that group. `Health` says nothing about them: a bound
-socket is not a health claim.
+`"http:<group>"` for the rest — ok from the moment that listener is bound until `Shutdown` takes the
+group out of service. It drops back to failed at the start of the group's `ShutdownDelay`, while the
+server is still answering, which is what lets a readiness probe take the instance out of rotation
+before its listener closes. `Health` says nothing about them: a bound socket is not a health claim.
 
 ### `HTTPHandler`
 
@@ -320,33 +406,36 @@ func (a *App) Graph() servo.Graph
 ```
 
 Returns the resolved graph as data: every node's type string, level, dependencies, capabilities,
-selected binding, and source position. It is emitted as a **compile-time constant** — a literal
-slice in the generated source — so calling it costs nothing and can never disagree with what was
-actually built.
+selected binding, and the function that builds it (`Provider`, such as `postgres.New`). It is
+emitted as a **compile-time constant** — a literal slice in the generated source — so calling it
+costs nothing and can never disagree with what was actually built.
 
 It is display-only. Type strings are labels, not lookup keys, and there is no path from a
 `GraphNode` back to the instance it describes. Useful for a `/debug/graph` endpoint, a startup log
 line, or asserting graph shape in a test.
 
-**It serialises byte-for-byte the way `servo graph --format=json` does**, and that is a checked
-property rather than an aspiration: the two paths populate the identical `servo.Graph` struct, both
-write `nil` (JSON `null`) for an empty `deps`, and both write positions relative to the module root.
-A consumer written against one works against the other — which was the point of the claim, and is
-now true of the bytes as well as the schema.
+**It is the value `servo graph --format=json` prints, less positions.** The generator writes the
+literal from the same conversion the command uses, printed field by field — `nil` as `nil` (JSON
+`null`), an empty slice as empty — so the two serialise identically except that every `pos` is
+empty here, for the reason the [header](#the-header-comment) carries no positions. A consumer
+written against one works against the other, and a test in servo runs a generated `App.Graph()`
+and compares its JSON with the command's to keep it that way.
 
 A [supplied value](spec.md#value) appears here too, first and at `Level: 0`, with `Binding:
-"supplied"` and the `servo.Value[…]()` call site as its `Pos`. A [trace wrapper](tracing.md)
-appears as a node keyed `<interface>#traced`, with `Binding: "traced"`, the `servo.Trace[…]()`
-call site as its `Pos`, and `Wraps` naming the node it decorates — a field that is `omitempty`,
-so a graph with nothing traced serialises exactly as before.
+"supplied"` and no `Provider` — the caller hands it in. A [config](config.md) follows at `Level: 0`
+with its generated loader (`postgres.ServoConfig`) as `Provider`. A [trace wrapper](tracing.md)
+appears as a node keyed `<interface>#traced`, with `Binding: "traced"`, no `Provider` (generated
+code builds it), and `Wraps` naming the node it decorates — a field that is `omitempty`, so a
+graph with nothing traced serialises exactly as before.
 
 Scoped nodes appear here too, after the singletons, each carrying its scope's key in `Scope` and
 its level *within that scope* in `Level`. The scopes themselves are listed in `Graph.Scopes`, with
-their policy, their accessor interfaces, their members and the singletons they borrow. When the
-spec declares `servo.HTTP()`, `Graph.HTTP` carries the emitted plan the same way — the served
-groups, every route with its handler and arguments (extracted ones marked), the middleware
-attachments and the extractors, as [`servo.GraphHTTP`](servo-package.md#graphhttp). All of these fields are
-`omitempty`: an app with no scopes and no HTTP serialises exactly as it always did.
+their policy, their accessor interfaces, their members and the singletons they borrow, by level.
+When the spec declares `servo.HTTP()`, `Graph.HTTP` carries the emitted plan the same way — the
+served groups, every route in the plan's order with its handler and arguments (extracted ones
+marked), the middleware attachments and the extractors, as
+[`servo.GraphHTTP`](servo-package.md#graphhttp). All of these fields are `omitempty`: an app with
+no scopes and no HTTP serialises exactly as it always did.
 
 ### Scope accessors
 
@@ -373,8 +462,8 @@ func (a *App) Report() servo.StartupReport
 
 Returns per-node `Init` durations recorded during `New`: which component cost what, with no external
 instrumentation. Only nodes implementing `Initializer` appear. Within a
-[level](resolution.md#construction-order-and-levels) whose nodes ran concurrently, entries are in
-completion order.
+[level](resolution.md#construction-order-and-levels), entries are in completion order — every
+level's calls run concurrently, a lone node's included.
 
 Call it right after `New` succeeds — most usefully paired with `Shutdown`'s report in
 [`servotest.NewRecorder`](servotest-package.md#newrecorder) to assert real ordering.
@@ -391,10 +480,13 @@ Unexported deliberately: shutdown order is a property of the graph, and stopping
 order is not a supported operation.
 
 Emitted HTTP servers get the same treatment — a `stopHttpServer` (or `stopHttp<Group>Server`) per
-group, draining via `net/http.Server.Shutdown` under the stop budget. Each is nil-guarded: the
-servers are built after every node, so the rollback for a group missing its `Groups` entry reaches
-servers that were never constructed, and the guard reports each as a clean no-op instead of
-dereferencing nothing.
+group, each serving out its listener's `ShutdownDelay` and then draining for what is left of
+`Shutdown`'s deadline; see [Lifecycle](lifecycle.md#http-servers-in-the-shutdown-sequence). With
+more than one group, the first of them to be called stops every group at once, through a shared
+`stopHttpServers`, so the delays overlap instead of adding up, and the rest return what it
+recorded. Each is nil-guarded: the servers are built after every node, so the rollback for a group
+missing its `Groups` entry reaches servers that were never constructed, and the guard reports each
+as a clean no-op instead of dereferencing nothing.
 
 ## The test variant
 
@@ -410,16 +502,19 @@ wrapper. It has to be. Overriding an interface can resolve a completely differen
 which means different fields, different capabilities, and a different set of stop methods; the two
 graphs cannot share one struct definition.
 
-Every generated name is prefixed the same way, for the same reason: a spec that also declares a
-[`servo.Value`](spec.md#value) gets `TestValues` and `NewTestAppWith` beside `NewTestApp`, and the
-scope registries and accessors get a `test` prefix.
+Every generated name is prefixed the same way, for the same reason: the values struct and its
+constructor are `TestValues` and `NewTestAppWith`, beside `NewTestApp`, and the scope registries and
+accessors get a `test` prefix.
 
-The two graphs are resolved separately, so a `servo.Value` that only the production graph depends on
-is *unused* in the override graph. That is not the diagnostic it would be in production: a mock that
-takes fewer things than the real implementation is the ordinary case, so the value is left off
-`TestValues` — and when nothing in the test graph reads any value, `TestValues` and `NewTestAppWith`
-are not emitted at all, leaving `NewTestApp` alone. An unused `servo.Trace` (no wrapper is emitted)
-and an unused `servo.ConfigFile` (no file is read) get the same treatment there.
+`TestValues` carries the [`servo.Value`s](spec.md#value) the test graph reads and, for each
+Override a test can [supply per call](#supplying-an-override-per-call), a field of the overridden
+interface's type. The two graphs are resolved separately, so a `servo.Value` that only the
+production graph depends on is *unused* in the override graph. That is not the diagnostic it would
+be in production: a mock that takes fewer things than the real implementation is the ordinary case,
+so the value is left off `TestValues` — and when nothing in the test graph reads any value and no
+Override can be supplied, `TestValues` and `NewTestAppWith` are not emitted at all, leaving
+`NewTestApp` alone. An unused `servo.Trace` (no wrapper is emitted) and an unused
+`servo.ConfigFile` (no file is read) get the same treatment there.
 
 Because it lives in a `_test.go` file, it exists only under `go test`. A typical test:
 
@@ -439,12 +534,67 @@ func TestApp(t *testing.T) {
 	// ...
 
 	rec := servotest.NewRecorder(app.Report(), app.Shutdown(ctx))
-	servotest.AssertStopOrder(t, rec, "*api.Server", "*postgres.DB")
+	// Nodes are named with full import paths; NodeName spells them.
+	servotest.AssertStopOrder(t, rec,
+		servotest.NodeName[*api.Server](),
+		servotest.NodeName[*mockstore.StoreMock](),
+	)
 }
 ```
 
 The mock is reachable as a field because the test is in the same package as the generated file —
-the same boundary that keeps it unreachable from anywhere else.
+the same boundary that keeps it unreachable from anywhere else. Field names are not a stable API,
+though: a test that reaches into `app.storeMock` or `app.server` follows the type's name and has to
+change when it does. The test's own variables — a mock it supplied, below — and the generated
+methods are what does not move.
+
+### Supplying an Override per call
+
+`NewTestApp` builds every Override through its own constructor, which is a function of the graph's
+other nodes and nothing else — it cannot see the test's `*testing.T`. `TestValues` therefore has a
+field per Override, typed as the overridden interface:
+
+```go
+type TestValues struct {
+	// Store, when set, is the store.Store every consumer gets, in place of
+	// the *mockgenstore.MockStoreForServo the Override would build; nothing in its
+	// lifecycle is called. Nil builds the Override as usual.
+	Store store.Store
+}
+```
+
+Left nil, the Override is built as it always was. Set, the value is used instead: the constructor
+is not called and no lifecycle method is, exactly like a supplied value. So a mock can be made with
+the test's own `t`, and each test can run in parallel with its own:
+
+```go
+func TestLookup(t *testing.T) {
+	t.Parallel()
+
+	mock := mockgenstore.NewMockStore(gomock.NewController(t))
+	mock.EXPECT().Get("user:42").Return("mocked-value")
+
+	app, err := NewTestAppWith(context.Background(), TestValues{Store: mock})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := app.server.Lookup("user:42"); got != "mocked-value" {
+		t.Errorf("Lookup = %q", got)
+	}
+}
+```
+
+The Override's concrete field (`app.mockStoreForServo`) keeps its name and type and stays nil when
+the test supplied the value; every consumer reads an interface-typed field beside it
+(`app.storeOverride`) that holds whichever of the two the call ended up with.
+
+A supplied value has only the interface's methods, which decides which Overrides get a field. The
+concrete type must have no lifecycle at all — no `Init`, `Run`, `Drain`, `Flush`, `Stop`, `Health`,
+`Ready`, nor a cleanup func — because servo would have nothing to call those on; the output of every
+mock generator qualifies. And every consumer must take it as the interface: a constructor or scoped
+constructor whose parameter is the interface, a route handler whose argument is, or a trace
+wrapper for it. An Override failing either — say a consumer that takes `*mockgenstore.MockStore`
+itself — gets no field and is built by its constructor, as before.
 
 Two things to know: `servo check` compares this file exactly as it compares `servo_gen.go`, and
 refuses one left behind by a spec that no longer declares an `Override` — `servo generate` removes
@@ -458,10 +608,13 @@ of each — `HTTPHandler` included, under its condition; that `New(ctx)` exists 
 signature whether or not the spec declares a `servo.Value`; and that `NewWith`/`Values` are the
 names used when it does. The JSON schema of `servo.Graph`. The types in the
 [`servo` package](servo-package.md), which for HTTP means the sealed
-[response family](servo-package.md#the-response-family), `HTTPStatus` and its `Status` table, and
-`HTTPConfig`/`HTTPListener`.
+[response family](servo-package.md#the-response-family), `HTTPStatus` with its `Status` table and
+`StatusFor`, and `HTTPConfig`/`HTTPListener`.
 
 **Not stable:** `App` field names, `Values` field names, the exact statements emitted, the header
-comment's formatting, variable names inside `New`. Treat the file's *contents* as an implementation
+comment's formatting, variable names inside `New`, and the
+[`servoimpl`](servo-package.md#servoimpl) package the file calls into — everything in it except its
+`ContractN` constants, which exist so a file that needs a newer runtime fails to compile with a
+message instead of misbehaving. Treat the file's *contents* as an implementation
 detail of your own package — you commit it, you review it, you don't depend on its internals, and
 you never edit it.

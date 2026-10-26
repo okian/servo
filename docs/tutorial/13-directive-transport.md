@@ -92,9 +92,14 @@ func statusFor(err error) error {
 
 Same single point, same sentinels, same discipline — everything below the API layer still deals
 only in domain errors. The difference is that it *returns* a status-carrying error for the
-generated adapter to write, instead of writing the response itself. 4xx messages reach the
-client; a 500's wrapped detail goes to the log and the client sees only canonical text — the rule
-chapter 10 enforced by hand, now enforced by generated code.
+generated adapter to write, instead of writing the response itself. A 500's wrapped detail goes to
+the log and the client sees only canonical text — the rule chapter 10 enforced by hand, now
+enforced by generated code. A 4xx is the other way round: the client reads the error's whole
+message, every wrapped layer included, which is why `statusFor` answers in words of its own
+(`"not found"`, `"access forbidden"`) rather than wrapping what the service returned. The one case
+it wraps is the validation error, because the service wrote every word of that one for the
+caller. The [status reference](../reference/http.md#exactly-what-the-client-reads) lists exactly
+what a client can read.
 
 ## The session survives, and so does its rule
 
@@ -117,6 +122,12 @@ the server is constructed; a `*session.Session` parameter would pin one user's s
 life of the process, and `servo generate` refuses to emit it, with the same widening diagnostic
 the spec chapter shows for singletons. Acquire per request, release per request: the transport
 changed, the scope rule didn't.
+
+`Recent`, which cannot answer without its session, hands `Acquire`'s error back unwrapped. When
+the session scope is at its `Max` cap, or already shutting down, that error is
+`servo.ErrScopeFull` or `servo.ErrScopeClosed`, and the generated adapter answers it with a `503`
+and `Retry-After` — load being shed, which a client should retry — logged at Debug. Wrapped in a
+status of its own, every refusal would have been a 500 and an error line.
 
 ## Auth: one middleware, one extractor
 
@@ -215,32 +226,41 @@ repository, the cache and the broker, generated the same way the server is. They
 explain, once there is a tracer to send the spans to.
 
 The listener address comes from a `*servo.HTTPConfig` provider reading the same `HTTP_ADDR` every
-deployment already sets. servo never constructs config; you do — chapter 3's rule, unchanged.
+deployment already sets. servo never constructs config; you do — chapter 3's rule, unchanged. The
+provider also sets the server's timeouts, all four, because zero means none, exactly as on
+`net/http.Server` — and a server with no header timeout lets a client that never finishes its
+headers hold a connection open for good; the generated server says so in a warning when it starts
+without one. `HTTP_SHUTDOWN_DELAY`, unset here, is how long the server goes on answering once
+`Shutdown` has marked it not ready, so a load balancer stops routing to it before its socket
+closes; [the HTTP reference](../reference/http.md#lifecycle) walks through the whole shutdown.
 
 ## What got generated
 
 Run `make generate` and read `cmd/ordersservo/servo_gen.go` next to chapter 10's `server.go`.
 The file's header now documents the routing table alongside the graph. Each route got an adapter
-— here is the interesting middle of `handleCreateOrder`:
+— here is `handleCreateOrder`:
 
 ```go
 claims, err := s.app.claimsExtractor.Extract(r)
 if err != nil {
-	httpWriteFailure(w, "servoapi.CreateOrder", "POST /orders", err)
+	servoimpl.WriteFailure(w, r, "servoapi.CreateOrder", "POST /orders", err)
 	return
 }
 req := &servoapi.CreateOrderReq{}
 r.Body = http.MaxBytesReader(w, r.Body, s.maxBody)
 if err := json.NewDecoder(r.Body).Decode(req); err != nil {
-	httpWriteError(w, http.StatusBadRequest, "malformed request body")
+	servoimpl.BodyError(w, err, "malformed request body")
 	return
 }
 res, err := servoapi.CreateOrder(r.Context(), req, claims, s.app.orderService)
+servoimpl.Respond(w, r, "servoapi.CreateOrder", "POST /orders", res, err)
 ```
 
 That is `handlers.go`'s boilerplate from chapter 10, emitted instead of maintained. The claims
 come first, before a byte of the body is read: an unauthenticated request is refused at no cost,
-and a malformed body cannot turn its 401 into a 400. The
+and a malformed body cannot turn its 401 into a 400. What is the same for every route — the
+status contract, the error body, the log line — is a call into `servoimpl`, servo's runtime for
+generated code, so it is written and tested once rather than emitted into every adapter. The
 registration probe already ran at generate time: two routes that would make `http.ServeMux` panic
 at startup are a build failure with net/http's own message.
 

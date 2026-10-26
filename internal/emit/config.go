@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/okian/servo/v3/internal/graph"
+	"github.com/okian/servo/v3/internal/render"
 )
 
 // ConfigLoaderFileName is the companion file EmitConfigLoader's output is
@@ -20,7 +21,9 @@ const ConfigLoaderFileName = "servo_config_gen.go"
 // about the config — the type, its fields, its tags — can stay unexported,
 // because this file lives in the same package; the export exists only
 // because the injector lives in another one and Go has no narrower door.
-const ConfigLoaderFuncName = "ServoConfig"
+// Defined by render's, which names it as a config node's provider in the
+// graph and cannot import this package.
+const ConfigLoaderFuncName = render.ConfigLoaderFuncName
 
 // confPackagePath is the stdlib-only coercion runtime generated file-value
 // code calls. Only emitted (and therefore only a dependency) when the
@@ -39,11 +42,13 @@ const confPackagePath = "github.com/okian/servo/v3/conf"
 // injector — a shared companion cannot have two signatures — and the
 // caller (cmd/servo) enforces that agreement before emitting anything.
 func EmitConfigLoader(decl *graph.ConfigDecl, withFile bool) ([]byte, error) {
+	l := newLoaderNames(decl, withFile)
 	var body strings.Builder
 	writeConfigHeader(&body, decl, withFile)
 	fmt.Fprintf(&body, "package %s\n\n", decl.PkgName)
-	body.WriteString(configImports(decl, withFile))
-	writeConfigFunc(&body, decl, withFile)
+	body.WriteString(l.imports())
+	body.WriteString(contractGuard(l.pkg[servoimplPath]))
+	writeConfigFunc(&body, decl, withFile, l)
 
 	formatted, err := format.Source([]byte(body.String()))
 	if err != nil {
@@ -90,10 +95,74 @@ func configEnvWidth(decl *graph.ConfigDecl) int {
 	return w
 }
 
-// configImports computes the exact import block: a loader for a struct of
-// optional strings imports nothing but os, and only a file-reading one
-// carries the conf runtime.
-func configImports(decl *graph.ConfigDecl, withFile bool) string {
+// loaderNames is every identifier a loader's file writes: the packages it
+// calls into, and the locals and the one parameter its function declares.
+// All of them are chosen clear of the config type's own name, which every
+// error path spells after the locals exist (`return settings{}, err`) and
+// which shares the package block with the file's imports. They used to be
+// fixed strings, so a config type called cfg opened the loader with `var
+// cfg cfg`, and one called conf collided with the conf runtime's import.
+type loaderNames struct {
+	// pkg maps each import path the file needs to the identifier it is
+	// written with — its own name, unless that is the type's.
+	pkg                                          map[string]string
+	cfg, missing, section, file, err, v, ok, val string
+	// set is each file-and-env required field's <field>Set tracker.
+	set map[string]string
+}
+
+func newLoaderNames(decl *graph.ConfigDecl, withFile bool) *loaderNames {
+	l := &loaderNames{pkg: map[string]string{}, set: map[string]string{}}
+	for _, path := range configImportPaths(decl, withFile) {
+		ident := pathBase(path)
+		if ident == decl.TypeName {
+			// Prefixed rather than numbered, so the file still says which
+			// package it means: stdos, servoconf.
+			ident = "std" + ident
+			if path == confPackagePath || path == servoimplPath {
+				ident = "servo" + pathBase(path)
+			}
+		}
+		l.pkg[path] = ident
+	}
+	names := NewNameAllocator()
+	names.Reserve(decl.TypeName, ConfigLoaderFuncName)
+	for _, ident := range l.pkg {
+		names.Reserve(ident)
+	}
+	l.cfg = names.AllocateName("cfg")
+	l.missing = names.AllocateName("missing")
+	l.section = names.AllocateName("section")
+	l.file = names.AllocateName("file")
+	l.err = names.AllocateName("err")
+	l.v = names.AllocateName("v")
+	l.ok = names.AllocateName("ok")
+	l.val = names.AllocateName("val")
+	for _, f := range decl.Fields {
+		if f.Required && withFile {
+			l.set[f.FieldName] = names.AllocateName(f.FieldName + "Set")
+		}
+	}
+	return l
+}
+
+// p is the identifier the file writes path's package with.
+func (l *loaderNames) p(path string) string { return l.pkg[path] }
+
+// pathBase is an import path's last element, which is the package name of
+// every path a loader imports.
+func pathBase(path string) string {
+	if i := strings.LastIndexByte(path, '/'); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+// configImportPaths is the exact set of packages a loader calls into: a
+// loader for a struct of optional strings needs nothing of the standard
+// library but os, only a file-reading one carries the conf runtime, and
+// every one imports servoimpl for the contract guard alone.
+func configImportPaths(decl *graph.ConfigDecl, withFile bool) []string {
 	std := map[string]bool{"os": true}
 	for _, f := range decl.Fields {
 		if f.Required {
@@ -119,58 +188,79 @@ func configImports(decl *graph.ConfigDecl, withFile bool) string {
 	}
 	if withFile {
 		std["fmt"] = true
+		std[confPackagePath] = true
 	}
-
+	std[servoimplPath] = true
 	paths := make([]string, 0, len(std))
 	for p := range std {
 		paths = append(paths, p)
 	}
 	sort.Strings(paths)
+	return paths
+}
 
+// imports renders the import block, standard library first, aliasing
+// whatever newLoaderNames had to move.
+func (l *loaderNames) imports() string {
+	var std, ext []string
+	for path := range l.pkg {
+		if isStdlibPath(path) {
+			std = append(std, path)
+		} else {
+			ext = append(ext, path)
+		}
+	}
+	sort.Strings(std)
+	sort.Strings(ext)
 	var b strings.Builder
 	b.WriteString("import (\n")
-	for _, p := range paths {
-		fmt.Fprintf(&b, "\t%q\n", p)
+	write := func(paths []string) {
+		for _, path := range paths {
+			if ident := l.pkg[path]; ident != pathBase(path) {
+				fmt.Fprintf(&b, "\t%s %q\n", ident, path)
+			} else {
+				fmt.Fprintf(&b, "\t%q\n", path)
+			}
+		}
 	}
-	if withFile {
-		b.WriteString("\n")
-		fmt.Fprintf(&b, "\t%q\n", confPackagePath)
-	}
+	write(std)
+	b.WriteString("\n")
+	write(ext)
 	b.WriteString(")\n\n")
 	return b.String()
 }
 
-func writeConfigFunc(b *strings.Builder, decl *graph.ConfigDecl, withFile bool) {
+func writeConfigFunc(b *strings.Builder, decl *graph.ConfigDecl, withFile bool, l *loaderNames) {
 	fmt.Fprintf(b, "// %s builds %s. Precedence per setting: default", ConfigLoaderFuncName, decl.TypeName)
 	if withFile {
 		fmt.Fprintf(b, ",\n// then the config file's %q section", decl.Section)
 	}
 	fmt.Fprintf(b, ", then the %s_* environment\n// variable — the environment always wins.\n", decl.Prefix)
 	if withFile {
-		fmt.Fprintf(b, "func %s(file map[string]any) (%s, error) {\n", ConfigLoaderFuncName, decl.TypeName)
+		fmt.Fprintf(b, "func %s(%s map[string]any) (%s, error) {\n", ConfigLoaderFuncName, l.file, decl.TypeName)
 	} else {
 		fmt.Fprintf(b, "func %s() (%s, error) {\n", ConfigLoaderFuncName, decl.TypeName)
 	}
-	fmt.Fprintf(b, "\tvar cfg %s\n", decl.TypeName)
+	fmt.Fprintf(b, "\tvar %s %s\n", l.cfg, decl.TypeName)
 	if anyRequired(decl) {
-		b.WriteString("\tvar missing []string\n")
+		fmt.Fprintf(b, "\tvar %s []string\n", l.missing)
 	}
 	if withFile {
-		fmt.Fprintf(b, "\n\tsection, err := conf.Section(file, %q)\n", decl.Section)
-		fmt.Fprintf(b, "\tif err != nil {\n\t\treturn %s{}, err\n\t}\n", decl.TypeName)
+		fmt.Fprintf(b, "\n\t%s, %s := %s.Section(%s, %q)\n", l.section, l.err, l.p(confPackagePath), l.file, decl.Section)
+		fmt.Fprintf(b, "\tif %s != nil {\n\t\treturn %s{}, %s\n\t}\n", l.err, decl.TypeName, l.err)
 	}
 
 	for _, f := range decl.Fields {
 		b.WriteString("\n")
-		writeConfigField(b, decl, f, withFile)
+		writeConfigField(b, decl, f, withFile, l)
 	}
 
 	if anyRequired(decl) {
-		b.WriteString("\n\tif len(missing) > 0 {\n")
-		fmt.Fprintf(b, "\t\treturn %s{}, fmt.Errorf(\"%s: missing required configuration: %%s\", strings.Join(missing, \", \"))\n", decl.TypeName, decl.PkgName)
+		fmt.Fprintf(b, "\n\tif len(%s) > 0 {\n", l.missing)
+		fmt.Fprintf(b, "\t\treturn %s{}, %s.Errorf(\"%s: missing required configuration: %%s\", %s.Join(%s, \", \"))\n", decl.TypeName, l.p("fmt"), decl.PkgName, l.p("strings"), l.missing)
 		b.WriteString("\t}\n")
 	}
-	b.WriteString("\treturn cfg, nil\n}\n")
+	fmt.Fprintf(b, "\treturn %s, nil\n}\n", l.cfg)
 }
 
 func anyRequired(decl *graph.ConfigDecl) bool {
@@ -182,7 +272,7 @@ func anyRequired(decl *graph.ConfigDecl) bool {
 	return false
 }
 
-func writeConfigField(b *strings.Builder, decl *graph.ConfigDecl, f graph.ConfigField, withFile bool) {
+func writeConfigField(b *strings.Builder, decl *graph.ConfigDecl, f graph.ConfigField, withFile bool, l *loaderNames) {
 	fileKey := decl.Section + "." + f.FileKey
 	fmt.Fprintf(b, "\t// %s — %s", f.Name, f.EnvName)
 	if withFile {
@@ -194,83 +284,83 @@ func writeConfigField(b *strings.Builder, decl *graph.ConfigDecl, f graph.Config
 	b.WriteString("\n")
 
 	if f.HasDefault {
-		fmt.Fprintf(b, "\tcfg.%s = %s\n", f.FieldName, configDefaultLiteral(f))
+		fmt.Fprintf(b, "\t%s.%s = %s\n", l.cfg, f.FieldName, configDefaultLiteral(f, l))
 	}
-	setVar := f.FieldName + "Set"
 	// The <field>Set tracker exists only where both sources can satisfy a
 	// required field; env-only required fields use a plain else instead.
-	trackSet := f.Required && withFile
+	setVar, trackSet := l.set[f.FieldName]
 	if trackSet {
 		fmt.Fprintf(b, "\t%s := false\n", setVar)
 	}
 
 	if withFile {
-		fmt.Fprintf(b, "\tif v, ok := section[%q]; ok {\n", f.FileKey)
-		fmt.Fprintf(b, "\t\tval, err := conf.%s(v)\n", confHelperName(f.Kind))
-		fmt.Fprintf(b, "\t\tif err != nil {\n\t\t\treturn %s{}, fmt.Errorf(\"%s (config file): %%w\", err)\n\t\t}\n", decl.TypeName, fileKey)
-		fmt.Fprintf(b, "\t\tcfg.%s = val\n", f.FieldName)
+		fmt.Fprintf(b, "\tif %s, %s := %s[%q]; %s {\n", l.v, l.ok, l.section, f.FileKey, l.ok)
+		fmt.Fprintf(b, "\t\t%s, %s := %s.%s(%s)\n", l.val, l.err, l.p(confPackagePath), confHelperName(f.Kind), l.v)
+		fmt.Fprintf(b, "\t\tif %s != nil {\n\t\t\treturn %s{}, %s.Errorf(\"%s (config file): %%w\", %s)\n\t\t}\n", l.err, decl.TypeName, l.p("fmt"), fileKey, l.err)
+		fmt.Fprintf(b, "\t\t%s.%s = %s\n", l.cfg, f.FieldName, l.val)
 		if trackSet {
 			fmt.Fprintf(b, "\t\t%s = true\n", setVar)
 		}
 		b.WriteString("\t}\n")
 	}
 
-	fmt.Fprintf(b, "\tif v, ok := os.LookupEnv(%q); ok {\n", f.EnvName)
-	writeEnvParse(b, decl, f)
+	fmt.Fprintf(b, "\tif %s, %s := %s.LookupEnv(%q); %s {\n", l.v, l.ok, l.p("os"), f.EnvName, l.ok)
+	writeEnvParse(b, decl, f, l)
 	if trackSet {
 		fmt.Fprintf(b, "\t\t%s = true\n", setVar)
 	}
 	if f.Required && !withFile {
 		b.WriteString("\t} else {\n")
-		fmt.Fprintf(b, "\t\tmissing = append(missing, %q)\n", f.EnvName)
+		fmt.Fprintf(b, "\t\t%s = append(%s, %q)\n", l.missing, l.missing, f.EnvName)
 	}
 	b.WriteString("\t}\n")
 	if trackSet {
 		fmt.Fprintf(b, "\tif !%s {\n", setVar)
-		fmt.Fprintf(b, "\t\tmissing = append(missing, %q)\n", f.EnvName+" (env) or "+fileKey+" (config file)")
+		fmt.Fprintf(b, "\t\t%s = append(%s, %q)\n", l.missing, l.missing, f.EnvName+" (env) or "+fileKey+" (config file)")
 		b.WriteString("\t}\n")
 	}
 }
 
-// writeEnvParse converts the raw environment string v into the field's own
+// writeEnvParse converts the raw environment string into the field's own
 // type: a strconv or time call the reader can step through, with an error
 // that names the variable — and, for a field tagged secret, never echoes
 // the value that failed to parse.
-func writeEnvParse(b *strings.Builder, decl *graph.ConfigDecl, f graph.ConfigField) {
-	assignCast := func(expr string) {
-		fmt.Fprintf(b, "\t\tval, err := %s\n", expr)
-		b.WriteString("\t\tif err != nil {\n")
-		writeEnvParseError(b, decl, f)
+func writeEnvParse(b *strings.Builder, decl *graph.ConfigDecl, f graph.ConfigField, l *loaderNames) {
+	assignCast := func(call string) {
+		fmt.Fprintf(b, "\t\t%s, %s := %s\n", l.val, l.err, call)
+		fmt.Fprintf(b, "\t\tif %s != nil {\n", l.err)
+		writeEnvParseError(b, decl, f, l)
 		b.WriteString("\t\t}\n")
 		if cast := envCast(f.Kind); cast != "" {
-			fmt.Fprintf(b, "\t\tcfg.%s = %s(val)\n", f.FieldName, cast)
+			fmt.Fprintf(b, "\t\t%s.%s = %s(%s)\n", l.cfg, f.FieldName, cast, l.val)
 		} else {
-			fmt.Fprintf(b, "\t\tcfg.%s = val\n", f.FieldName)
+			fmt.Fprintf(b, "\t\t%s.%s = %s\n", l.cfg, f.FieldName, l.val)
 		}
 	}
 
+	strconvPkg := l.p("strconv")
 	switch f.Kind {
 	case graph.KindString:
-		fmt.Fprintf(b, "\t\tcfg.%s = v\n", f.FieldName)
+		fmt.Fprintf(b, "\t\t%s.%s = %s\n", l.cfg, f.FieldName, l.v)
 	case graph.KindBool:
-		assignCast("strconv.ParseBool(v)")
+		assignCast(fmt.Sprintf("%s.ParseBool(%s)", strconvPkg, l.v))
 	case graph.KindInt, graph.KindInt8, graph.KindInt16, graph.KindInt32, graph.KindInt64:
-		assignCast(fmt.Sprintf("strconv.ParseInt(v, 10, %d)", f.Kind.StrconvBits()))
+		assignCast(fmt.Sprintf("%s.ParseInt(%s, 10, %d)", strconvPkg, l.v, f.Kind.StrconvBits()))
 	case graph.KindUint, graph.KindUint8, graph.KindUint16, graph.KindUint32, graph.KindUint64:
-		assignCast(fmt.Sprintf("strconv.ParseUint(v, 10, %d)", f.Kind.StrconvBits()))
+		assignCast(fmt.Sprintf("%s.ParseUint(%s, 10, %d)", strconvPkg, l.v, f.Kind.StrconvBits()))
 	case graph.KindFloat32, graph.KindFloat64:
-		assignCast(fmt.Sprintf("strconv.ParseFloat(v, %d)", f.Kind.StrconvBits()))
+		assignCast(fmt.Sprintf("%s.ParseFloat(%s, %d)", strconvPkg, l.v, f.Kind.StrconvBits()))
 	case graph.KindDuration:
-		assignCast("time.ParseDuration(v)")
+		assignCast(fmt.Sprintf("%s.ParseDuration(%s)", l.p("time"), l.v))
 	}
 }
 
-func writeEnvParseError(b *strings.Builder, decl *graph.ConfigDecl, f graph.ConfigField) {
+func writeEnvParseError(b *strings.Builder, decl *graph.ConfigDecl, f graph.ConfigField, l *loaderNames) {
 	if f.Secret {
-		fmt.Fprintf(b, "\t\t\treturn %s{}, errors.New(\"%s: not a valid %s (value redacted: secret)\")\n", decl.TypeName, f.EnvName, f.Kind.GoType())
+		fmt.Fprintf(b, "\t\t\treturn %s{}, %s.New(\"%s: not a valid %s (value redacted: secret)\")\n", decl.TypeName, l.p("errors"), f.EnvName, f.Kind.GoType())
 		return
 	}
-	fmt.Fprintf(b, "\t\t\treturn %s{}, fmt.Errorf(\"%s: not a valid %s: %%q\", v)\n", decl.TypeName, f.EnvName, f.Kind.GoType())
+	fmt.Fprintf(b, "\t\t\treturn %s{}, %s.Errorf(\"%s: not a valid %s: %%q\", %s)\n", decl.TypeName, l.p("fmt"), f.EnvName, f.Kind.GoType(), l.v)
 }
 
 // envCast is the conversion from strconv's widest result down to the
@@ -296,13 +386,14 @@ func confHelperName(k graph.ConfigKind) string {
 // configDefaultLiteral renders a validated default as source: quoted for
 // strings, a readable duration expression for durations, verbatim for the
 // numeric and bool kinds (scan already parsed them, so they are known
-// well-formed literals).
-func configDefaultLiteral(f graph.ConfigField) string {
+// well-formed literals). durationLiteral writes the time package by its
+// own name, which a config type called time has taken.
+func configDefaultLiteral(f graph.ConfigField, l *loaderNames) string {
 	switch f.Kind {
 	case graph.KindString:
 		return fmt.Sprintf("%q", f.Default)
 	case graph.KindDuration:
-		return durationLiteral(f.DefaultDuration)
+		return strings.ReplaceAll(durationLiteral(f.DefaultDuration), "time.", l.p("time")+".")
 	default:
 		return f.Default
 	}

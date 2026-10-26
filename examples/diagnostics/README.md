@@ -14,7 +14,8 @@ go run ./cmd/servo generate --dir examples/diagnostics/missing
 ## `missing/`
 
 `Server` depends on the `Store` interface; nothing in scope implements it, so there's no
-candidate list to offer:
+candidate list to offer. The scope is this whole module, every other fixture included, whichever
+one `--dir` points at — which is why this `Store`'s method is one no other fixture declares:
 
 ```
 servo: no provider for example.com/servodiagnostics/missing.Store
@@ -24,17 +25,19 @@ servo: no provider for example.com/servodiagnostics/missing.Store
 
 ## `ambiguous/`
 
-`Server` depends on the same `Store` interface, but now two types (`Postgres`, `Redis`) both
-implement it and nothing picks one with `servo.Bind`:
+`Server` depends on a `Store` interface again, but now two types (`Postgres`, `Redis`) both
+implement it and nothing picks one with `servo.Bind`. The lines to add are written the way this
+spec file writes types — it lives in package `ambiguous` itself, so they are bare; from another
+package they would be package-qualified, followed by the imports the spec file still needs:
 
 ```
-servo: no provider for example.com/servodiagnostics/ambiguous.Store
+servo: ambiguous provider for example.com/servodiagnostics/ambiguous.Store
   needed by *example.com/servodiagnostics/ambiguous.Server  ambiguous/store.go:23:6
-  root                                                       ambiguous/spec.go:9:3
+  root                                                      ambiguous/spec.go:9:3
 
-  2 types implement example.com/servodiagnostics/ambiguous.Store — add one of:
-      servo.Bind[example.com/servodiagnostics/ambiguous.Store, *example.com/servodiagnostics/ambiguous.Postgres]()      ambiguous/store.go:11:6
-      servo.Bind[example.com/servodiagnostics/ambiguous.Store, *example.com/servodiagnostics/ambiguous.Redis]()      ambiguous/store.go:17:6
+  2 types in this module implement Store — pick one with servo.Bind:
+      servo.Bind[Store, *Postgres]()  ambiguous/store.go:11:6
+      servo.Bind[Store, *Redis]()     ambiguous/store.go:17:6
 ```
 
 ## `cycle/`

@@ -30,13 +30,50 @@ func NewCORSConfig() *middleware.CORSConfig {
 	}
 }
 
+// Every listener's timeouts. Zero means none, as it does on net/http.Server
+// — a listener without a header timeout lets a client that never finishes
+// its headers hold a connection open for good, and the generated server
+// warns when it starts one — so each of them sets all four. WriteTimeout
+// bounds a whole response, which suits this API's small JSON bodies; a
+// route that streams for longer would need its own deadline instead.
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 30 * time.Second
+	writeTimeout      = 30 * time.Second
+	idleTimeout       = 2 * time.Minute
+)
+
+// listener is one group's listen address with the timeouts above: a group
+// does not inherit the flat fields' values.
+func listener(ip string, port uint16) servo.HTTPListener {
+	return servo.HTTPListener{
+		IP: ip, Port: port,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
+}
+
 // NewHTTPConfig is the config node servo.HTTP() requires: constructed by
 // the user, resolved like any other provider — so where the values come
 // from (env here) stays this module's own business. The flat fields are
 // the default group's listener; each declared group gets an entry in
 // Groups, keyed by its name.
+//
+// HTTP_SHUTDOWN_DELAY sets every listener's ShutdownDelay: how long each
+// keeps serving after Shutdown drops its readiness, while load balancers
+// stop routing to it. Zero suits a laptop; behind Kubernetes, a few
+// seconds — and a terminationGracePeriodSeconds above the delay plus the
+// slowest request.
 func NewHTTPConfig() (*servo.HTTPConfig, error) {
-	cfg := &servo.HTTPConfig{IP: "127.0.0.1", Port: 8080}
+	cfg := &servo.HTTPConfig{
+		IP: "127.0.0.1", Port: 8080,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+	}
 	if raw := os.Getenv("HTTP_PORT"); raw != "" {
 		p, err := strconv.ParseUint(raw, 10, 16)
 		if err != nil {
@@ -52,8 +89,8 @@ func NewHTTPConfig() (*servo.HTTPConfig, error) {
 		cfg.MaxBodyBytes = limit
 	}
 	cfg.Groups = map[string]servo.HTTPListener{
-		"telemetry": {IP: "127.0.0.1", Port: 9001},
-		"internal":  {IP: "127.0.0.1", Port: 9002},
+		"telemetry": listener("127.0.0.1", 9001),
+		"internal":  listener("127.0.0.1", 9002),
 	}
 	for name, env := range map[string]string{"telemetry": "HTTP_TELEMETRY_PORT", "internal": "HTTP_INTERNAL_PORT"} {
 		raw := os.Getenv(env)
@@ -67,6 +104,17 @@ func NewHTTPConfig() (*servo.HTTPConfig, error) {
 		lc := cfg.Groups[name]
 		lc.Port = uint16(p)
 		cfg.Groups[name] = lc
+	}
+	if raw := os.Getenv("HTTP_SHUTDOWN_DELAY"); raw != "" {
+		delay, err := time.ParseDuration(raw)
+		if err != nil {
+			return nil, fmt.Errorf("HTTP_SHUTDOWN_DELAY: %w", err)
+		}
+		cfg.ShutdownDelay = delay
+		for name, lc := range cfg.Groups {
+			lc.ShutdownDelay = delay
+			cfg.Groups[name] = lc
+		}
 	}
 	return cfg, nil
 }
@@ -86,16 +134,22 @@ type OrderResp struct {
 }
 
 // Order is the full status contract in one handler: a domain sentinel
-// becomes 404 with the wrapped message, a policy refusal 403, an
-// infrastructure failure 500 (canonical text only — the wrapped detail is
-// for the log), and success picks 201 by returning the status in the error
-// position.
+// becomes 404, a policy refusal 403, an infrastructure failure 500
+// (canonical text only — the wrapped detail is for the log), and success
+// picks 201 by returning the status in the error position.
+//
+// The 404 is written with Newf, not wrapped. A 4xx body is the returned
+// error's whole message, every wrapped layer included, so it must be text
+// written for the caller: wrapping the store's error would send whatever
+// that error says — today a sentinel, tomorrow a driver message naming a
+// table or a constraint. The cause is matched, then answered in words of
+// the API's own.
 //
 //servo:post /order/{category}/
 func Order(ctx context.Context, req *OrderReq, st *store.Store) (servo.Json[*OrderResp], error) {
 	cat, err := st.Category(req.Category)
 	if errors.Is(err, store.ErrNotFound) {
-		return nil, servo.Status.NOT_FOUND.Wrapf("category %q: %w", req.Category, err)
+		return nil, servo.Status.NOT_FOUND.Newf("no category %q", req.Category)
 	}
 	if err != nil {
 		return nil, servo.Status.INTERNAL_SERVER_ERROR.Wrap(err)

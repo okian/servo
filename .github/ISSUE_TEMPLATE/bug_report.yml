@@ -23,13 +23,24 @@ body:
     id: version
     attributes:
       label: servo version
-      description: Tag or commit of `github.com/okian/servo/v3` you're on.
+      description: >
+        Output of `servo version` (`go tool servo version` if you run it as a tool), or the
+        tag or commit of `github.com/okian/servo/v3` you're on.
     validations:
       required: true
   - type: input
     id: go-version
     attributes:
       label: Go version
-      description: Output of `go version`.
+      description: >
+        Output of `go version`. servo type-checks your code with this toolchain, so it matters
+        even when the bug looks unrelated to Go.
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and architecture
+      description: For example macOS 15 on arm64, Ubuntu 24.04 on amd64, Windows 11 on amd64.
     validations:
       required: true

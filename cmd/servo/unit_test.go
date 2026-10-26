@@ -3,6 +3,8 @@ package main
 import (
 	"go/ast"
 	"go/parser"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -258,37 +260,275 @@ func TestFindNodeSuffixMatchesAtASegmentBoundary(t *testing.T) {
 	}
 }
 
-// TestDiffLinesTrimsTheCommonEnds pins that trimming changes nothing a
-// caller can see — the ops still cover every line — while keeping the
-// quadratic core off the thousands of identical lines around a one-line
-// change in a generated file.
-func TestDiffLinesTrimsTheCommonEnds(t *testing.T) {
-	a := make([]string, 0, 20000)
-	for i := 0; i < 20000; i++ {
-		a = append(a, strconv.Itoa(i))
+// numberedLines is n distinct lines, "0" through n-1.
+func numberedLines(n int) []string {
+	lines := make([]string, n)
+	for i := range lines {
+		lines[i] = strconv.Itoa(i)
 	}
-	b := append([]string(nil), a...)
-	b[10000] = "changed"
-	ops := diffLines(a, b)
-	if len(ops) != 20001 {
-		t.Fatalf("got %d ops, want 20001 (one delete and one insert among 19999 equals)", len(ops))
-	}
-	var deletes, inserts int
+	return lines
+}
+
+// allocatedBy reports the bytes fn allocates. The bounds it is checked
+// against are orders of magnitude apart from what the defect cost, so the
+// odd allocation from elsewhere in the process cannot decide a result.
+func allocatedBy(fn func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	fn()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
+
+// replay rebuilds both sides from ops, which is what makes them a diff of
+// a and b at all.
+func replay(ops []diffOp) (a, b []string) {
 	for _, op := range ops {
-		switch op.kind {
-		case diffDelete:
-			deletes++
-			if op.line != "10000" {
-				t.Errorf("deleted %q, want 10000", op.line)
+		if op.kind != diffInsert {
+			a = append(a, op.line)
+		}
+		if op.kind != diffDelete {
+			b = append(b, op.line)
+		}
+	}
+	return a, b
+}
+
+// TestDiffLinesWorkIsBounded pins the cost, not just the output. The diff
+// used to fill an (n+1)×(m+1) table whatever the inputs were — 3 GB and
+// most of a minute for twenty thousand lines with one line changed, which
+// is what this test itself used to cost — while claiming in the changelog
+// that it trimmed the common ends first.
+func TestDiffLinesWorkIsBounded(t *testing.T) {
+	const n = 20000
+	cases := []struct {
+		name     string
+		edit     func(b []string) []string
+		maxBytes uint64
+		edits    int
+	}{
+		{
+			name:     "one line changed in the middle",
+			edit:     func(b []string) []string { b[n/2] = "changed"; return b },
+			maxBytes: 4 << 20,
+			edits:    2,
+		},
+		{
+			// Trimming cannot help here: the first and last lines both
+			// differ, so the whole file is the middle the core has to diff.
+			name: "a change at each end",
+			edit: func(b []string) []string {
+				b[0], b[n-1] = "first", "last"
+				return b
+			},
+			maxBytes: 4 << 20,
+			edits:    4,
+		},
+		{
+			// Nothing in common: past maxEdits the core stops looking and
+			// reports the middle replaced wholesale.
+			name: "nothing in common",
+			edit: func(b []string) []string {
+				for i := range b {
+					b[i] = "other " + b[i]
+				}
+				return b
+			},
+			maxBytes: 48 << 20,
+			edits:    2 * n,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			a := numberedLines(n)
+			b := c.edit(numberedLines(n))
+			var ops []diffOp
+			if got := allocatedBy(func() { ops = diffLines(a, b) }); got > c.maxBytes {
+				t.Errorf("diffLines allocated %d bytes, want at most %d", got, c.maxBytes)
 			}
-		case diffInsert:
-			inserts++
-			if op.line != "changed" {
-				t.Errorf("inserted %q, want changed", op.line)
+			gotA, gotB := replay(ops)
+			if !slices.Equal(gotA, a) || !slices.Equal(gotB, b) {
+				t.Fatal("the ops do not rebuild both inputs")
+			}
+			edits := 0
+			for _, op := range ops {
+				if op.kind != diffEqual {
+					edits++
+				}
+			}
+			if edits != c.edits {
+				t.Errorf("got %d edits, want %d", edits, c.edits)
+			}
+		})
+	}
+}
+
+// TestDiffLinesIsMinimal checks the Myers core against the definition: a
+// shortest edit script deletes and inserts exactly the lines outside a
+// longest common subsequence. The inputs are small and drawn from a
+// three-line alphabet, so they repeat lines the way generated code does
+// (`}`, blank lines, `return nil`) and exercise every kind of tie.
+func TestDiffLinesIsMinimal(t *testing.T) {
+	alphabet := []string{"}", "", "return nil"}
+	seed := uint32(1)
+	next := func(n int) int { // xorshift: deterministic, no global state
+		seed ^= seed << 13
+		seed ^= seed >> 17
+		seed ^= seed << 5
+		return int(seed % uint32(n))
+	}
+	lines := func() []string {
+		out := make([]string, next(12))
+		for i := range out {
+			out[i] = alphabet[next(len(alphabet))]
+		}
+		return out
+	}
+	for range 2000 {
+		a, b := lines(), lines()
+		ops := diffLines(a, b)
+		gotA, gotB := replay(ops)
+		if !slices.Equal(gotA, a) || !slices.Equal(gotB, b) {
+			t.Fatalf("diffLines(%q, %q): the ops do not rebuild both inputs", a, b)
+		}
+		edits := 0
+		for _, op := range ops {
+			if op.kind != diffEqual {
+				edits++
+			}
+		}
+		if want := len(a) + len(b) - 2*lcsLength(a, b); edits != want {
+			t.Fatalf("diffLines(%q, %q) made %d edits, want %d", a, b, edits, want)
+		}
+	}
+}
+
+// lcsLength is the textbook quadratic longest-common-subsequence length,
+// the reference the test above holds the real diff to.
+func lcsLength(a, b []string) int {
+	dp := make([][]int, len(a)+1)
+	for i := range dp {
+		dp[i] = make([]int, len(b)+1)
+	}
+	for i := len(a) - 1; i >= 0; i-- {
+		for j := len(b) - 1; j >= 0; j-- {
+			if a[i] == b[j] {
+				dp[i][j] = dp[i+1][j+1] + 1
+			} else {
+				dp[i][j] = max(dp[i+1][j], dp[i][j+1])
 			}
 		}
 	}
-	if deletes != 1 || inserts != 1 {
-		t.Errorf("deletes=%d inserts=%d, want one each", deletes, inserts)
+	return dp[0][0]
+}
+
+// TestUnifiedDiffShowsWhereAChangeIs is the stale report the review could
+// not read: a merge that drops a stop call from one rollback path printed
+// a bare `-	_ = a.stopIssuer(ctx)`, indistinguishable from the same call
+// in every other path. A hunk header with line numbers, the declaration it
+// sits in, and the lines around it place it.
+func TestUnifiedDiffShowsWhereAChangeIs(t *testing.T) {
+	committed := strings.Join([]string{
+		"package main",
+		"",
+		"func (a *App) rollbackFromCache(ctx context.Context) {",
+		"	_ = a.stopCache(ctx)",
+		"	_ = a.stopStore(ctx)",
+		"	_ = a.stopLogger(ctx)",
+		"}",
+		"",
+		"func (a *App) rollbackFromIssuer(ctx context.Context) {",
+		"	_ = a.stopCache(ctx)",
+		"	_ = a.stopStore(ctx)",
+		"	_ = a.stopLogger(ctx)",
+		"}",
+		"",
+	}, "\n")
+	fresh := strings.Replace(committed,
+		"func (a *App) rollbackFromIssuer(ctx context.Context) {\n",
+		"func (a *App) rollbackFromIssuer(ctx context.Context) {\n\t_ = a.stopIssuer(ctx)\n", 1)
+
+	// The heading names the function the change is in, although that
+	// function's own first line is inside the context: taken from above the
+	// context, as git takes it, it would name rollbackFromCache instead.
+	got := unifiedDiff(committed, fresh, "servo_gen.go")
+	want := strings.Join([]string{
+		"--- servo_gen.go (committed)",
+		"+++ servo_gen.go (fresh)",
+		"@@ -7,6 +7,7 @@ func (a *App) rollbackFromIssuer(ctx context.Context) {",
+		" }",
+		" ",
+		" func (a *App) rollbackFromIssuer(ctx context.Context) {",
+		"+\t_ = a.stopIssuer(ctx)",
+		" \t_ = a.stopCache(ctx)",
+		" \t_ = a.stopStore(ctx)",
+		" \t_ = a.stopLogger(ctx)",
+		"",
+	}, "\n")
+	if got != want {
+		t.Errorf("unifiedDiff =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestUnifiedDiffSplitsDistantChanges: two changes far enough apart get a
+// hunk each, and changes close together share one, as with `diff -u`.
+func TestUnifiedDiffSplitsDistantChanges(t *testing.T) {
+	a := numberedLines(40)
+	b := numberedLines(40)
+	b[5], b[30], b[33] = "five", "thirty", "thirty-three"
+	got := unifiedDiff(strings.Join(a, "\n")+"\n", strings.Join(b, "\n")+"\n", "f.go")
+	if n := strings.Count(got, "\n@@ "); n != 2 {
+		t.Fatalf("got %d hunks, want 2 — the changes at 30 and 33 share one:\n%s", n, got)
+	}
+	for _, header := range []string{"@@ -3,7 +3,7 @@\n", "@@ -28,10 +28,10 @@\n"} {
+		if !strings.Contains(got, header) {
+			t.Errorf("missing hunk header %q in:\n%s", header, got)
+		}
+	}
+}
+
+// TestUnifiedDiffTruncates: a file that changed shape — another servo
+// version's output, say — differs on every line, and the report has to
+// stay readable enough to find the command it ends with.
+func TestUnifiedDiffTruncates(t *testing.T) {
+	a := numberedLines(2000)
+	b := make([]string, len(a))
+	for i := range b {
+		b[i] = "other " + a[i]
+	}
+	got := unifiedDiff(strings.Join(a, "\n"), strings.Join(b, "\n"), "f.go")
+	lines := strings.Split(strings.TrimSuffix(got, "\n"), "\n")
+	if len(lines) > maxDiffLines+4 {
+		t.Errorf("printed %d lines, want at most %d", len(lines), maxDiffLines+4)
+	}
+	if last := lines[len(lines)-1]; !strings.HasPrefix(last, "... 3600 more lines of diff not shown") {
+		t.Errorf("last line = %q, want the count of what was left out", last)
+	}
+}
+
+// TestUnifiedDiffShowsAMissingFinalNewline: a final newline is the one
+// difference that is invisible as a line, so it must not be trimmed away
+// when only one side has it, or the report would be a header and nothing
+// else.
+func TestUnifiedDiffShowsAMissingFinalNewline(t *testing.T) {
+	got := unifiedDiff("a\nb", "a\nb\n", "f.go")
+	if !strings.Contains(got, "@@ ") {
+		t.Errorf("a missing final newline produced no hunk:\n%s", got)
+	}
+}
+
+func TestHunkRange(t *testing.T) {
+	for _, c := range []struct {
+		start, count int
+		want         string
+	}{
+		{0, 0, "0,0"}, // an insertion at the top of the file
+		{4, 0, "4,0"}, // an empty side names the line it comes after
+		{4, 1, "5"},
+		{4, 3, "5,3"},
+	} {
+		if got := hunkRange(c.start, c.count); got != c.want {
+			t.Errorf("hunkRange(%d, %d) = %q, want %q", c.start, c.count, got, c.want)
+		}
 	}
 }

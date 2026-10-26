@@ -197,7 +197,7 @@ context.
 | `context.AfterFunc` is a `sync.Once`-guarded backstop | A caller who forgets `release()` still releases when their request ends — later than ideal, but not never |
 | A context with no `Done` channel is refused with `ErrNoLifetime` | `Background`, `TODO` and `WithoutCancel` never fire, so the backstop never runs and the count never reaches zero |
 | Reaching zero and removing the key are one step | See [the eviction race](#the-eviction-race) |
-| Teardown runs on a fresh `context.Background()` | Same reason `main` hands `Shutdown` a context of its own: the drain has to survive the cancellation that triggered it. No deadline, because a linger timer can fire it and there is no caller to take one from — `servo.RunStop` bounds each call at `servo.DefaultStopBudget` regardless |
+| Teardown runs on a fresh `context.Background()` | Same reason `main` hands `Shutdown` a context of its own: the drain has to survive the cancellation that triggered it. No deadline, because a linger timer can fire it and there is no caller to take one from — `RunStop` bounds each call at `servo.DefaultStopBudget` regardless |
 | An instance's context is `WithoutCancel` of `New`'s | An instance outlives the request that created it. Hanging its `Run` loop off an acquirer's context would kill it when that one caller disconnects, while the instance is still live and referenced. Values propagate; cancellation does not |
 
 ### The linger window
@@ -229,14 +229,15 @@ instance still exists and still holds its memory, so admitting past it would def
 
 ## Per-instance lifecycle
 
-Every capability is wired per instance, through the same `servo.RunStop` / `MergeNodeResults`
-machinery as an app node.
+Every capability is wired per instance, through the same [`servoimpl`](servo-package.md#servoimpl)
+machinery as an app node: the `Init` phase helper `New` uses, and the same `RunStop` and
+`MergeNodeResults` for teardown.
 
 | Phase | When | Order |
 | --- | --- | --- |
 | Construct | First `Acquire` of a cold key, in the acquiring goroutine | Dependency order; a failure rolls the entry back and leaves nothing in the map |
-| `Init` | Immediately after construction | Level by level within the scope, concurrent within a level |
-| `Run` | One goroutine per running instance, on the entry's own context | Started once construction and `Init` have both succeeded |
+| `Init` | Immediately after construction | Level by level within the scope, concurrent within a level; a failure or a panic rolls the entry back and fails the acquire |
+| `Run` | One goroutine per running instance, on the entry's own context | Started once construction and `Init` have both succeeded; a panic is recovered into that instance's `Run` failure |
 | `Drain` | At eviction | Every member, reverse construction order |
 | *(cancel + wait)* | After every `Drain` | The entry's context is cancelled and every `Run` goroutine joined |
 | `Flush`, `Stop`, cleanup | After the `Run` goroutines have returned | Per member, reverse construction order — each member's `Flush`, `Stop` and cleanup run together before the next member's |
@@ -254,10 +255,24 @@ Everything else matches the app-level contract exactly.
 **`Health` and `Ready` are not wired for scoped nodes.** A report with one entry per live chat room
 is not a report. Use `Stats()` instead.
 
+**A scoped `Init` runs exactly as a singleton's does.** Each call gets a context of its own,
+cancelled when it returns; a panic is recovered into that member's failure, which rolls the entry
+back like any `Init` error; the acquire fails with a [`*servo.NodeError`](servo-package.md#nodeerror)
+naming the member; and [`servo.DefaultInitBudget`](servo-package.md#defaultinitbudget-and-defaultrungrace),
+when set, bounds every call. The parent context is the entry's own, not the acquirer's — `New`'s
+values, no cancellation — because every caller waiting on a cold key is waiting for the same `Init`,
+and the first of them disconnecting must not fail it for the rest. So the acquirer's deadline does
+not reach `Init`: a *waiting* acquirer whose context ends gets its own context's error back while
+the build carries on, but the acquirer that triggered the build waits for it, bounded only by the
+budget. Set `servo.DefaultInitBudget` if a scoped `Init` can hang.
+
 A `Run` that returns because the entry's context was cancelled is a normal teardown, not a failure,
-and is not reported as one. A `Run` that returns any other error has that error attached to the
-instance's stop result — which means it surfaces at eviction, not when it happened. A component
-that needs to react to its own `Run` failing sooner has to do that itself.
+and is not reported as one. A `Run` that returns any other error — or panics — has that error, a
+`*servo.NodeError` naming the member, attached to the instance's stop result, which means it
+surfaces at eviction, not when it happened. A panic used to escape a goroutine nothing could
+recover and take the whole process down, every other key's instance with it; now one tenant's bug
+costs that tenant its `Run`, and shows up in `Stats().Failures` when the instance is evicted. A
+component that needs to react to its own `Run` failing sooner has to do that itself.
 
 ### Shutdown
 

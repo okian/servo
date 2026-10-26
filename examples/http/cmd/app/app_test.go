@@ -13,12 +13,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/okian/servo/v3/servo"
 )
 
 // startApp builds the generated App on three free ports — one per group —
 // and runs it until the test ends, failing fast if any listener never
 // becomes ready. It returns the default, telemetry and internal base URLs.
 func startApp(t *testing.T) (string, string, string) {
+	t.Helper()
+	_, base, telemetry, internal := startAppWith(t)
+	return base, telemetry, internal
+}
+
+// startAppWith is startApp for a test that also needs the App itself.
+func startAppWith(t *testing.T) (*App, string, string, string) {
 	t.Helper()
 
 	freePort := func() int {
@@ -68,7 +77,47 @@ func startApp(t *testing.T) (string, string, string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	base := func(p int) string { return fmt.Sprintf("http://127.0.0.1:%d", p) }
-	return base(port), base(telPort), base(intPort)
+	return app, base(port), base(telPort), base(intPort)
+}
+
+// With a ShutdownDelay the listeners keep answering after Shutdown drops
+// their readiness — the window in which a load balancer may still route
+// here — and the three groups wait their delays out together, not one
+// after another.
+func TestShutdownServesThroughTheDelay(t *testing.T) {
+	const delay = 400 * time.Millisecond
+	t.Setenv("HTTP_SHUTDOWN_DELAY", delay.String())
+	app, base, telemetry, _ := startAppWith(t)
+
+	began := time.Now()
+	report := make(chan servo.Report, 1)
+	go func() {
+		sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		report <- app.Shutdown(sctx)
+	}()
+
+	time.Sleep(delay / 4)
+	if app.Ready(context.Background()).Clean() {
+		t.Fatal("still ready once Shutdown has begun: a load balancer would keep routing here")
+	}
+	if code, _, _ := call(t, get(t, base+"/search")); code != http.StatusOK {
+		t.Fatalf("default group during the delay = %d, want it still serving", code)
+	}
+	if code, _, _ := call(t, get(t, telemetry+"/healthz")); code != http.StatusOK {
+		t.Fatalf("telemetry group during the delay = %d, want it still serving", code)
+	}
+
+	if r := <-report; !r.Clean() {
+		t.Fatalf("Shutdown: %v", r)
+	}
+	took := time.Since(began)
+	if took < delay {
+		t.Fatalf("Shutdown took %v, less than its %v delay", took, delay)
+	}
+	if took >= 2*delay {
+		t.Fatalf("Shutdown took %v: three groups waited out %v delays one after another", took, delay)
+	}
 }
 
 // call issues one request and returns the status code, the decoded JSON
@@ -127,13 +176,18 @@ func TestHTTPEndToEnd(t *testing.T) {
 		}
 	})
 
-	t.Run("not found carries the wrapped message", func(t *testing.T) {
-		code, body, _ := call(t, post(t, base+"/order/tea/", "application/json", `{"item":"x","quantity":1}`))
+	t.Run("not found carries the handler's own words, not the cause's", func(t *testing.T) {
+		code, body, raw := call(t, post(t, base+"/order/tea/", "application/json", `{"item":"x","quantity":1}`))
 		if code != http.StatusNotFound {
 			t.Fatalf("status = %d, want 404", code)
 		}
-		if body["error"] != `category "tea": no such category` {
+		if body["error"] != `no category "tea"` {
 			t.Fatalf("error = %q", body["error"])
+		}
+		// A 4xx body is the whole error message, so the store's own
+		// error text must not have been wrapped into it.
+		if strings.Contains(raw, "no such category") {
+			t.Fatalf("response leaked the store's error: %s", raw)
 		}
 	})
 
@@ -171,6 +225,13 @@ func TestHTTPEndToEnd(t *testing.T) {
 		}
 		if body["error"] != `query parameter "priority" is not a valid int` {
 			t.Fatalf("error = %q", body["error"])
+		}
+	})
+
+	t.Run("a query net/url refuses is a 400, not zero values", func(t *testing.T) {
+		code, body, _ := call(t, get(t, base+"/search?q=%zz&limit=7"))
+		if code != http.StatusBadRequest || body["error"] != "malformed query string" {
+			t.Fatalf("status=%d body=%v, want the 400 rather than a 200 with every field zero", code, body)
 		}
 	})
 
@@ -233,6 +294,11 @@ func TestHTTPEndToEnd(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 		if got := resp.Header.Get("X-Request-Id"); got != "req-42" {
 			t.Fatalf("X-Request-Id header = %q", got)
+		}
+		// mw.NoSniff is a plain func(http.Handler) http.Handler, attached
+		// with no wrapper type.
+		if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
+			t.Fatalf("X-Content-Type-Options = %q, want the func middleware's header", got)
 		}
 		var body map[string]any
 		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {

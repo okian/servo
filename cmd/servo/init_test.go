@@ -60,7 +60,7 @@ func TestRunInitScaffoldedWorkflowIsReachableByGoGenerate(t *testing.T) {
 	root := repoRoot(t)
 	mustWriteFile(t, dir, "go.mod", `module example.com/initflow
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -346,4 +346,145 @@ func TestRunInitRejectsAnUnusableVariantTag(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "GOOS/GOARCH") {
 		t.Fatalf("init --tags=linux = %v, want the GOOS/GOARCH rejection", err)
 	}
+}
+
+// TestRunInitWritesTheDocumentedMain: a directory with no main function
+// gets the main.go the docs describe, so `go generate ./... && go run .`
+// works without the reader first having to discover how a generated App
+// is run — and init says it wrote it, and how to run it.
+func TestRunInitWritesTheDocumentedMain(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "cmd", "app")
+
+	out := captureStdout(t, func() {
+		if err := runInit(dir, nil); err != nil {
+			t.Fatalf("runInit: %v", err)
+		}
+	})
+	body, err := os.ReadFile(filepath.Join(dir, "main.go"))
+	if err != nil {
+		t.Fatalf("init wrote no main.go into an empty package main: %v", err)
+	}
+	for _, want := range []string{"package main", `"github.com/okian/servo/v3/servo"`, "func main() { servo.Main(New) }"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("main.go missing %q:\n%s", want, body)
+		}
+	}
+	for _, want := range []string{"servo init: wrote " + filepath.Join(dir, "main.go"), "go run " + dir} {
+		if !strings.Contains(out, want) {
+			t.Errorf("init output missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestRunInitLeavesAnExistingMainAlone: a main function in any file of
+// the directory means the program already has an entry point, and a
+// second one would not compile — whatever the first file is called.
+func TestRunInitLeavesAnExistingMainAlone(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "app.go", "package main\n\nfunc main() {}\n")
+
+	out := captureStdout(t, func() {
+		if err := runInit(dir, nil); err != nil {
+			t.Fatalf("runInit: %v", err)
+		}
+	})
+	if _, err := os.Stat(filepath.Join(dir, "main.go")); !os.IsNotExist(err) {
+		t.Errorf("init wrote main.go beside an existing func main (stat err = %v)", err)
+	}
+	if strings.Contains(out, "go run") {
+		t.Errorf("init suggested running a main it did not write:\n%s", out)
+	}
+}
+
+// TestRunInitWritesNoMainOutsidePackageMain: a library package's
+// injector is run by whoever imports it, so it gets no main of its own.
+func TestRunInitWritesNoMainOutsidePackageMain(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "wiring.go", "package wiring\n")
+
+	if err := runInit(dir, nil); err != nil {
+		t.Fatalf("runInit: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "main.go")); !os.IsNotExist(err) {
+		t.Errorf("init wrote main.go into package wiring (stat err = %v)", err)
+	}
+}
+
+func TestGoRunTarget(t *testing.T) {
+	for in, want := range map[string]string{
+		".":         ".",
+		"cmd/app":   "./cmd/app",
+		"./cmd/app": "./cmd/app",
+		"../app":    "../app",
+		"/abs/app":  "/abs/app",
+	} {
+		if got := goRunTarget(in); got != want {
+			t.Errorf("goRunTarget(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestRunInitScaffoldBuilds is the end-to-end half of the main.go
+// scaffold: init, a root, a generation, and the module must build. It
+// needs servo.Main, so it waits for the runtime that declares it.
+func TestRunInitScaffoldBuilds(t *testing.T) {
+	if !servoDeclaresMain(t) {
+		t.Skip("servo.Main is not declared in this checkout's servo package yet")
+	}
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module example.com/initmain\n\ngo 1.23\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+repoRoot(t)+"\n")
+	mustWriteFile(t, dir, "pkg/pkg.go", "package pkg\n\ntype T struct{}\n\nfunc New() *T { return &T{} }\n")
+	appDir := filepath.Join(dir, "cmd", "app")
+	captureStdout(t, func() {
+		if err := runInit(appDir, nil); err != nil {
+			t.Fatalf("runInit: %v", err)
+		}
+	})
+	mustWriteFile(t, dir, "cmd/app/servo_spec.go", `//go:build servoinject
+
+package main
+
+import (
+	"example.com/initmain/pkg"
+	"github.com/okian/servo/v3/servo"
+)
+
+func wire() {
+	servo.Build(
+		servo.Root[*pkg.T](),
+	)
+}
+`)
+	runGoModTidy(t, dir)
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("runGenerate: %v", err)
+	}
+	build := exec.Command("go", "build", "./...")
+	build.Dir = dir
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("the scaffolded main.go does not build against the generated New: %v\n%s", err, out)
+	}
+}
+
+// servoDeclaresMain reports whether this checkout's servo package
+// declares Main, read from its source.
+func servoDeclaresMain(t *testing.T) bool {
+	t.Helper()
+	files, err := filepath.Glob(filepath.Join(repoRoot(t), "servo", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		body, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), "\nfunc Main[") {
+			return true
+		}
+	}
+	return false
 }

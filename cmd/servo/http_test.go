@@ -21,7 +21,7 @@ func writeHTTPModule(t *testing.T) string {
 
 	write("go.mod", `module example.com/httpfix
 
-go 1.27.0
+go 1.26.0
 
 require github.com/okian/servo/v3 v3.0.0
 
@@ -199,9 +199,8 @@ func TestGenerateHTTPModule(t *testing.T) {
 		}
 	}
 
-	// The generated file imports golang.org/x/sync/errgroup (two servers
-	// join one Run), which the pre-generation go.sum has no entry for —
-	// the same `go mod tidy` a real module runs after its first generate.
+	// Tidy as a real module does after its first generate: the fixture's
+	// pre-generation go.sum holds only what its hand-written code needs.
 	runGoModTidy(t, dir)
 
 	cmd := exec.Command("go", "build", "./...")

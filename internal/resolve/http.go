@@ -147,6 +147,17 @@ func (r *resolver) resolveHTTP(in *HTTPInput) *HTTPPlan {
 	r.resolveUses(in, plan, served, servedRoutes)
 
 	for _, rt := range servedRoutes {
+		// A request struct is decoded from the request, so a type the graph
+		// provides must never be one: the handler would get what the client
+		// sent in place of the value the graph builds. The same rule as an
+		// extractor's "constructed once or extracted per request, never
+		// both", for the one position the scanner classifies by tags alone.
+		if rt.Req != nil {
+			if by := r.requestStructProvider(rt.Req.Type, extractorByKey); by != "" {
+				r.diags = append(r.diags, r.providedRequestStructDiagnostic(rt, by))
+				continue
+			}
+		}
 		hr := &HTTPRoute{Route: rt}
 		label := fmt.Sprintf("handler %s (%s %s)", rt.Name, rt.Method, rt.Pattern)
 		rchain := []chainEntry{{Label: label, Pos: rt.Pos}}
@@ -159,6 +170,10 @@ func (r *resolver) resolveHTTP(in *HTTPInput) *HTTPPlan {
 			node, ok := r.resolveKey(depKey, rt.DepTypes[i], rchain, in.Pos)
 			if !ok {
 				r.maybeRequestStructHint(before, rt, i)
+				continue
+			}
+			if node.Kind == NodeContext {
+				r.diags = append(r.diags, r.handlerContextDiagnostic(rt))
 				continue
 			}
 			if node.Scoped() && node.Kind == NodeProvider {
@@ -242,8 +257,21 @@ func (r *resolver) resolveUses(in *HTTPInput, plan *HTTPPlan, served map[string]
 			r.diags = append(r.diags, Diagnostic{Pos: d.Pos, Message: fmt.Sprintf("servo: %s is scoped, but servo.Use wraps a singleton server that would capture it — middleware must be singletons", d.Type)})
 			continue
 		}
-		if problem := middlewareMethodProblem(d.TypeT); problem != "" {
-			r.diags = append(r.diags, Diagnostic{Pos: d.Pos, Message: fmt.Sprintf("servo: %s must have a method Middleware(next http.Handler) http.Handler to be attached with servo.Use — %s", d.Type, problem)})
+		problem := middlewareMethodProblem(d.TypeT)
+		if sig, ok := types.Unalias(d.TypeT).Underlying().(*types.Signature); ok && methodNamed(d.TypeT, "Middleware") == nil {
+			// A plain middleware function — the shape otelhttp, chi and
+			// gorilla/handlers ship — is attached as itself: the emitted
+			// chain calls the node instead of a Middleware method on it,
+			// so none of them needs a wrapper type. A Middleware method,
+			// where a func type declares one, stays the explicit form.
+			problem = ""
+			if sig.Variadic() || sig.Params().Len() != 1 || !isNetHTTPNamed(sig.Params().At(0).Type(), "Handler", false) ||
+				sig.Results().Len() != 1 || !isNetHTTPNamed(sig.Results().At(0).Type(), "Handler", false) {
+				problem = "it is a function, but not a func(http.Handler) http.Handler"
+			}
+		}
+		if problem != "" {
+			r.diags = append(r.diags, Diagnostic{Pos: d.Pos, Message: fmt.Sprintf("servo: %s must have a method Middleware(next http.Handler) http.Handler, or be a func(http.Handler) http.Handler, to be attached with servo.Use — %s", d.Type, problem)})
 			continue
 		}
 		bad := false
@@ -369,6 +397,76 @@ func (r *resolver) maybeRequestStructHint(before int, rt *route.Route, depIdx in
 	}
 	last := &r.diags[len(r.diags)-1]
 	last.Message += fmt.Sprintf("\n  If %s was meant as the request struct rather than a dependency, give its\n  fields binding tags (path/query/header/form/json) — only the second\n  parameter can be the request struct, and the tags are what mark it as one.\n", graph.TypeString(named))
+}
+
+// requestStructProvider says how the graph provides t — a handler's
+// request-struct type — or "" when it does not. Provided means anything a
+// dependency in that position would have resolved to: a constructor, a
+// servo.Value, a scope, an extractor, or a //servo:config type, whose node
+// is the struct value the pointer points at.
+func (r *resolver) requestStructProvider(t types.Type, extractorByKey map[graph.Key]*HTTPExtractor) string {
+	key := graph.NewKey(t, "")
+	if v, ok := r.suppliedByKey[key]; ok {
+		return fmt.Sprintf("servo.Value[%s]() supplies it (%s)", key, v.SuppliedPos)
+	}
+	if r.declaredScope[key] {
+		return "a servo.Scoped declaration makes it a scoped instance"
+	}
+	if ex, ok := extractorByKey[key]; ok {
+		return fmt.Sprintf("the extractor %s produces it per request", ex.Node.Key)
+	}
+	if cands := r.byResult[key]; len(cands) > 0 {
+		c := r.sortedCandidates(cands)[0]
+		return fmt.Sprintf("%s constructs it (%s)", c.Name, c.Pos)
+	}
+	if ptr, ok := types.Unalias(t).(*types.Pointer); ok {
+		if d, ok := r.configByKey[graph.NewKey(ptr.Elem(), "")]; ok {
+			return fmt.Sprintf("it points at %s, which a //servo:%s directive loads (%s)", d.Key, graph.ConfigDirective, d.Pos)
+		}
+	}
+	return ""
+}
+
+// providedRequestStructDiagnostic refuses a request struct the graph also
+// provides. The second parameter is decoded from the request whenever it
+// points to a struct with any binding or json tag, so an injected
+// *settings.Settings in that position was silently replaced by the body the
+// client sent — {"admin":true} included — while the same type in position
+// three got the singleton.
+func (r *resolver) providedRequestStructDiagnostic(rt *route.Route, by string) Diagnostic {
+	typ := graph.TypeString(rt.Req.Type)
+	var b strings.Builder
+	fmt.Fprintf(&b, "servo: handler %s (%s %s) takes %s as its request struct, but the graph provides that type: %s\n", rt.Name, rt.Method, rt.Pattern, typ, by)
+	b.WriteString("\n  A handler's second parameter is decoded from the request whenever it points to\n")
+	b.WriteString("  a struct with path, query, header, form or json tags, so this handler would get\n")
+	fmt.Fprintf(&b, "  whatever the client sent in place of the %s the graph builds.\n", typ)
+	b.WriteString("  Give the route a request type of its own and take the provided one after it:\n\n")
+	fmt.Fprintf(&b, "\tfunc %s(ctx context.Context, req *%sRequest, %s) ...\n\n", rt.Func.Name(), rt.Func.Name(), localParam(rt.Req.Type))
+	b.WriteString("  — or, if the handler reads nothing from the request, put any other dependency\n  second so that this one is not.\n")
+	return Diagnostic{Pos: rt.Pos, Message: b.String()}
+}
+
+// localParam renders a parameter declaration for t as a handler in t's own
+// package would write it: settings *Settings.
+func localParam(t types.Type) string {
+	name := "v"
+	if named := typeNameOf(t); named != nil {
+		name = strings.ToLower(named.Obj().Name()[:1]) + named.Obj().Name()[1:]
+	}
+	return name + " " + localTypeString(t)
+}
+
+// handlerContextDiagnostic refuses a context.Context among a handler's
+// dependencies. The first parameter is the request's context; a later one
+// would be resolved once, when the server is built, as the ctx New was
+// called with — never the request's.
+func (r *resolver) handlerContextDiagnostic(rt *route.Route) Diagnostic {
+	var b strings.Builder
+	fmt.Fprintf(&b, "servo: handler %s (%s %s) takes a second context.Context\n", rt.Name, rt.Method, rt.Pattern)
+	b.WriteString("\n  The first parameter is the request's context. Every parameter after the request\n")
+	b.WriteString("  struct is resolved once, when the server is built, so a context.Context there would\n")
+	b.WriteString("  be the ctx New was called with, not this request's. Use the first parameter.\n")
+	return Diagnostic{Pos: rt.Pos, Message: b.String()}
 }
 
 // scopedHandlerDepDiagnostic is the widening rule with the emitted HTTP

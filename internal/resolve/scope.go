@@ -58,7 +58,7 @@ type ScopeRoot struct {
 	Pos           token.Position
 }
 
-// NodeKind separates the six things a *Node can stand for. None but
+// NodeKind separates the seven things a *Node can stand for. None but
 // NodeProvider is constructed by a provider function, and all but
 // NodeProvider and NodeTraced exist only as entries in another node's
 // Deps, never in an Order (supplied values live in Resolved.Supplied,
@@ -96,6 +96,13 @@ const (
 	// constructed — but it has no provider, no capabilities (the
 	// implementation keeps its own lifecycle) and nothing to stop.
 	NodeTraced
+	// NodeContext is the construction context: the ctx New, NewWith or
+	// NewTestApp was called with, handed to every constructor parameter of
+	// type context.Context unless a servo.Value (or a Bind) for the type
+	// says otherwise. One per graph, only ever in Deps; the emitter writes
+	// New's own ctx parameter wherever it appears, which is why only
+	// constructors New calls may take it.
+	NodeContext
 )
 
 // scopeName renders a scope's stable identifier.

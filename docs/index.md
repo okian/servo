@@ -7,7 +7,7 @@ same order every time — though only `generate` and `check` reach the last one.
 ```mermaid
 flowchart LR
     L["load<br/>one type-checked<br/>go/packages session"]
-    F["find spec<br/>roots, Bind, Override,<br/>Scoped, HTTP, Value,<br/>Include, ConfigFile"]
+    F["find spec<br/>roots, Bind, Override,<br/>Scoped, HTTP, Value,<br/>Include, ConfigFile, Trace"]
     S["scan<br/>every constructor-shaped<br/>function, classified"]
     RT["routes<br/>every //servo: directive,<br/>validated module-wide"]
     R["resolve<br/>closure → precedence →<br/>cycles → levels"]
@@ -39,7 +39,7 @@ flowchart TD
     C["Construct<br/>constructors called in dependency order"]
     I["Init<br/>level by level — independent nodes concurrently"]
     OK{"every Init<br/>returned nil?"}
-    RB["Roll back<br/>Shutdown(ctx), joined with the failing error"]
+    RB["Roll back<br/>Shutdown(ctx), its report carried on the failing error"]
     RUN["Running"]
     S["Shutdown<br/>reverse dependency order"]
     B{"returned inside<br/>the stop budget?"}
@@ -55,3 +55,12 @@ flowchart TD
 
 None of that is a framework callback. It is ordinary Go, in a file you can open,
 step through in a debugger, and review in a pull request like any other code.
+
+## Guides
+
+- [Coming from wire or fx](coming-from-wire-and-fx.md) — every wire and fx concept
+  mapped to servo's, including the ones with no equivalent and what to write instead.
+- [servo in CI](servo-in-ci.md) — the workflow to copy, exit codes, `go.work` and
+  `--scope`, vendoring, merge queues, and what a check costs.
+- [Running in production](running-in-production.md) — container CPU and memory
+  limits, probes, the shutdown grace period, HTTP timeouts and profiling.

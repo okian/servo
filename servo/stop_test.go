@@ -168,3 +168,27 @@ func TestRunStopDoesNotLeakWhenAnAbandonedNodeLaterPanics(t *testing.T) {
 	// goleak retries, so it waits for the unwind rather than racing it.
 	close(proceed)
 }
+
+// TestRunStopDoesNotStartAfterTheDeadline: the bug fix servo.RunStop
+// shares with servoimpl.RunStop, for files generated before v3.5.0. A stop
+// whose context is already done used to be started in the background and
+// abandoned the same instant, so every node after a missed shutdown
+// deadline began stopping at once, out of order, while main exited.
+func TestRunStopDoesNotStartAfterTheDeadline(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	called := make(chan struct{})
+	res := RunStop(ctx, time.Second, "*postgres.DB", func(context.Context) error {
+		close(called)
+		return nil
+	})
+	select {
+	case <-called:
+		t.Fatal("the stop ran although the deadline had passed before it could start")
+	case <-time.After(50 * time.Millisecond):
+	}
+	if res.Status != StatusAbandoned || !errors.Is(res.Err, context.DeadlineExceeded) || !strings.Contains(res.Err.Error(), "not attempted") {
+		t.Fatalf("got %+v, want abandoned, not attempted, wrapping the deadline", res)
+	}
+}

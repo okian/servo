@@ -2,10 +2,24 @@ package emit
 
 import (
 	"fmt"
+	"path"
 	"strings"
 
+	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/resolve"
 )
+
+// runtimeImpl registers the servoimpl import on first use and returns the
+// identifier generated code reaches it by. Every helper the lifecycle and
+// scope code calls lives there rather than in package servo: generated
+// code is in the user's package, so whatever it calls has to be exported,
+// and exporting it from servo froze it as public API — RunStop,
+// MergeNodeResults and LingerWindow are still there for that reason. Add
+// is idempotent, so the alias is the same however many emitters ask, and
+// whichever of them asks first.
+func (e *emitter) runtimeImpl() string {
+	return e.imports.Add(path.Join(path.Dir(graph.ServoPackagePath), "servoimpl"), "servoimpl")
+}
 
 // stopMethods emits one private stop method per node that has anything to
 // stop: Drain, then Flush, then Stop, then the provider's own cleanup func.
@@ -26,19 +40,20 @@ func (e *emitter) stopMethods() string {
 func (e *emitter) writeStopMethod(b *strings.Builder, n *resolve.Node) {
 	name := e.varName[n.Key]
 	label := n.Key.String()
+	impl := e.runtimeImpl()
 
 	fmt.Fprintf(b, "func (a *%s) stop%s(ctx context.Context) %s.NodeResult {\n", e.appType(), capitalize(name), e.servoAlias)
 	fmt.Fprintf(b, "\ta.%sStopOnce.Do(func() {\n", name)
 	fmt.Fprintf(b, "\t\tvar results []%s.NodeResult\n", e.servoAlias)
 
 	if hasCapability(n, "Drainer") {
-		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.Drain))\n", e.servoAlias, e.servoAlias, label, name)
+		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.Drain))\n", impl, e.servoAlias, label, name)
 	}
 	if hasCapability(n, "Flusher") {
-		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.Flush))\n", e.servoAlias, e.servoAlias, label, name)
+		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.Flush))\n", impl, e.servoAlias, label, name)
 	}
 	if hasCapability(n, "Finalizer") {
-		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.Stop))\n", e.servoAlias, e.servoAlias, label, name)
+		fmt.Fprintf(b, "\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, a.%s.Stop))\n", impl, e.servoAlias, label, name)
 	}
 	if n.Provider.HasCleanup {
 		// Guarded, because a constructor with nothing to clean up on some
@@ -48,21 +63,29 @@ func (e *emitter) writeStopMethod(b *strings.Builder, n *resolve.Node) {
 		// reach it. Skipping the phase rather than recording an OK result
 		// for it leaves the merged NodeResult identical either way.
 		fmt.Fprintf(b, "\t\tif a.%sCleanup != nil {\n", name)
-		fmt.Fprintf(b, "\t\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { a.%sCleanup(); return nil }))\n", e.servoAlias, e.servoAlias, label, name)
+		fmt.Fprintf(b, "\t\t\tresults = append(results, %s.RunStop(ctx, %s.DefaultStopBudget, %q, func(context.Context) error { a.%sCleanup(); return nil }))\n", impl, e.servoAlias, label, name)
 		b.WriteString("\t\t}\n")
 	}
 
-	fmt.Fprintf(b, "\t\ta.%sStopResult = %s.MergeNodeResults(%q, results...)\n", name, e.servoAlias, label)
+	fmt.Fprintf(b, "\t\ta.%sStopResult = %s.MergeNodeResults(%q, results...)\n", name, impl, label)
 	b.WriteString("\t})\n")
 	fmt.Fprintf(b, "\treturn a.%sStopResult\n", name)
 	b.WriteString("}\n\n")
 }
 
-// runFunc launches every Runner into an errgroup; one Runner's error
-// cancels the shared context so the others stop too, and Run does not
-// return until all have. Special-cased for zero/one runners since most
-// graphs have exactly one long-running server and an errgroup of one adds
-// nothing but noise.
+// runFunc hands every Runner, and every emitted group server, to one
+// servoimpl.Run call, which supervises them as the errgroup used to — one
+// failing runner cancels the rest, and Run waits for them — with what the
+// errgroup never had: a recover around each runner, a bounded wait once the
+// context is done, and failures that name their node.
+//
+// A runner's goroutine is not main's, so a panic there used to end the
+// process on the spot: Shutdown never ran, nothing was drained or
+// flushed, and buffered data was lost. Now it is one failed runner, the
+// rest are cancelled, and Run returns it for main's Shutdown to follow.
+// A lone runner goes through the same call: it used to be called directly
+// to spare an errgroup of one, which left it the only runner with neither
+// the recover nor the bounded wait.
 func (e *emitter) runFunc() string {
 	runners := []*resolve.Node{}
 	for _, n := range e.resolved.Order {
@@ -72,33 +95,27 @@ func (e *emitter) runFunc() string {
 	}
 
 	// The generated group servers are more runners — their run methods are
-	// emitted directly rather than detected, but they join the same
-	// errgroup so one failing runner still cancels the rest.
+	// emitted directly rather than detected, but they are supervised
+	// alongside the rest, so one failing runner still cancels them all.
 	var servers []*httpGroupEmit
 	if e.http != nil {
 		servers = e.http.Groups
 	}
-	total := len(runners) + len(servers)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "func (a *%s) Run(ctx context.Context) error {\n", e.appType())
-	switch {
-	case total == 0:
+	if len(runners)+len(servers) == 0 {
 		b.WriteString("\treturn nil\n")
-	case total == 1 && len(servers) == 1:
-		fmt.Fprintf(&b, "\treturn a.%s.run(ctx)\n", servers[0].Field)
-	case total == 1:
-		fmt.Fprintf(&b, "\treturn a.%s.Run(ctx)\n", e.varName[runners[0].Key])
-	default:
-		e.imports.Add("golang.org/x/sync/errgroup", "errgroup")
-		b.WriteString("\tg, gctx := errgroup.WithContext(ctx)\n")
+	} else {
+		impl := e.runtimeImpl()
+		fmt.Fprintf(&b, "\treturn %s.Run(ctx, %s.DefaultRunGrace,\n", impl, e.servoAlias)
 		for _, n := range runners {
-			fmt.Fprintf(&b, "\tg.Go(func() error { return a.%s.Run(gctx) })\n", e.varName[n.Key])
+			fmt.Fprintf(&b, "\t\t%s.Call{Node: %q, Fn: a.%s.Run},\n", impl, n.Key.String(), e.varName[n.Key])
 		}
 		for _, g := range servers {
-			fmt.Fprintf(&b, "\tg.Go(func() error { return a.%s.run(gctx) })\n", g.Field)
+			fmt.Fprintf(&b, "\t\t%s.Call{Node: %q, Fn: a.%s.run},\n", impl, g.stopName(), g.Field)
 		}
-		b.WriteString("\treturn g.Wait()\n")
+		b.WriteString("\t)\n")
 	}
 	b.WriteString("}\n\n")
 	return b.String()
@@ -110,6 +127,9 @@ func (e *emitter) runFunc() string {
 // own cancellation (used for the *first* signal) lives in the caller's
 // main(), so this watcher is only the "second signal" half — handled
 // entirely inside generated code so main() itself needs no extra logic.
+// servoimpl.ForceExit says so on stderr and exits the way a shell reports
+// a process killed by the signal, 128 plus its number; it used to be a
+// silent os.Exit(1), indistinguishable from any other failure.
 func (e *emitter) shutdownFunc() string {
 	e.imports.Add("os", "os")
 	e.imports.Add("os/signal", "signal")
@@ -125,7 +145,7 @@ func (e *emitter) shutdownFunc() string {
 	// on every clean shutdown without watcherDone to select on too.
 	b.WriteString("\twatcherDone := make(chan struct{})\n")
 	b.WriteString("\tdefer close(watcherDone)\n")
-	b.WriteString("\tgo func() {\n\t\tselect {\n\t\tcase <-forceExit:\n\t\t\tos.Exit(1)\n\t\tcase <-watcherDone:\n\t\t}\n\t}()\n\n")
+	fmt.Fprintf(&b, "\tgo func() {\n\t\tselect {\n\t\tcase sig := <-forceExit:\n\t\t\t%s.ForceExit(sig)\n\t\tcase <-watcherDone:\n\t\t}\n\t}()\n\n", e.runtimeImpl())
 
 	fmt.Fprintf(&b, "\tvar nodes []%s.NodeResult\n", e.servoAlias)
 	// The servers stop first, before every node: they are the inbound

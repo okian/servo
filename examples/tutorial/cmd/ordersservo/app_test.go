@@ -28,7 +28,7 @@ func TestFullAPIFlowThroughGeneratedTransport(t *testing.T) {
 	// behind an overridden interface, and this test never calls Run), and
 	// JWT_SECRET matters for real because auth.Issuer is unmocked.
 	t.Setenv("NATS_URL", "unused-in-this-test")
-	t.Setenv("JWT_SECRET", "test-secret")
+	t.Setenv("JWT_SECRET", "test-secret-of-at-least-32-bytes")
 
 	app, err := NewTestApp(context.Background())
 	if err != nil {

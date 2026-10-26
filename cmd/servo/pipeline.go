@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"go/token"
+	"os"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -34,19 +35,36 @@ type pipeline struct {
 // loadModule does the spec-independent work shared regardless of how many
 // injectors end up being processed: load the package graph once, load
 // capabilities once, scan //servo: route directives and //servo:config
-// declarations once. A malformed directive fails the load outright — the
-// //servo: prefix is reserved, and a typo silently dropping a route or a
-// config setting is the failure mode the reservation prevents.
+// declarations once. All of it covers the whole main module, whichever
+// injectors --dir selects (see load.Load), and only the main module --scope
+// names (see load.Loaded.InMainModule). A malformed directive fails the
+// load outright — the //servo: prefix is reserved, and a typo silently
+// dropping a route or a config setting is the failure mode the reservation
+// prevents.
+//
+// What the load and the capability set have to say about how this run went
+// goes to stderr, even from generate and check, which are otherwise silent
+// on success: the slower fallback taken when the standard library's export
+// data cannot be read, and a runtime older than this CLI. Both stay true on
+// every later run until somebody acts, and nothing but saying so gets them
+// acted on.
 func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, []*route.Route, []*graph.ConfigDecl, error) {
 	loaded, err := load.Load(cfg)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
+	if loaded.Note != "" {
+		fmt.Fprintln(os.Stderr, loaded.Note)
+	}
 	caps, err := graph.LoadCapabilities(loaded.ServoPkg.Types)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	routes, rdiags := route.Scan(loaded.All, loaded.ServoPkg.Types)
+	if warning := caps.Warning(version(), loaded.RuntimeVersion()); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
+	}
+	mainPkgs := loaded.MainPackages()
+	routes, rdiags := route.Scan(mainPkgs, loaded.ServoPkg.Types)
 	if len(rdiags) > 0 {
 		var b strings.Builder
 		fmt.Fprintf(&b, "servo: %d diagnostic(s):\n", len(rdiags))
@@ -55,7 +73,7 @@ func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, []*route.Ro
 		}
 		return nil, nil, nil, nil, fmt.Errorf("%s", b.String())
 	}
-	configs, err := graph.ScanConfigs(loaded.All)
+	configs, err := graph.ScanConfigs(mainPkgs)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
@@ -63,7 +81,7 @@ func loadModule(cfg load.Config) (*load.Loaded, *graph.Capabilities, []*route.Ro
 }
 
 func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, routes []*route.Route, configs []*graph.ConfigDecl, spec *load.Spec) *pipeline {
-	candidates, rejected := graph.ScanCandidates(loaded.All, spec.InjectorPkg.PkgPath)
+	candidates, rejected := loaded.Candidates(spec.InjectorPkg)
 	return &pipeline{
 		loaded:     loaded,
 		spec:       spec,
@@ -78,7 +96,7 @@ func pipelineFor(loaded *load.Loaded, caps *graph.Capabilities, routes []*route.
 
 // buildPipeline resolves exactly one injector — for commands that operate
 // on a single target and ask the caller to disambiguate with --dir when
-// the scope contains more than one (see load.FindSpec).
+// it selects more than one (see load.FindSpec).
 func buildPipeline(cfg load.Config) (*pipeline, error) {
 	loaded, caps, routes, configs, err := loadModule(cfg)
 	if err != nil {
@@ -88,19 +106,13 @@ func buildPipeline(cfg load.Config) (*pipeline, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := loaded.NonInjectorErrors(spec.InjectorPkg.PkgPath); err != nil {
-		return nil, fmt.Errorf("servo: module has build errors:\n%w", err)
-	}
-	if err := checkRouteGroups([]*load.Spec{spec}, routes); err != nil {
-		return nil, err
-	}
-	if err := checkMainPackageRoutes([]*load.Spec{spec}, routes); err != nil {
+	if err := checkModule(loaded, routes); err != nil {
 		return nil, err
 	}
 	return pipelineFor(loaded, caps, routes, configs, spec), nil
 }
 
-// buildPipelines resolves every injector found within dir's scope — for
+// buildPipelines resolves every injector --dir selects — for
 // generate/check, which process a whole multi-injector module in one pass
 // (matching `wire ./...`'s discovery model) rather than erroring when more
 // than one spec exists.
@@ -113,22 +125,7 @@ func buildPipelines(cfg load.Config) ([]*pipeline, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	injectorPaths := make([]string, len(specs))
-	for i, s := range specs {
-		injectorPaths[i] = s.InjectorPkg.PkgPath
-	}
-	// Exclude every known injector's own package, not just "the current
-	// one" — otherwise checking injector B trips on injector A's
-	// legitimate pre-generation "undefined: New".
-	if err := loaded.NonInjectorErrors(injectorPaths...); err != nil {
-		return nil, fmt.Errorf("servo: module has build errors:\n%w", err)
-	}
-
-	if err := checkRouteGroups(specs, routes); err != nil {
-		return nil, err
-	}
-	if err := checkMainPackageRoutes(specs, routes); err != nil {
+	if err := checkModule(loaded, routes); err != nil {
 		return nil, err
 	}
 
@@ -139,10 +136,41 @@ func buildPipelines(cfg load.Config) ([]*pipeline, error) {
 	return pipelines, nil
 }
 
+// checkModule runs the checks that are about the module rather than any
+// one graph, against every injector in it — not only the ones --dir
+// selected, or a route whose group only an unselected injector declares
+// would read as declared by nobody. The build-error check leaves out every
+// injector's own package for the same reason: checking injector B must not
+// trip on injector A's legitimate pre-generation "undefined: New".
+func checkModule(loaded *load.Loaded, routes []*route.Route) error {
+	all, err := load.ModuleSpecs(loaded)
+	if err != nil {
+		return err
+	}
+	if err := loaded.NonInjectorErrors(injectorPaths(all)...); err != nil {
+		return fmt.Errorf("servo: module has build errors:\n%w", err)
+	}
+	if err := checkRouteGroups(all, routes); err != nil {
+		return err
+	}
+	return checkMainPackageRoutes(all, routes)
+}
+
+// injectorPaths is the injector package of each spec, in spec order.
+func injectorPaths(specs []*load.Spec) []string {
+	paths := make([]string, len(specs))
+	for i, s := range specs {
+		paths[i] = s.InjectorPkg.PkgPath
+	}
+	return paths
+}
+
 // checkRouteGroups errors when a route names a group no spec declares —
 // the typo that would otherwise silently leave the route unserved. It is a
 // module-wide check, not a per-injector one: an injector legitimately skips
-// groups it does not declare, but a group nobody declares is a mistake.
+// groups it does not declare, but a group nobody declares is a mistake. So
+// specs is every injector in the module (load.ModuleSpecs), not the ones a
+// run happens to process.
 func checkRouteGroups(specs []*load.Spec, routes []*route.Route) error {
 	declared := map[string]bool{}
 	for _, s := range specs {
@@ -173,7 +201,7 @@ func checkRouteGroups(specs []*load.Spec, routes []*route.Route) error {
 // package whose own spec declares no servo.HTTP(), or that has no spec at
 // all, leaves the route silently unserved, which is the failure mode the
 // reserved prefix exists to prevent. Module-wide like checkRouteGroups,
-// and for the same reason.
+// and for the same reason: specs is every injector in the module.
 func checkMainPackageRoutes(specs []*load.Spec, routes []*route.Route) error {
 	byPkg := map[string]*load.Spec{}
 	for _, s := range specs {
@@ -207,13 +235,15 @@ func checkMainPackageRoutes(specs []*load.Spec, routes []*route.Route) error {
 // an interface, so scope is the whole main module rather than "packages the
 // consuming package itself imports" (a narrower rule that would make
 // auto-bind useless for exactly that common case). Everything in the main
-// module is in scope; stdlib/third-party candidates are not.
+// module is in scope — all of it, whichever injector --dir selected, since
+// the load reads the whole module either way — and stdlib/third-party
+// candidates are not. Which modules are "the main module" is --scope's
+// answer: under the default, a module go.work lists beside this one is
+// third-party like any other, as it is to CI building with GOWORK=off.
 func mainModuleScope(loaded *load.Loaded) map[string]bool {
 	scope := make(map[string]bool)
-	for _, p := range loaded.All {
-		if p.Module != nil && p.Module.Main {
-			scope[p.PkgPath] = true
-		}
+	for _, p := range loaded.MainPackages() {
+		scope[p.PkgPath] = true
 	}
 	return scope
 }

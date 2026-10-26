@@ -151,3 +151,39 @@ func TestStatusBareValueAsError(t *testing.T) {
 		t.Fatalf("bare status in error position gave %+v", hs)
 	}
 }
+
+// StatusFor hands back the table's own entry for a code the table has —
+// comparable, so errors.Is against the table holds — and a bare status for
+// one it doesn't, such as nginx's 499 or an upstream's code.
+func TestStatusFor(t *testing.T) {
+	if got := StatusFor(404); got != Status.NOT_FOUND {
+		t.Fatalf("StatusFor(404) = %+v, want Status.NOT_FOUND itself", got)
+	}
+	if !errors.Is(StatusFor(409).New("taken"), Status.CONFLICT) {
+		t.Fatalf("an error built on StatusFor(409) must match Status.CONFLICT")
+	}
+	s := StatusFor(499)
+	if s.Code() != 499 || s.Error() != "HTTP 499" {
+		t.Fatalf("StatusFor(499) = %d %q, want 499 \"HTTP 499\"", s.Code(), s.Error())
+	}
+	// Out of range is returned as given: the adapter, not StatusFor,
+	// decides that a code like this means 500.
+	if got := StatusFor(0); got != (HTTPStatus{}) {
+		t.Fatalf("StatusFor(0) = %+v, want the zero status", got)
+	}
+}
+
+// statusByCode lists the table a second time, because the runtime may not
+// walk it with reflect; this test may, and fails the day the two drift.
+func TestStatusForCoversTheTable(t *testing.T) {
+	v := reflect.ValueOf(Status)
+	for i := 0; i < v.NumField(); i++ {
+		s := v.Field(i).Interface().(HTTPStatus)
+		if got := StatusFor(s.Code()); got != s {
+			t.Errorf("StatusFor(%d) = %+v, want Status.%s", s.Code(), got, v.Type().Field(i).Name)
+		}
+	}
+	if len(statusByCode) != v.NumField() {
+		t.Errorf("statusByCode has %d entries, the table %d", len(statusByCode), v.NumField())
+	}
+}

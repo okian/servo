@@ -37,6 +37,72 @@ func TestRunListRejectedShowsExcludedFunctions(t *testing.T) {
 	}
 }
 
+// The rejected listing answers "why is nothing providing T?": each refused
+// function names what it would have provided, and the methods — every
+// Init, Stop and Health in the module, most of the output on a real
+// project — are grouped by receiver after the functions instead of
+// drowning them.
+func TestRunListRejectedGroupsMethodsAndNamesTypes(t *testing.T) {
+	dir := writeAppModule(t, "example.com/listgrouped", true, "")
+
+	out := captureStdout(t, func() {
+		if err := runList(cfg(dir), true, false, false); err != nil {
+			t.Fatalf("runList --rejected: %v", err)
+		}
+	})
+	idLine := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "api.NewID ") {
+			idLine = line
+		}
+	}
+	if !strings.Contains(idLine, " string ") || !strings.Contains(idLine, "result type is a primitive (string)") {
+		t.Errorf("api.NewID's line should name the type it would provide, got %q in:\n%s", idLine, out)
+	}
+	methods := strings.Index(out, "methods are never providers")
+	if methods < 0 || methods < strings.Index(out, "api.NewID") {
+		t.Fatalf("methods should follow the functions under their own heading, got:\n%s", out)
+	}
+	if !strings.Contains(out[methods:], "api.(*Server)") || !strings.Contains(out[methods:], "Run, Ready") {
+		t.Errorf("methods should be grouped by receiver, got:\n%s", out[methods:])
+	}
+	if strings.Contains(out, "method, not a function") {
+		t.Errorf("the text listing should not repeat the method reason per line, got:\n%s", out)
+	}
+
+	jsonOut := captureStdout(t, func() {
+		if err := runList(cfg(dir), true, false, true); err != nil {
+			t.Fatalf("runList --rejected --json: %v", err)
+		}
+	})
+	for _, want := range []string{`"kind": "function"`, `"kind": "method"`, `"provides": "string"`} {
+		if !strings.Contains(jsonOut, want) {
+			t.Errorf("JSON output missing %s:\n%s", want, jsonOut)
+		}
+	}
+}
+
+// A candidate the injector cannot refer to — here an exported constructor
+// returning an unexported type — is in the index but never selected, so
+// the rejected listing names it, and why, under its own heading.
+func TestRunListRejectedShowsUnusableCandidates(t *testing.T) {
+	dir := writeAppModule(t, "example.com/listunusable", true, "")
+	mustWriteFile(t, dir, "comp/comp.go", "package comp\n\ntype pool struct{}\n\nfunc NewPool() *pool { return &pool{} }\n")
+
+	out := captureStdout(t, func() {
+		if err := runList(cfg(dir), true, false, false); err != nil {
+			t.Fatalf("runList --rejected: %v", err)
+		}
+	})
+	heading := strings.Index(out, "candidates example.com/listunusable/cmd/app cannot use:")
+	if heading < 0 {
+		t.Fatalf("no unusable-candidates section, got:\n%s", out)
+	}
+	if section := out[heading:]; !strings.Contains(section, "comp.NewPool") || !strings.Contains(section, "*comp.pool") || !strings.Contains(section, "is unexported") {
+		t.Errorf("comp.NewPool should be listed with its type and reason, got:\n%s", section)
+	}
+}
+
 func TestRunListJSONVariants(t *testing.T) {
 	dir := writeAppModule(t, "example.com/listjson", true, "")
 

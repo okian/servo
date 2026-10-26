@@ -23,6 +23,936 @@ long as the public methods above keep their signatures — consumers regenerate,
 that file. Also not breaking: new capability interfaces, new CLI subcommands or flags, improved
 diagnostic wording, or a case that used to be a diagnostic now resolving successfully.
 
+**Supported Go versions.** servo supports the two most recent Go releases, matching Go's own
+support window, and go.mod's `go` line is the older of the two. When Go ships a release, the next
+servo release raises the line to the release before it. That is a minor bump, as the move to 1.27
+in 3.2.0 was: it changes nothing this section defines as breaking.
+
+## [Unreleased]
+
+### Added
+- **`servo.Main(New)`: the documented main.** Every example and every page used to show about 30
+  copied lines of signal handling, logging and shutdown, and the copies shared three faults: a
+  failed `Run` or an unclean shutdown exited 0, so systemd and Docker on-failure restarts never
+  fired and a Kubernetes Job reported success; a second signal was swallowed until `Shutdown`
+  started; and with the standard logger routed through a slog handler at warn level, a failed
+  start printed nothing at all. `servo.Main` handles SIGINT, SIGTERM and SIGHUP (graceful, since
+  Go's default for SIGHUP kills the process mid-request), exits with status 128+signal on a second
+  signal from the moment the first arrives, logs failures at ERROR — writing to stderr when the
+  logger would drop an ERROR line — shuts down under its own deadline (25 s by default, below
+  Kubernetes' 30 s grace period; `servo.ShutdownTimeout` changes it), and exits with
+  `servo.ExitCode`. `servo.Logger` supplies the logger.
+- **`servo.ExitCode(runErr error, r servo.Report) int`** for mains that need their own shape: 0 when
+  `Run` returned nil or only the shutdown signal's cancellation and the report is clean, 1
+  otherwise.
+
+- **`servo.NodeError`: startup and `Run` failures name their node.** An `Init` failure used to come
+  back exactly as the component produced it — `dial tcp 127.0.0.1:5432: connect: connection
+  refused`, with three components that dial — so the fatal line of a failed start rarely said what
+  had failed. Every `Init` and `Run` failure is now a `*servo.NodeError{Node, Phase, Err}` rendering
+  as `*postgres.DB: Init: dial tcp …`, with `Unwrap` returning the component's own error, so
+  `errors.Is` and `errors.As` on that error keep working. A constructor's error is still returned
+  undiluted, as the lifecycle reference promises.
+- **`Report.Err()`**, `nil` exactly when the report is clean. `Report` satisfies `error` by value, so
+  a `Report` stored in an error variable is never nil, and `if err != nil` on it holds even for a
+  perfect shutdown; `app.Shutdown(ctx).Err()` is the form that answers that comparison honestly.
+- **`servo.DefaultInitBudget`** bounds each `Init` call, scoped instances' included. Zero, the
+  default, keeps today's behaviour — `New` waits for every `Init`. Set above zero, it is the deadline
+  of each `Init`'s context and the limit on waiting for it: an `Init` that respects its context fails
+  at the deadline with an error naming the budget, and one that ignores it is abandoned at the same
+  moment and left running while `New` rolls back, the way `RunStop` treats an overrunning `Stop`. A
+  dependency that accepted a connection and never answered used to hold `New` open with no output
+  and no error.
+- **`servo.DefaultRunGrace`** (5 seconds): how long `Run` keeps waiting for its runners once its
+  context is done. See the fix below.
+- **Reports encode to JSON and text.** `NodeStatus` marshals as `"ok"`, `"failed"` or `"abandoned"`
+  (and unmarshals from them, and from the bare numbers earlier releases wrote, so stored reports keep
+  decoding); `NodeResult` encodes as `{"name", "status", "err"}`, the error as its message and
+  omitted when nil; `Report` as `{"nodes": [...]}`. The default encoding wrote `"Status":1,"Err":{}`,
+  so a report served from a health endpoint said a node failed and never why.
+- **`github.com/okian/servo/v3/servoimpl`, the runtime only generated code calls.** Generated code
+  lives in the user's package, so whatever it calls has to be exported, and exporting it from
+  `servo` froze it as public API. `servoimpl` holds those helpers — the `Init` phase and `Run`
+  supervisor, the stop helpers, the scope linger hook, the second-signal exit — and is exempt from
+  the compatibility promise, changing with the generator that calls it, except for its `ContractN`
+  constants. It imports `servo` and the standard library; `servo` never imports it. Not for direct
+  use; documented in the `servo` package reference.
+
+- **`ShutdownDelay` on `servo.HTTPConfig` and `servo.HTTPListener`: rollout-safe shutdown.** The
+  generated stop path used to drop readiness and call `srv.Shutdown` in the same instant, so a load
+  balancer or Kubernetes endpoint still routing to the pod turned its last requests into
+  connection errors. A server now reports not-ready, keeps serving for `ShutdownDelay` (bounded by
+  the shutdown deadline), then drains. Zero keeps the old behaviour. With several groups the delays
+  overlap rather than add up.
+- **`servo.StatusFor(code int) servo.HTTPStatus`** builds a status outside the `Status` table — a
+  499, or an upstream service's code passed through. `servo.Status` is documented as a table to
+  read; assigning to it was never meant to work, and making it immutable would change its type.
+- **`MaxHeaderBytes` on `HTTPConfig` and `HTTPListener`**, passed to the generated server.
+- **`servo.Use` accepts plain middleware functions.** A node whose type is
+  `func(http.Handler) http.Handler`, or a defined type with that underlying type, is emitted as a
+  call. Every otelhttp, chi or gorilla middleware used to need a wrapper type with a `Middleware`
+  method, because resolution refused anything else.
+
+- **`middleware.ClientIPKey(trusted ...netip.Prefix)`: rate limiting behind a proxy.** Behind a
+  load balancer, an ingress or a CDN, `RateLimit`'s default key — the connection's peer address —
+  is the proxy's, so every client shared one bucket. `ClientIPKey` returns a
+  `RateLimitConfig.KeyFunc` that starts at the peer and, while the address it holds is inside one
+  of the trusted prefixes, walks `X-Forwarded-For` from the right; the first address no prefix
+  covers is the client. Entries left of it are whatever the client sent and are never read, so the
+  header cannot be used to choose a key, and an entry that is not an address ends the walk at the
+  trusted hop that wrote it. With no prefixes it is the default key, and the reference now says
+  plainly what that default means behind a proxy.
+- **`RateLimitConfig.MaxKeys` bounds the bucket table.** Zero means 100,000 keys (about 12 MiB);
+  a negative value is a constructor error. At the cap a new key evicts the least recently seen
+  one, which starts over with a full bucket if it returns, so a flood of distinct keys makes the
+  limiter forget clients rather than grow without bound or turn them away. Before, a million keys
+  held about 100 MiB and nothing ever capped it.
+
+- **A constructor's `context.Context` is the context `New` was called with.** A parameter of that
+  type now resolves to the ctx handed to `New`, `NewWith` or `NewTestApp` — supplied, like a value,
+  never searched for — and the generated call passes `New`'s own `ctx`. It used to be an ordinary
+  exact-type lookup, which found ten functions in the standard library returning `context.Context`
+  and told the reader to remove or rename all but one; the documented workaround,
+  `servo.Value[context.Context]()`, made a plain `New(ctx)` pass a nil context. A declared
+  `servo.Value[context.Context]()` still wins, and so does a `Bind` or `Override` naming the type.
+  It is a construction-time context, for a dial or a ping, not for work that outlives the call. Only
+  constructors `New` calls can take it: a scoped constructor runs inside `Acquire`, after `New`
+  returned, and is refused with a pointer to `Init(ctx)`, as is a second `context.Context` among a
+  `ScopeKey` extractor's or a `//servo:` handler's parameters. The node appears in `explain` and
+  `App.Graph()` deps as `context.Context`; no field is added to `App` or `Values`.
+- **"No provider" names the near misses.** The diagnostic now ends with what came close, one line
+  each with its position: `rejected:` for a main-module function the scan refused that would have
+  provided the type (variadic, generic, unexported, the wrong result shape — an instantiation of a
+  generic constructor counts), `unusable:` for a candidate the injector cannot refer to, `near
+  miss:` for a provider of the type's `T`/`*T` twin or a value whose pointer-receiver methods are
+  what an interface needed (`Get has a pointer receiver, so only *memory.Store does`), and `note:`
+  when the type is unnamed or primitive and so can never be provided. A package-level variable of
+  function type is named too. Before, the reason sat only in `servo list --rejected`, which no
+  message mentioned, and the reference claimed the opposite. The same engine is exported to the CLI
+  as `resolve.NearMisses`, for `explain` and `why`.
+- **`servo list --rejected` answers the question it is asked.** Each refused function names the
+  type it would have provided, the candidates this injector cannot refer to get a section of their
+  own, and methods — every `Init`, `Stop` and `Health` in the module, 66 of 79 lines on the tutorial
+  — are grouped by receiver after the functions, one line per type. `--json` keeps one object per
+  entry and gains `provides` and `kind` (`function`, `method`, `unusable`), a schema **addition**.
+- **servo-vet: three more mistakes.** A directive a space turned into prose — `// servo:get
+  /orders`, which Go and `generate` both read as a comment — is flagged when the rest of the line is
+  a well-formed route or config directive (generated files are skipped). A capability-named method
+  with the wrong signature on a type a constructor returns — `Run() error`, `Stop(ctx)` with no
+  error, `Init()` without a context — is flagged, since capabilities are detected by signature
+  alone and servo never calls it. And a dot-imported marker, bare `Build(Root[*X]())` in an untagged
+  file, is flagged like a qualified one, through `TypesInfo.Uses`; before, it passed servo-vet and
+  panicked at runtime. `servo generate` still recognizes only the qualified spelling, which the
+  limitations page now says.
+- **`generate` notes capability near misses.** For every node a constructor in the main module
+  builds, a capability-named method servo will never call, and a `Close` or `Shutdown` with no
+  `Stop` to reach it (unless the constructor returns a cleanup func), are reported as notes —
+  `servo: note: *comp.Pool has a Close method but no Stop(ctx context.Context) error, so servo will
+  not release it at shutdown` — and generation goes ahead. Each used to leave the component at
+  `capabilities: none` with nothing said.
+
+- **`--scope=module|workspace` on every command that loads packages.** It decides which modules
+  are "the main module" when a `go.work` lists several: the modules whose packages interface search
+  may auto-bind, whose `//servo:` routes and `//servo:config` types a graph reads, and whose
+  directories servo may write into. `module`, the default, is the module `--dir` is in and nothing
+  else — what a `GOWORK=off` build, CI's usual one, calls the main module. `workspace` is every
+  module the `go.work` lists, loaded whole, which is how servo read a workspace before. The commands
+  a report suggests repeat it, and `doctor` warns about a multi-module `go.work`. Reference:
+  [`--dir` and injector scope](docs/reference/cli.md#--dir-and-injector-scope).
+
+- **`servotest.NodeName[T]()`: the name servo gives a type's node.** Reports name nodes by type
+  with full import paths — `*example.com/app/api.Server`, never the `*api.Server` source code
+  spells — so every order assertion written the way the README, the servotest reference and the
+  generated-API page showed it failed in a real module on an order that was right.
+  `AssertStopOrder(t, rec, servotest.NodeName[*api.Server](), servotest.NodeName[*postgres.DB]())`
+  follows renames and moves with no edit. It is computed from `T` at run time and spells generic
+  instantiations the way `go/types` does; a test type-checks servotest's own test package and
+  holds it to the generator's naming rule across pointers, generics, maps, `any` and `struct{}`.
+  `AssertStopOrder`'s matching is unchanged.
+- **`servo completion bash|zsh|fish`** prints a shell completion script: commands, each
+  command's flags, the values `--format` and `--mod` take, directories and files where a flag names
+  one, `new`'s kinds and mock tools. It is generated from the same command table and flag sets
+  the parser uses, so a flag a later servo adds completes once the script is regenerated.
+- **`servo why --all`** lists every path from a root to the node, then every path from an HTTP
+  declaration — every reason it is in the binary — shortest first, stopping at 100. With `--json`
+  it prints an array of the arrays `why --json` prints; without `--all` the schema is unchanged.
+- **`servo init` writes `main.go`** when the directory is a `package main` and nothing there
+  declares a `main` yet — `func main() { servo.Main(New) }` — and prints it with a `go run` line,
+  so `go generate ./... && go run ./cmd/app` works in the first minute. An existing `main`
+  function, in any file, or an existing `main.go` is never touched.
+- **`servo doctor` checks that `go generate` can run the generator.** It reads every
+  `//go:generate` line in the module the way `go generate` does — build constraints with the
+  `generate` tag, test files, `-command` shorthands, quoting — and, per injector and variant, says
+  which line regenerates it. A covering line in a file `go generate` skips, which is what a
+  directive inside the `servoinject`-gated spec file is, is a `FAIL`: `go generate ./...` exits 0
+  there having run nothing, and doctor called the module healthy. So is an injector no line
+  covers in a module that otherwise uses `go generate` for servo, a covering line whose arguments
+  servo would refuse, and a `go tool servo` line with no `tool` directive in `go.mod` — `go
+  generate` stops at `no such tool "servo"`. A module that never runs servo from `go generate` is
+  a `WARN`, since regenerating from make or CI is a legitimate setup.
+- **`servo doctor` compares versions, checks config agreement, and names a workspace.** A line
+  saying whether this binary is the servo release `go.mod` requires comes first — a `WARN` on a
+  mismatch, which a global `@latest` beside a pinned `go tool servo` makes the normal state, and
+  an `INFO` when either side is a development build or a replacement. The cross-injector config
+  agreement check `generate` and `check` run now runs here too, an injector whose graph does not
+  resolve is reported as that rather than as a stale file, and a `go.work` listing more than one
+  module draws a `WARN` explaining `--scope`.
+- **`servo doctor` makes the checks `check` makes.** It compiles the generated files it finds
+  current, once, together — byte-identical to a fresh generation is not the same as buildable —
+  reports each config loader left over from a `//servo:config` type its package no longer
+  declares, and every command it suggests repeats the `--dir` and build flags it was run with.
+
+- **`servo generate -v`** lists every generated file on stderr, one line each, as written,
+  unchanged or removed. Removals are reported with or without it: deleting a file nobody named
+  should never be silent.
+- **`servo generate` notes an empty graph.** The empty `servo.Build()` that `servo init`
+  scaffolds generates and builds cleanly into a program whose `Run` returns the moment it starts;
+  a spec with no `servo.Root` and no `servo.HTTP()` now draws one line on stderr saying so. The
+  run still succeeds.
+
+- **`NewTestAppWith` takes a mock per call.** `TestValues` gains a field per `servo.Override`,
+  typed as the overridden interface. Left nil, the Override is built by its constructor as
+  before; set, the test's own instance is used in its place — no constructor call and no lifecycle
+  calls, exactly like a supplied value. A gomock controller can now hold the test's real `t`, so an
+  unmet expectation is an ordinary test failure instead of a `PanicReporter` panic, and tests that
+  each supply their own mock can run in parallel. The Override's concrete field keeps its name and
+  type, so `app.storeMock.GetFunc = …` still compiles; consumers read an interface-typed field
+  beside it. An Override whose implementation has a lifecycle, or that some consumer takes as the
+  concrete type rather than the interface, gets no field and is built as before. `NewTestAppWith`
+  and `TestValues` now exist whenever the test graph has such an Override or reads a
+  `servo.Value`. `examples/mocking` shows all three mock generators used this way.
+- **Every generated file names the runtime contract it was written against**: `const _ =
+  servoimpl.Contract1`, under a comment saying the file needs v3.5.0 or later and to regenerate
+  with `go tool servo generate` if the line does not compile. A file generated by a newer servo
+  than the one `go.mod` pins used to compile against the older runtime and crash in `RunStop`
+  during a rollback, or fail inside a helper whose signature had moved; it now fails on that line.
+  The constant lives in the new `servoimpl` package, whose `ContractN` constants are the one part
+  of it the compatibility promise covers: a generator that needs newer runtime behaviour emits
+  `Contract2`, and none is ever removed within a major version. Config companions carry the guard
+  too, and so import `servoimpl`.
+- **`GraphNode.Provider`** names the function that builds a node — `postgres.New`, or
+  `store.ServoConfig` for a `//servo:config` type — in `App.Graph()`, `servo graph`'s JSON (a
+  schema **addition**, `omitempty`) and its text output. Empty for a supplied value and a trace
+  wrapper, which no function of the program builds.
+
+- **`ValidateConfig() error` per injector** runs every `//servo:config` loader the graph uses
+  without constructing anything, and joins their errors — for an init container or a pre-deploy
+  CI step that should fail before the service starts.
+
+- **Releases are cut by a workflow that checks everything before the tag exists.**
+  `.github/workflows/cut-release.yml`, run from master with the version
+  (`gh workflow run cut-release.yml -f version=v3.5.0`), refuses a version that exists or does not
+  come after the latest release, one whose major does not match go.mod's `/vN`, one without its
+  CHANGELOG.md section, and a commit go.yml has not passed on — waiting for go.yml if it is still
+  running — and runs `gorelease` against the previous release, so a version wrong for the change
+  to the exported API is refused too. Only then does it create the annotated tag and start the
+  release on it. Before, the tag was the first step: v3.4.1 was published four minutes before CI
+  finished on its commit, and a missing changelog section was found after the tag existed, with an
+  error that advised re-tagging. Pushing a tag by hand still works; the release then waits for
+  go.yml on that commit and stops if it failed.
+- **Every release archive has a signed build-provenance attestation.** A release job of its own
+  attests each archive through `actions/attest-build-provenance`, and the publish job verifies
+  every one — `gh attestation verify <archive> --repo okian/servo`, pinned to the release workflow
+  and the tag — before anything is published. RELEASING.md gives the same command to users.
+- **RELEASING.md**: how a release is cut, re-run, retracted and verified; the rule that a tag is
+  never moved, with the `retract` directive that replaces it; what GitHub's immutable releases
+  would change; Gatekeeper's quarantine on the ad-hoc-signed darwin binaries; and the recipe that
+  rebuilds a release binary bit for bit — checked against v3.4.1's linux/amd64 binaries, which it
+  reproduces byte for byte.
+- **CI checks that nothing checked before**: `govulncheck` over every module, nightly and on any
+  `go.mod`/`go.sum` change (`.github/workflows/vulncheck.yml`); `gofmt` over every committed Go
+  file and `go mod tidy -diff` in every module; spelling (`typos`, with the existing allowlist);
+  `actionlint` over the workflows; an offline check of every relative link and `#fragment` in
+  the Markdown, plus two checks for links the published site cannot follow — a link whose text
+  wraps a line, which Pages leaves pointing at the `.md` file, and any page of the built site
+  that still links to one; CodeQL's `actions` language next to `go`; and Dependabot version
+  updates, grouped and after a week's cooldown, for the actions, every module and the docs gems.
+- **A determinism job regenerates every example on Linux, macOS and Windows** — from a moved
+  checkout, a moved module cache, vendored dependencies and a `go.work` — and fails on any byte
+  that differs from the committed files, so positions, ordering and line endings that depend on
+  the machine are caught where they are introduced. `.github/scripts/determinism.sh` runs the
+  same scenarios locally.
+- **A nightly toolchain canary** builds and tests the root module and runs every example's
+  `servo check` on the newest Go release, resolved afresh each night, and on Go's development
+  branch (advisory). servo reads the standard library from the toolchain's export data, whose
+  format a Go release can change, as 1.27.2 did; the canary finds such a release before users do.
+
+- **Three guides on the documentation site.** [Coming from wire or
+  fx](docs/coming-from-wire-and-fx.md) maps every wire and fx concept onto servo's — `Provide`,
+  `Invoke`, `Supply`, `Annotate` with `As`, `Replace`, `Decorate`, `Module`, `Private`, names,
+  groups, `In` and `Out`, `optional`, `wire.Struct`, `FieldsOf` and `Value`, injector parameters,
+  cleanup functions — and for the ones with no equivalent says what to write instead.
+  [servo in CI](docs/servo-in-ci.md) is the workflow a consumer can copy, which `go.yml` never was
+  (it runs `go run ./cmd/servo`, which works only inside this repository): `go tool servo check`
+  with a `merge_group` trigger and `GOWORK=off`, the exit codes of every command and of
+  `servo-vet`, upgrading, `go.work` and `--scope`, build variants, cross-compiling `generate` under
+  `go tool` (`GOOS=linux "$(go tool -n servo)" generate`; `GOOS=linux go tool servo` builds the tool
+  for Linux and fails with `exec format error`), vendoring, offline use, measured costs, the
+  `.gitattributes` and CODEOWNERS lines for generated files, and the pre-commit hook. [Running in
+  production](docs/running-in-production.md) is a short checklist: `servo.Main` and an exec-form
+  `ENTRYPOINT`, `GOMAXPROCS` (sized from the container's CPU limit since Go 1.25, from the limit and
+  not the request) and `GOMEMLIMIT` (no Go release reads the memory limit, so it is yours to set),
+  probes, the three durations a graceful shutdown has to fit, HTTP server timeouts and the warning a
+  listener without `ReadHeaderTimeout` logs, and profiling on a listener of its own. The docs home
+  page links all three, and the README, the preface and the comparison page link the ones they
+  touch.
+
+### Changed
+- **Every example main and every documented main is `servo.Main(New)`**, with a closure where
+  `NewWith` is needed. The lifecycle reference keeps a "writing your own main" section for the
+  cases that need control, with `ExitCode` and the separate shutdown deadline explained.
+- **Liveness checks the process; dependency checks feed readiness.** The guidance used to map
+  `/healthz` — dependency pings — to the liveness probe, so a 40-second database failover failed
+  liveness on every replica, restarted them all, and `Init`'s fail-fast kept them crash-looping
+  until the database returned. The tutorial's admin server now serves `/livez` (the process
+  itself), `/readyz` (`App.Ready`) and `/healthz` (`App.Health`, for humans and dashboards), and
+  the lifecycle reference explains probes and how to size `terminationGracePeriodSeconds`.
+- **One runtime helper runs every `Init` level, and `Init`'s context is for the call.** The
+  generated code called a lone `Init` directly, on `New`'s own long-lived context, and gave a level of
+  several an errgroup, whose context dies when the level finishes — so a refresher an `Init` started
+  on its context outlived `New` while its node was alone at its level, and died right after `New`
+  once an unrelated `Initializer` joined it (`examples/basic`'s production and test files already
+  disagreed). `servoimpl.Init` now runs every level, scoped ones included: each call gets a context
+  of its own, cancelled the moment it returns — and earlier if a sibling fails, if `New`'s context
+  ends, or if `DefaultInitBudget` runs out. Long-lived work belongs in `Run`; the lifecycle reference
+  says so. The per-node timings `App.Report()` returns are kept, in completion order. The phase is one
+  call with one rollback site, where each level used to carry its own copy.
+- **Generated code no longer imports `golang.org/x/sync/errgroup`.** It appeared with the first level
+  of two Initializers or the second runner, and a module that required only servo got `servo
+  generate` exiting 0 and then `missing go.sum entry … errgroup` from `go build`. The `Init` phase and
+  `Run` use stdlib-only helpers in `servoimpl`; after regenerating, `go mod tidy` drops the
+  requirement.
+- **`Run` reports every failure, never one masked by a cancellation.** The errgroup returned whichever
+  error came first, so a runner whose final flush failed after the shutdown signal was hidden behind
+  a server that merely returned `context.Canceled` first, and the process exited 0 with the data
+  gone. `Run` now returns every failure, each a `*servo.NodeError` (joined when there are several),
+  and only when there is none, the first cancellation a runner returned, unchanged — what an ordinary
+  shutdown has always returned. A runner returning `nil` still cancels nothing. A lone runner is
+  supervised like the rest instead of being called bare.
+- **A failed `New` carries its rollback report without joining the error chain.** The unwind's
+  report was `errors.Join`ed to the startup failure, so a rollback `Stop` that overran its budget
+  made `errors.Is(err, context.DeadlineExceeded)` true for a startup that had failed for an unrelated
+  reason — and the only node the message named was that innocent one. The report now rides along
+  where `errors.As(err, &report)` finds it and the message still ends with it (`rollback: …`), but
+  `errors.Is` does not descend into it. A clean unwind still returns the failure itself.
+
+- **The drain gets the rest of the shutdown deadline, and an overrun cancels the requests.** It
+  used to run under a fixed 5-second `DefaultStopBudget` whatever the caller's deadline was, and
+  when it didn't finish nothing cancelled the requests still in flight, so handlers kept calling
+  dependencies the rest of `Shutdown` then stopped. The drain now takes the caller's remaining
+  deadline (or `DefaultStopBudget` when there is none); if it overruns, the server's base context
+  is cancelled, so `r.Context()` is done in every handler, and every connection is closed. A
+  request cut off that way answers 503, logged at Warn.
+- **Error-path logging carries the request context and fixed messages.** Every log line the
+  generated adapter writes uses slog's `*Context` variants with `r.Context()`, so a handler that
+  reads request or trace ids from the context can attach them, and names the handler and route as
+  attributes instead of building the message from them.
+- **A client that went away is a 499 at Debug, not an ERROR and a 500.** A handler that correctly
+  returns `ctx.Err()` after the client disconnects used to be logged at ERROR as a server failure,
+  inflating 5xx rates and paging people for timeouts upstream.
+- **`servo.ErrScopeFull` and `servo.ErrScopeClosed` answer 503 with `Retry-After`**, logged at
+  Debug — a scope shedding load at its cap or shutting down is not a fault — instead of a 500 and
+  an ERROR line per refusal.
+- **A missing `ReadHeaderTimeout` is announced at startup.** Zero still means no timeout, as
+  `HTTPConfig` documents and `net/http` does, because changing that would be breaking. But a server
+  started without a header timeout now logs one warning naming the listener, since a few hundred
+  clients that never finish their headers can hold every connection. Every example and the tutorial
+  set all four timeouts.
+- **The TLS key pair is loaded when the server is built**, so a missing or unreadable certificate
+  fails `New` with an error naming the listener and the files, instead of surfacing in `Run` after
+  every `Init` — and a certificate replaced on disk is picked up by later handshakes, where it was
+  read once and never again.
+- **Generated HTTP code calls the runtime through `servoimpl`.** Listener setup, serving, the stop
+  sequence and the response contract live in `servoimpl/http.go`, not in every generated file.
+
+- **`middleware.RateLimit` keys an IPv6 client by its /64.** One host is routinely given a whole
+  /64, and keyed per address a single client could mint a fresh bucket per request. An
+  IPv4-mapped address counts as the IPv4 one. IPv4 keys are unchanged.
+- **`middleware.RateLimit` forgets idle buckets a few at a time.** Every 4096th request walked
+  the whole table under the limiter's one mutex — 16 to 130 ms at a million keys, during which
+  every request waited. Buckets now sit on a recency list, and each request forgets at most two
+  idle ones from its cold end, so no request pays for a pass over the table.
+- **`middleware.AccessLog` lines carry `route` and `request_id`, and are logged with the
+  request's context.** `route` is the pattern the mux matched (`r.Pattern`, such as
+  `GET /items/{id}`), present when no middleware between AccessLog and the mux replaced the
+  request; `request_id` is `RequestID`'s, read from the context or, when RequestID runs inside
+  AccessLog, from the `X-Request-Id` response header it set. `slog.InfoContext` with
+  `r.Context()` lets a context-aware handler add a trace id. `middleware.Recover`'s crash line
+  gains the same three, logged with `slog.ErrorContext`.
+- **`middleware.Gzip` compresses only bodies of 1 KiB or more.** It used to compress everything,
+  turning a two-byte body into 27. The status and the first KiB are held until they settle the
+  encoding — nothing net/http does not hold anyway — and a response that ends or is flushed
+  before then goes out as it is. A handler that set no `Content-Type` now gets the one net/http
+  would sniff: net/http sniffs nothing once `Content-Encoding` is set, so compressed responses
+  went out untyped, and a sniffed type that is compressed already (an image) is no longer
+  compressed again. A 206, or any response with a `Content-Range`, passes through, since
+  compressing a range made its `Content-Range` describe bytes the client never received; a
+  compressed response drops `Accept-Ranges`; and `Vary: Accept-Encoding` is set on every
+  response, including those sent plain to a client that does not take gzip.
+- **The reference documents the order the shipped middleware work best in** — `RequestID`,
+  `Recover`, `AccessLog`, then the rest, with `Timeout` only on the groups or routes whose
+  responses are bounded — and why ([middleware package](docs/reference/middleware.md#order)).
+
+- **Exact-type selection prefers the main module's constructors.** The exact-type lookup covers
+  every loaded package, so a module's own `NewLogger() *slog.Logger` was one candidate among
+  `slog.New` and `slog.Default`, an ambiguity whose advice — remove or rename all but one — nobody
+  could take about the standard library; `TracerProvider` had already been special-cased for the
+  same reason. Now the module's own constructors decide, a lone outside one is still selected when
+  the module has none, and several outside ones wait for the module's implementations of an
+  interface before they are an ambiguity — one that says to write a provider in the module or
+  declare a `servo.Value`. Not breaking under the rules above: only cases that were diagnostics now
+  resolve, and every example generates byte-identical output.
+- **Ambiguity is headed as one, and its fix can be pasted.** Several candidates are now `ambiguous
+  provider for X`, not `no provider for X`. The suggested lines spell types the way the spec file
+  does — `servo.Bind[store.Store, *memory.Store]()`, bare for the spec's own package, by import
+  alias where it has one — followed by the imports the spec file still needs; they used to be
+  `servo.Bind[example.com/app/store.Store, *example.com/app/memory.Store]()`, which isn't Go. Two
+  functions producing one type are told that servo identifies values by type alone, so renaming
+  one changes nothing, and shown a distinct named type to make instead.
+- **Rejected result shapes say what is wrong.** "does not match a supported result shape" is now
+  followed by the specific mistake — `the error comes last — return (T, error)`, `the cleanup func
+  comes before the error — return (T, func(), error)`, the offending second result, or the count.
+- **A servo runtime older than the CLI is a warning, not a failure.** A capability interface the
+  module's pinned runtime does not declare is skipped — no node is reported as having it, nothing
+  generated calls it — and every command carries on, where all of them used to fail with
+  `capability interface Readier not found`. The one-line warning names both versions and both fixes.
+  A runtime declaring none of the capabilities is still an error, now saying the package did not
+  load and to check go.mod and go.sum.
+
+- **In a `go.work`, an injector's main module is its own module.** The go command marks every
+  module a `go.work` lists as main, and servo took that as its own "is this the user's code" test,
+  so an interface auto-bound to a sibling module's implementation, and a `//servo:config` type
+  declared in a sibling had its loader written into the sibling's directory — neither of which a
+  `GOWORK=off` checkout regenerates, so `servo check` in CI failed on a file `generate` had just
+  written. Under the new default a sibling is a dependency like any other: its implementations are
+  out of interface search, its routes and config types are not the graph's, and nothing is written
+  into it. A workspace that relied on the old reading gets it back with `--scope=workspace`, or binds
+  the sibling's type explicitly; without a `go.work`, nothing changes.
+
+- **A command's flags may come before or after its arguments**, and `--` ends them. The go flag
+  package stopped at the first argument, so `servo explain api.Server --json` — the order `servo
+  help` itself advertised — was a usage error, and `servo check ./... --tags=prod` silently
+  checked the default configuration; it now checks `prod`. Usage lines, `servo help <command>`,
+  the parser and dispatch are generated from one table of commands, so a flag a command accepts
+  is on its usage line by construction.
+- **Arguments a command does not take are ignored out loud.** `servo generate ./cmd/app` — what a
+  wire user types — still generates every injector under `--dir` with the same exit status, but
+  now says on stderr that it ignored the argument and which `--dir` would narrow the run.
+- **`servo new` prints complete files.** Every scaffold has its package clause and imports and
+  compiles as printed; a test writes all of them into one module, roots them, generates, builds
+  and vets it. `component` takes `--package` (default: the type name, lowercased). `adapter` now
+  declares its settings as an unexported `//servo:config` struct, so rooting it no longer fails
+  with `no provider for redisx.Config`; it connects in `Init` and tears down through `Stop` alone,
+  instead of returning a cleanup func beside `Stop`. `mock-adapter` prints its package clause (`--package`, default
+  `mocks`) and accepts `mockgen` for `gomock`. A name the file could not use — not an identifier,
+  or unexported where a spec in another package must name it — is refused before printing.
+- **`servotest.Timeout` and `servotest.Linger` refuse a parallel test.** Both change a package
+  variable, and a parallel test calling one raced every test reading it — `go test -race` said so,
+  and only a doc comment said not to. They now call `t.Setenv` first, so Go panics on the
+  combination, in either order, before the variable is touched.
+- **`explain` names the Bind behind `explicit bind`** — the interface and the Bind's position,
+  `via servo.Include` when it came from an included set — and the interface behind `sole
+  implementation`; `--json` gains `binds` and, for an interface query, `via` (both `omitempty`).
+  **`why` names the interface a step went through**, `(as store.Store, explicit bind)`, and the
+  accessor a scoped node is acquired through.
+- **The tutorial runs the generator as `go tool servo`.** Chapters 2 and 14 and the tutorial's
+  Makefile said `go run github.com/okian/servo/v3/cmd/servo` "works equally well"; outside this
+  repository it stops at a missing `go.sum` entry for `golang.org/x/tools`. `examples/tutorial`
+  declares the tool in its `go.mod`.
+
+- **The compile-failure report names the likely causes before it mentions a bug.** It used to
+  open by calling every generated file the compiler rejected "a bug in servo rather than in your
+  code", which sent people to the issue tracker with their own stale mocks. It now shows the
+  compiler's lines, then the usual causes, which are in the code the file was generated from — a
+  `servo.Bind` or `servo.Override` type that no longer implements its interface, a provider the
+  injector's package cannot refer to (under another tree's `internal/`, importing the injector's
+  package, or naming another package's unexported type), a name the injector's package already
+  declares — and only then invites a report.
+- **The stale-file diff reads like `git diff`.** Each hunk has its line numbers, three lines of
+  context and the declaration line its first change sits under, so a merge that drops one stop
+  call from one rollback path shows which path, where it used to print a bare `+ _ =
+  a.stopIssuer(ctx)` indistinguishable from twenty others. A diff is cut off after 400 lines,
+  with a count of what was left out.
+- **A suggested command repeats the flags it was run with.** `servo check --dir=services/api`
+  failing in CI used to say "run `servo generate`", which run from the repository root fails
+  with "run `servo init`". The stale, missing and left-over reports now name `--dir`, `--scope`
+  and the build flags they were given, with the variant's own `--tags`.
+
+- **Committed output carries no source positions.** The header comment named each provider by
+  its file position, and `App.Graph()` carried the same strings, so adding a comment above any
+  constructor made `servo check` fail, a standard-library provider's position moved with the Go
+  patch release (`net/http/server.go:2655` under 1.27.2, `:2635` under 1.27.0), and teammates on
+  different toolchains kept rewriting each other's file. The header now names the function
+  (`postgres.New`, `postgres.ServoConfig`, `Values.Flags` for a supplied value), and every `Pos`
+  in the generated `App.Graph()` is empty. `servo graph`, `explain` and `why` still print live
+  positions.
+- **`App.Graph()` is printed from the value `servo graph` builds.** The two were separate
+  converters kept in step by hand, and had drifted: a scope's borrows came out in level order at
+  run time and in discovery order from `servo graph --format=json`, and routes were listed group
+  by group at run time and in plan order at build time. The generator now writes the literal from
+  the same conversion the command uses, field by field — `nil` as `nil`, an empty slice as empty —
+  so the two serialize identically except that only `servo graph` fills in positions. Borrows are
+  in level order in both, and a test compiles a generated `App.Graph()` and compares its JSON with
+  the command's.
+- **Construction rollback is linear.** After every constructor that can fail, `New` used to
+  unroll a stop call for each stoppable node built before it, which made the generated file
+  quadratic in the graph — and `servo generate` pays for that twice, since it compiles what it
+  writes. Each stoppable node now registers its stop method in `New`'s undo list right after it is
+  built, and each failure site calls one `unwind` method that runs the list newest first. On a
+  synthetic chain of 500 constructors that can all fail and all stop, the generated file went from
+  136,368 lines to 12,627 and `servo generate` from 599 s and 4.0 GB to 1.9 s and 280 MB; 1,500
+  such constructors now take 5.1 s and 671 MB. Each failure site no longer repeats the nodes before
+  it, so two branches that each add a node can no longer merge cleanly into a file whose later
+  rollback paths miss the other branch's stop call.
+
+- **A generic instantiation is named for its type arguments.** Two instantiations of one generic
+  type used to become `repoRepo` and `repoRepo2` — which one got the 2 depended on order, and
+  neither said what it held. They are now `repoUser` and `repoOrder`, the trace wrappers are
+  `tracedStoreUser` and `tracedStoreOrder`, and each instantiation's spans carry its arguments
+  (`repo.Store[model.User]/Get`), where both used to share one span name. Non-generic names are
+  unchanged.
+- **The empty interface keys as `any`.** With aliases now resolved at every depth, `Repo[any]` would
+  have keyed as `Repo[interface{}]`; both spellings are one type, so they share one key, and it is
+  spelled `any`, which keeps node names — the ones `Report` entries and `servotest` assertions
+  use — what they were.
+- **`servo generate` prints resolution notes.** A capability-named method with the wrong signature,
+  or a `Close` no `Stop` bridges to, is reported on stderr as a note; it never stops generation.
+
+- **Go 1.26 is supported again: go.mod declares `go 1.26.0`, down from `go 1.27.0`.** The policy
+  from this release on is the two most recent Go releases, matching Go's own support window, and
+  go.mod's `go` line is the older of the two. Nothing in the module needed 1.27: the floor was
+  raised for the tutorial's use of the standard library's `uuid` package, and the tutorial is its
+  own module, which stays at 1.27. Every other example module declares `go 1.26.0` as well. A
+  consumer on 1.26 with `GOTOOLCHAIN=local` was capped at v3.1.0, and under `auto`, `go get` raised
+  their go line; neither happens now. CI tests the root module on 1.26 and 1.27 and each example
+  on every version its go.mod allows. No `go mod tidy` was needed in any module.
+- **A release workflow run is always on the tag itself.** The `tag` input of release.yml's
+  `workflow_dispatch` is gone: a re-run after a failed upload is
+  `gh workflow run release.yml --ref vX.Y.Z`, and a run on a branch is refused, because the
+  provenance attestation records the run's ref and commit as the archives' source. The tag is
+  checked out as `refs/tags/<tag>`, so a branch of the same name can never be built instead;
+  every job checks the tag still points at the commit the run started for, and a tag on a commit
+  that is not on master is refused.
+- **Release builds use the newest patch release of the Go line** (`check-latest`), decided once
+  by the plan job and named in the notes, and restore no Actions cache: each module comes from
+  the proxy, checked against go.sum, and `go mod verify` re-hashes the module cache before
+  anything is built. Every v3.4.1 build job had restored a 235 MB cache written by an unrelated
+  lint job.
+- **The release notes describe the archives as what they are**: an install of the CLI that still
+  needs `go` on PATH, since servo loads modules through the go command — not a way to run servo
+  without a Go toolchain. `go get -tool` with `go tool servo` is the recommended install.
+- **CI runs `cmd/servo`'s tests as four shards** beside a job for every other package, on both
+  toolchains, and merges the shards' coverage before one upload. Every `go test` has an explicit
+  `-timeout` and every job a `timeout-minutes`: go test's ten-minute default per package had
+  failed the nightly 36 times in a row in September and October, and `cmd/servo` alone was taking
+  up to 88% of it. The module and build caches are keyed on every go.sum in the repository and
+  saved only from master, where setup-go's cache had been keyed on the root go.sum alone and
+  saved once; tests run with `-count=1`, since a restored cache could otherwise replay a pass for
+  a `cmd/servo` test whose fixture builds against changed runtime code. A newer push to a pull
+  request cancels the run of its older head.
+- **The tutorial workflow runs when the root packages it builds against change** — `servo/`,
+  `servoimpl/`, `servotest/`, `middleware/`, `conf/`, `internal/`, `cmd/`, `go.mod`, `go.sum` —
+  not only when the tutorial does, and its `servo check` step runs `go tool servo check`, as a
+  consumer's CI does.
+- The docs job builds the site with `github-pages` and every gem beneath it pinned, with
+  checksums, in `docs/Gemfile.lock`, and also asserts the three new pages render.
+
+- **The README's Quick start runs as written.** It installs the generator with
+  `go get -tool`, shows every file in full — including the logger the old version depended on and
+  never showed, so the first `servo generate` stopped at "no provider for *logger.Logger" — gives
+  the API server a `Run`, uses `servo.Main(New)` as the whole of `main`, and shows what a run and a
+  Ctrl+C print. Once the logger was supplied, the old program exited 0 at once having printed
+  nothing, because nothing in it implemented `Run`.
+- **The comparison page is fair to wire and fx.** `google/wire` was archived in August 2025 and its
+  README says it is no longer maintained; the page called it "in maintenance mode". servo and wire
+  both get two instances of one type by making them two distinct types; the page said servo could
+  not and wire could. fx reports a missing dependency when `fx.New` runs, before `Start`, and
+  `fx.ValidateApp` checks a graph without calling any constructor; the page said fx failed at
+  `app.Start()`, through a reflection-built error chain. The preface's versions of the same claims
+  are corrected too, along with its "a different graph for staging than for production", which
+  build variants already allow.
+- **The tutorial says what to run in your own module.** Its packages compile and pass their tests
+  chapter by chapter, but the binaries arrive with chapter 14's injectors, so chapters 10 to 13 ran
+  programs a reader's module did not have yet. A new "Following along in your own module" section
+  says to run those in the finished module; that Postgres, Redis and NATS start by name, because
+  `make up` also starts a containerized copy of the service on ports 8080 and 8081, which the local
+  `go run` the chapters show then found taken; and that `deploy/docker-compose.yml`, which chapter 5
+  already needs, is copied from the finished module. Chapters 10, 11, 12, 15 and 17 point at it.
+  The promise of a "try it" section in every chapter, kept by seven of twenty-two, now says what the
+  chapters actually do. Chapter 19's workflow runs `go tool servo check`, the form a consumer's CI
+  uses.
+- **Chapter 3 says what `required` means**: the setting arrived from some source. A variable set to
+  the empty string is present, and, the environment outranking a config file, it replaces the
+  file's value. Rules about the value belong in the constructor that receives it, which is where the
+  tutorial's `auth.New` now refuses a `JWT_SECRET` shorter than 32 bytes; chapter 9 shows it and
+  says why 32.
+- **The tutorial's probes are liveness, readiness and a report.** Chapters 1, 10 and 17 described
+  `/healthz` — every dependency's own check — as the liveness probe, which restarts every replica
+  when one dependency fails over. They now describe the admin port's `/livez`, `/readyz` and
+  `/healthz`, and chapter 10's account of a `Run` that ignores its context describes servo's
+  five-second `DefaultRunGrace` and the error that follows, where it used to describe a hang.
+
+### Deprecated
+- **`servo.RunStop`, `servo.MergeNodeResults` and `servo.LingerWindow`.** Generated code calls the
+  `servoimpl` copies since v3.5.0; these remain, working, for files generated earlier. `RunStop`
+  carries the not-attempted fix below. `DefaultStopBudget` and `LingerOverride` stay where they are,
+  since users and `servotest` set them.
+
+### Fixed
+- **A runner's panic no longer kills the process without `Shutdown`.** Runners ran on errgroup
+  goroutines with no `recover`, as did the lone runner and the emitted HTTP servers, so a panic
+  exited 2 on the spot: `Shutdown` never ran, nothing was drained or flushed, and a producer's
+  buffered events were lost. It is now that runner's failure, carrying the panic value and the stack:
+  the other runners are cancelled, `Run` returns it, and `main`'s `Shutdown` runs as it would after
+  any other failure.
+- **One tenant's scoped `Run` panic no longer kills every tenant.** A scoped instance's `Run`
+  goroutine was the one place in a scope with no `recover`, although constructors and `Init` had one
+  and the limitations page promised a panic fails the acquire rather than the process. The panic is
+  now that instance's `Run` failure, attached to its stop result and counted in `Stats().Failures`
+  at eviction — the existing semantics for a scoped `Run` error.
+- **A panicking `Init` rolls back.** On a level of one it unwound through `New` into `main`; on a
+  shared level it killed the process from the errgroup's goroutine, after x/sync's `Wait` could
+  already have returned nil, so `New` "succeeded" and `Run` began first. Neither ran the rollback, so
+  a database another node had connected was never closed. It is now that node's `Init` failure, and
+  takes the rollback like any other.
+- **Stops are not started after the shutdown deadline.** `RunStop` started a stop whose context was
+  already done and reported it abandoned the same instant, so once the deadline passed every node
+  still to come began stopping at once, in the background, out of the order the graph requires,
+  while `main` exited around them — a database closed under a producer still flushing into it. Such
+  a stop is now not attempted: reported abandoned with an error saying so, wrapping the context's
+  own. Fixed in `servo.RunStop` too, for files generated earlier.
+- **`New` fails when its context ends during `Init`.** A shutdown signal arriving mid-startup used
+  to leave `New` returning success once the `Init`s finished, and `Run` then bound the ports of a
+  process already told to stop. `New` now starts no further level, rolls back, and returns an error
+  wrapping `context.Cause(ctx)` — `servo: startup interrupted: interrupt signal received`, for which
+  `errors.Is(err, context.Canceled)` holds — even when every `Init` succeeded.
+- **`Run` stops waiting for a runner that ignores cancellation.** `Run` waited for every runner
+  without limit, so after SIGTERM one that ignored its context kept the listeners serving until the
+  supervisor killed the process, with nothing drained or stopped. Once `Run`'s context is done, each
+  runner now has `servo.DefaultRunGrace` to return; past it, `Run` leaves it running and returns an
+  error naming it, so `Shutdown` can begin.
+- **The second-signal force exit says why and exits 128 plus the signal.** `Shutdown`'s watcher
+  called a silent `os.Exit(1)`. It now writes one line to stderr naming the signal and exits the way
+  a shell reports a process a signal killed: 130 for SIGINT, 143 for SIGTERM.
+- **`servo.Stream` no longer leaks its reader, and a cut-short stream is no longer a success.** The
+  reader was never closed, so a file or pooled connection leaked per request, and a mid-stream
+  write error ended the chunked response normally. Stream now closes a reader that implements
+  `io.Closer`, and a failed write after the headers aborts the response with
+  `http.ErrAbortHandler`, so the client sees a truncated stream rather than a complete one.
+- **JSON and XML responses encode before writing the status.** An encoding error (a `NaN`, say)
+  used to send the success status with an empty body; it is now a 500 with the standard error
+  envelope, logged.
+- **A zero or out-of-range `servo.HTTPStatus` is a 500**, not a panic in `WriteHeader(0)` that
+  dropped the connection.
+- **A malformed query string is a 400.** `r.URL.Query()` drops the parse error, so with 10,001
+  parameters every bound field silently became zero and the request returned 200. Routes that bind
+  query fields now parse with `url.ParseQuery` and refuse what it refuses.
+- **The docs say exactly what text reaches the client.** A 4xx built with `Wrap`/`Wrapf("…%w", err)`
+  sends the whole chain's text, so a database constraint name could reach a caller; changing that
+  would be breaking, so the HTTP reference and the examples now show an idiom that keeps internals
+  out of client-visible messages.
+- **`middleware.Recover` no longer appends its error to a started response.** A handler that
+  panicked after writing part of a 200 got `{"error":"Internal Server Error"}` glued to the end of
+  its body, which a client reads as a complete response. Recover now tracks whether the response
+  has started; if it has, the panic is still logged, and the response is aborted with
+  `panic(http.ErrAbortHandler)`, which net/http turns into a dropped connection (a reset stream on
+  HTTP/2), so the client sees the failure. `http.ErrAbortHandler` itself still passes through
+  untouched and unlogged. A `Content-Length` the handler had set is dropped from the 500 rather
+  than truncating it. The writer Recover and AccessLog wrap around the handler keeps
+  `http.Flusher`, `http.Hijacker`, `http.Pusher` and `io.ReaderFrom` (AccessLog's used to hide
+  all four).
+- **Panicking requests reach the access log.** `middleware.AccessLog` wrote its line after the
+  handler returned, so with Recover outside it, as in every example, a request whose handler
+  panicked was never logged. The line is now written in a defer and marked `panicked=true`, with
+  the status the handler sent or 500 if it sent none — what Recover answers — before the panic
+  carries on; a response cut off with `http.ErrAbortHandler` is marked `aborted=true`.
+- **`middleware.Timeout`'s 503 says it is JSON.** `http.TimeoutHandler` writes its body with no
+  `Content-Type`, and net/http sniffed the default `{"error":"request timed out"}` as
+  `text/plain`. It is now sent as `application/json`, as is a configured `Body` that is valid
+  JSON; any other body keeps the sniffed type. The godoc and the reference now spell out the
+  limits `http.TimeoutHandler` brings — it buffers the whole response, hides `http.Flusher` and
+  `http.Hijacker`, and leaves a handler past its limit running where `srv.Shutdown` does not wait
+  for it — and what to use for streaming routes instead.
+- **`middleware.Gzip` no longer costs a megabyte per response, and honours `q=0`.** A compressor
+  was allocated for every response (about 1 MiB of garbage each); they are now pooled, and a
+  response costs a few KiB. `Accept-Encoding` was matched as a substring, so `gzip;q=0` — a
+  refusal — got gzip; it is now read with its weights, `*` included. The gzip writer also hid
+  `http.Flusher` from handlers that assert it, and a flush through `http.ResponseController`
+  bypassed the compressor's pending output; both now flush everything written so far.
+- **`middleware.RateLimit` no longer resets slow limits.** The five-minute idle sweep dropped
+  buckets that had not refilled yet, so a five-an-hour limit allowed five more requests after six
+  idle minutes. A bucket is now forgotten only once it has been idle long enough to refill
+  completely (`Burst/RPS`), and never under five minutes. A `RPS` of NaN or +Inf, which passed the
+  sign check and turned every bucket into NaN, is a constructor error.
+
+- **Candidates the injector cannot refer to are no longer selected.** A provider under another
+  tree's `internal/`, one whose result type is unexported in another package (`func NewEvictor()
+  *evictor`), and one whose package imports the injector's own package — an adapter importing the
+  core package that holds the spec — used to be selected and end in a generated file the compiler
+  refused, reported as a bug in servo; `check` and `doctor` passed it. Now each is set aside for
+  that injector: it drops out of structural search, so it no longer makes an ambiguity of an
+  implementation that is usable, and an exact or `Bind` request it alone would have answered is
+  `no usable provider for X` with the reason and the fix. Parameter types are deliberately not
+  judged — an argument is never written down — except a `//servo:config` value, whose loader the
+  injector calls.
+- **Aliases inside type arguments.** Type identity resolved an alias only at the top and through
+  pointers, so `NewService(c *Cache[DBAlias])` beside `NewCache() *Cache[*DB]` reported "no provider"
+  for two spellings of one type. Aliases now collapse at every depth — type arguments, generic
+  aliases, elements, signatures, fields — so `servo.Root[*repo.Repo[model.UID]]()` resolves too.
+- **Every `//servo:` line is judged by one pass, with one tokenizer.** The route scan skipped what
+  looked like config and the config scan read only type doc comments, so `//servo:confg` on a type
+  or `//servo:config` on a `var` generated nothing, exited 0, and only servo-vet complained. One pass
+  now claims every line in the main module — a route on a function, `//servo:config` on a type —
+  and reports the rest, at generate time and in servo-vet with the same words. Both split the line
+  on any whitespace, so `//servo:get<TAB>/orders`, which generate served and servo-vet called
+  unrecognized, and `//servo: get /x`, which servo-vet skipped, mean the same to both. The group-name
+  grammar is defined once for `servo.Group` and the directive token.
+- **Generated order no longer depends on where a module is checked out.** Trace wrappers and
+  config loaders were ordered by raw absolute filename, so moving a module a `servo.Include` names
+  from `../a-shared` to `../z-shared` swapped two wrappers in the committed file, and Windows' `\`
+  sorted differently from `/`. They are now ordered by module path, then the module-relative slash
+  path, then line and column.
+- **Diagnostics come out the same way every run.** A malformed `//servo:config` was reported from
+  whichever package the loader's import-map walk reached first, and several problems on one route
+  line came out in map order; four different reports in ten runs. Every malformed config
+  declaration is now reported, in source order, and route diagnostics are walked in pattern order
+  and sorted stably, the message breaking ties.
+- **Deep dependency chains cost linear memory.** The needed-by chain was copied twice per frame, so
+  a 3,000-deep chain allocated about 790 MB; frames are now shared links, and a 2,000-deep chain
+  resolves in under 6 MB.
+
+- **`--dir` selects injectors; it no longer narrows the graph.** The load was the import closure of
+  `--dir`'s own packages, so a run from an injector's directory — which is where the `go:generate`
+  line `servo init` scaffolds runs it — saw only what that injector already imported. An interface
+  the module root called ambiguous was silently auto-bound to the one implementation in reach, an
+  HTTP server was emitted that bound, reported ready and answered 404 to every route declared in a
+  package nothing imported yet, and `check --dir` passed both. Servo now always loads the whole main
+  module, so a run from any directory resolves the graph a run from the root does; `--dir` only
+  chooses which injectors are generated, checked or asked about. A `--dir` that selects none names
+  where the module's injectors are. On the tutorial module, `check --dir cmd/orders` goes from 0.9s
+  to 1.3s — what a run from the root costs — and the root run is unchanged.
+- **A package that calls an importable injector no longer blocks it forever.** The load runs with
+  the `servoinject` tag, which hides every generated file, so a `cmd/app` calling `wiring.New` failed
+  to type-check, and `generate`, `check` and `doctor` refused the module for build errors while `go
+  build` passed. Errors naming a member of an injector package, at the selector that names it, are
+  now excused in the packages importing it, as an injector's own pre-generation errors always were;
+  anything else wrong in those packages is still reported.
+- **A Go release that moves the export-data format no longer breaks every command.** Servo reads
+  the standard library from export data, which couples it to a `golang.org/x/tools` that knows the
+  running Go's format; a newer format failed every command with x/tools' own `internal error in
+  importing "context" (… export data version 5 is greater than maximum supported version 4); please
+  report an issue`, naming a different package each run. Now the standard library is type-checked
+  from source instead — slower, and said once on stderr — and when even that fails, the error names
+  the x/tools version servo carries, the Go version in use, and both fixes: `go get
+  golang.org/x/tools@latest` in the module for `go tool servo`, a newer servo for an installed
+  binary. The load is also walked in a fixed order, so every report names the same package.
+- **Setup mistakes are reported in the go command's words.** A `--dir` that does not exist failed as
+  `fork/exec …/go: no such file or directory`; a directory outside any module, a `go.work` root
+  outside its modules, and a module that does not require servo yet all reached the user as a
+  missing runtime and the advice to run `servo init`, or as a runtime declaring none of the
+  capability interfaces. Each now quotes the go command's reason with the step that gets past it:
+  `go mod init`, running from one of the modules `go.work` lists, `go get -tool
+  github.com/okian/servo/v3/cmd/servo`, `go mod tidy`.
+- **A spec typo gets the type checker's error, not servo's guess.** A marker whose type name is
+  mistyped, or names a package the spec file does not import — `servo.Root[*api.Sever]()`, often a
+  `gopls` rename that never saw the tagged file — has no type information, and was reported as
+  "must be instantiated with explicit type arguments". Servo now reports the type checker's own
+  errors for the spec file (`undefined: api.Sever`), the only place they can surface since nothing
+  else compiles it, and does the same for a `servo.Build` call it cannot resolve instead of saying
+  to run `servo init`.
+- **A `Bind` or `Override` to a type that does not implement the interface is refused at the
+  marker.** It used to parse, resolve, and fail to compile inside the generated file, reported as a
+  bug in servo. The message names what is wrong the way the compiler would — the missing method, a
+  pointer receiver on a value type, the wrong signature — and, for a type that reads like generated
+  code, says to regenerate it first: the usual cause is a mock older than its interface, because `go
+  generate` runs servo before a mock generator whose directive comes later.
+- **A marker the CLI and the runtime disagree about names both versions.** A spec using a marker
+  the module's servo release predates, or a runtime declaring a marker this CLI has never heard of,
+  read as a mistake in the spec (`unrecognized servo marker "Trace"`). Both now name the CLI's
+  version, the runtime version `go.mod` resolves, and the fix — the CLI the module pins (`go tool
+  servo`), or a matching runtime. The capability side of the same skew, a warning since this
+  release, is now printed by every loading command.
+- **Positions in vendored and nested modules no longer depend on the checkout.** A file inside the
+  module root but in another module — a vendored dependency, a nested module replaced to `./tools` —
+  rendered relative to the root (`vendor/github.com/…`) on a machine that vendors and as its import
+  path on one that does not. The owning module now decides: the import-path form for every module
+  but the injector's own.
+- **The candidate scan runs once per load.** Every injector rescanned every loaded package, which
+  cost a module with 44 injectors close to a second and a third of a gigabyte; the scan is shared,
+  with each injector's own package rescanned for the unexported constructors only it may use, and
+  the candidate set is unchanged.
+- **`servo <command> -h` exits 0 with that command's help.** Every one printed the flag package's
+  defaults, then `flag: help requested`, and exited 1, against the reference's own promise;
+  `servo new -h` said `unknown kind "-h"`, and `servo new component --help` scaffolded a type
+  named `--help`.
+- **`servo --version` prints the version** instead of `generate`'s usage, twice, with exit 1.
+- **`servo version` reports a replaced build.** `go tool servo` in a module replacing servo
+  printed the requirement — `examples/variants` said v3.0.0 while building `../..` — and now
+  prints `(devel, replaced by ../..)`, or the replacing module's version.
+- **`explain` and `why` find what people type.** `*api.Server`, an interface — bound or resolved
+  by sole implementation, as a root or a parameter — and a generic instantiation qualified by
+  package name, `repo.Repo[model.User]`, all ended in `no node matches`; so did a bare
+  `repo.Repo`. And a type that is not in the graph now gets the reason: the constructor no root
+  reaches, the `Override` that puts it only in `NewTestApp`'s graph, the candidates implementing an
+  interface nothing asks for, or the rejected function that returns it and the rule that rejected
+  it.
+- **The documented cross-compiling command works under `go tool servo`.** The reference said to
+  set `GOOS` in the environment; with the generator pinned as a tool, `GOOS=linux go generate`
+  builds the tool for Linux and fails with `exec format error`. It now documents
+  `GOOS=linux "$(go tool -n servo)" generate`.
+- **Order-assertion examples that could never pass** in the README, the servotest reference and
+  the generated-API page now use `NodeName`; the servotest reference also stopped claiming nothing
+  recovers a panic in a cleanup func — `RunStop` does, into the shutdown report.
+- A dead link in tutorial chapter 14, to the renumbered scoped-instances chapter.
+- **`servo generate` and `servo check` catch every error `go build` would stop on in a generated
+  file.** The compile check kept type errors only, so the go command's own — an import of
+  another tree's `internal/` package, an import cycle a generated import closes — were dropped:
+  generate exited 0 and `go build` failed inside `servo_gen.go`. They are now reported the way
+  `go build` reports them, alone, at the import responsible, with the cycle spelled out.
+- **`servo check` compiles the generated files it finds current.** It compared bytes only, so a
+  file identical to a fresh generation was current however broken it was — a `Bind` to a mock
+  whose interface had grown a method generates the same broken file on every run — while `go
+  build` failed. A compile error now fails `check` with `generate`'s report. A broken file exits
+  1 as a stale one does, so the exit-code contract is unchanged; the extra load costs about a
+  second on the tutorial.
+- **A generated file the compiler could not check is no longer passed in silence.** A package
+  whose imports `go list` cannot resolve yet — the first generated import of a config decoder,
+  before `go mod tidy` — cannot be compiled, and `generate` used to skip it and exit 0 on a file
+  `go build` then rejected. It still succeeds, but names the package with the go command's
+  reason and says to run `go mod tidy` and generate again; `check` warns the same way.
+- **A config loader left behind by a moved `//servo:config` type is removed.** Moving the type to
+  another package, or dropping its directive, left its `servo_config_gen.go` compiling into every
+  build and failing it with `undefined: Config`, while `check` and `doctor` reported the module
+  current. `generate` now removes such a loader — only one carrying servo's own header, and only
+  where nothing could declare the type: a directory with no other non-test Go file, which the load
+  never even sees, or a package it loaded and found no `//servo:config` type in — and `check`
+  refuses it as left over.
+- **A `servo generate` that changes nothing writes nothing.** Every file was rewritten on every
+  run, so its modification time moved, and a watcher running `servo generate && go build` on each
+  change (air, in the report) rebuilt eighteen times in twenty-five seconds with nothing edited.
+  A file whose bytes would not change is now left alone.
+- **The override variant is resolved before anything is written.** `servo_gen.go` was written
+  before the `NewTestApp` graph was resolved, so a broken `servo.Override` left a rewritten
+  production file beside a missing or stale test variant. Every graph an injector writes a file
+  for is now resolved and emitted first, and that graph's diagnostics say which graph they are
+  about: `in the NewTestApp graph (servo.Override at cmd/app/spec.go:14:3)`.
+- **`servo check` passes a CRLF checkout.** Git for Windows checks text files out with CRLF line
+  endings by default, and `check` compared raw bytes, so every generated file was stale on every
+  Windows checkout — with a diff of identical-looking lines and a note blaming another servo
+  version. The committed side is compared with its line endings normalized. `docs/reference/cli.md`
+  suggests a `.gitattributes` line (`servo*_gen*.go text eol=lf linguist-generated`).
+- **The stale-file diff trims the common prefix and suffix**, as the 3.4.0 notes already claimed
+  it did. It still allocated the whole quadratic table — 196 MB for a 5,000-line file, 3 GB at
+  20,000, and 53 seconds for its own test. Its core is now Myers' algorithm, whose cost follows
+  the number of differing lines rather than the length of the file, bounded past a thousand
+  differing lines; the test asserts the bound and runs in milliseconds.
+- **The build-constraint safety check refuses what it cannot decide.** Proving a spec's mirrored
+  constraint stays false with `servoinject` set enumerates tag combinations, and past sixteen
+  tags it answered "safe": a spec gated `servoinject || (!prod && …)` naming eighteen tags
+  generated a file servo would read back as a spec. A constraint gated on `servoinject` as a
+  top-level conjunct — every ordinary spec — is now decided without enumerating, however many
+  tags it names, and anything else past the ceiling is refused with a message saying how to gate
+  it.
+- **A `servo.Value` left nil no longer reaches a constructor.** `New` delegates to `NewWith` with
+  the zero `Values`, so a graph declaring `servo.Value[*sql.DB]()` — or the documented
+  `servo.Value[context.Context]()` — handed every consumer a nil and crashed at startup somewhere
+  inside one of them. `NewWith` now refuses a nil pointer, interface, map, func or chan value
+  before anything is built, with an error naming the field and the marker and pointing at
+  `NewWith`. A struct's zero value and a nil slice still pass through.
+- **A missing setting no longer surfaces one crash-loop at a time.** Each `//servo:config` loader ran
+  at the top of `New` and the first one to fail returned, so a deployment missing four variables
+  across four packages took four restarts to learn them. `New` now runs every loader before it
+  constructs anything and joins their errors.
+- **Config-file decode errors no longer quote the file.** The decoder's own message was wrapped
+  verbatim, and TOML and YAML decoders quote the offending value — `password =
+  correcthorsebatterystaple` came back in the error. The error now names the file and the format
+  but not the decoder's text, which the config reference promised all along for `secret` fields.
+- **A config type named `cfg` (or `missing`, `section`, …) generates.** The loader's locals were
+  fixed strings, so `type cfg struct` opened the loader with `var cfg cfg`; they now come from the
+  name allocator.
+- **`NameAllocator` never hands out one name twice.** It tracked base names rather than the names
+  it emitted, so `pool`, `pool`, `pool2` yielded `pool2` twice, and a traced method with parameters
+  `len` and `len2` was emitted with `len2` twice.
+- **A user declaration in the injector package no longer collides with a generated name.** A
+  user-declared `httpServer`, `defaultMaxBodyBytes`, `traced<I>` or leftover `type App` broke the
+  generated file and was reported as a bug in servo; generated names now steer around the
+  package's own declarations, and a name that can't move (`App` and its methods) is a diagnostic
+  naming the user's declaration.
+- **The tutorial no longer boots with an empty JWT secret.** `required` on a `//servo:config` field
+  means *set* — an unset Helm value or compose variable arrives as an empty string, which is set —
+  and golang-jwt signs and verifies with an empty key, so the tutorial service accepted tokens
+  anyone could forge. As the settled config design puts invariants in constructors, the tutorial's
+  `auth.New` now returns an error for a secret shorter than 32 bytes (the HS256 key size), and the
+  config reference says plainly that `required` means present, that an environment variable set to
+  the empty string still wins over the file, and that unknown file keys are ignored.
+- **`servo graph --format=dot` breaks lines.** Labels carried a doubled backslash, so `dot` drew a
+  literal `\n` on one line.
+- **The README's conformance claims are true and tested.** It said "no reflect" and "the generated
+  package compiles with the servo module deleted save for the small runtime" were enforced checks;
+  neither was. `TestConformance` now checks every golden and the runtime packages for `reflect`, and
+  that generated code imports nothing from servo's module but `servo`, `servoimpl` and `conf`, which
+  is what the README now says.
+- **Coverage gaps closed:** `servo.ConfigFile` gained the marker panic test every other marker had,
+  and `conf` went from 72.7% to 98% with table tests over every sized integer coercion.
+- **Documentation updated for this release's behaviour** — diagnostics samples taken from real runs
+  (`ambiguous provider for`, Bind suggestions in spec spelling, the same-type advice), the lifecycle
+  paragraphs in the README, ARCHITECTURE and the tutorial (no errgroup; `Init`'s call-scoped context;
+  `Run`'s grace), the position-free committed output, the `GOOS` form for a tool-pinned servo, and
+  field-naming rules, including why a field can be renamed when a same-named type joins the graph.
+- **The reference pre-commit hook checked the working tree, not the commit.** With part of a
+  change staged (`git add -p`), a constructor change committed without its regenerated
+  `servo_gen.go` passed the hook and then failed `servo check` and the build in CI.
+  `githooks/pre-commit` now sets aside everything not staged, untracked files included, runs the
+  check on exactly what is being committed, and puts the working tree back exactly as it was,
+  however the hook exits.
+- `examples/diagnostics` had no go.sum; `go mod tidy` adds the two lines its requirements call for.
+- SECURITY.md's scope named four packages; it now covers every package of the module
+  (`servoimpl`, `conf`, `middleware` and `servovet` included), the generated code, the release
+  archives and their attestations. codecov.yml no longer cites a stale coverage figure or says the
+  Codecov token does not exist; the pull-request template lists the checks CONTRIBUTING.md asks
+  for and links to it; CONTRIBUTING.md shows the regenerate commands (`UPDATE_GOLDEN=1` for the
+  emitter's goldens, `--tags=prod` for the variants example) and describes every CI job; the bug
+  report form asks for `servo version`, `go version` and the operating system.
+
+- **Dead links and wrong chapter numbers in the tutorial.** Chapter 3 linked four chapters by their
+  pre-renumbering file names, and chapters 1, 3, 8 and 10 named the wrong chapter in a link's text;
+  chapters 11 and 12 linked `examples/tutorial/ginapi` and `grpcapi`, which live under
+  `internal/transport/`, and chapter 12's `go generate` and `grpcurl` commands used the same wrong
+  paths. Ten links whose text wrapped onto a second line were published pointing at `.md` files the
+  site does not serve, because the site generator only rewrites a link written on one line; each now
+  is.
+- **Tutorial listings that did not match the module.** Chapter 9's tests called
+  `auth.New(&Config{...})`, which stopped compiling when the tutorial moved to `//servo:config`;
+  chapter 10 said `/readyz` reported no nodes, while the generated `Ready` reports `api.Server`; and
+  chapter 15's try-it ran the service without the four settings it requires.
+
+### Security
+- **`middleware.RateLimit` could be bypassed over IPv6 and exhausted with distinct keys.** Keyed
+  per IPv6 address, one client could take a fresh bucket for every request from its /64, and the
+  table had no bound, so cycling keys grew memory without limit while periodic whole-table sweeps
+  stalled every request. See the RateLimit entries under Added and Changed.
+- **A handler's request struct can no longer replace a value the graph injects.** The second
+  handler parameter is decoded from the request whenever it points to a struct with any binding or
+  `json` tag, and nothing checked whether the graph also provided that type: an injected
+  `*settings.Settings` in that position was replaced by the body the client posted —
+  `{"admin":true}` included — while the same type third received the singleton. `generate` now
+  refuses a request struct the graph provides by a constructor, a `servo.Value`, a scope, an
+  extractor or a `//servo:config` type, naming the handler, the type and its provider, with the fix:
+  a request type of its own, and the provided one after it.
+- **Every workflow declares its token's permissions, and the default is read-only.** The
+  repository's default workflow token can write; go.yml, tutorial.yml and codeql-analysis.yml
+  declared nothing, so every job ran unpinned third-party code — an unpinned `gem install` among
+  it — with a token that could have pushed a `v3.99.0` tag the module proxy would serve as
+  `@latest` for good. Each workflow now starts from `contents: read`, and the few jobs that need
+  more say so and why: CodeQL's upload, the attestation's OIDC token, publishing the release, and
+  cut-release's tag. No job that runs repository or module code holds a write token, and the
+  Codecov token lives in a job that runs neither.
+- **Every action is pinned to a full commit SHA**, with its version alongside, and no checkout
+  leaves the token in `.git/config` (`persist-credentials: false`). setup-go is on v7, off the
+  deprecated Node 20 runtime. Tools fetched without an action are pinned too: golangci-lint and
+  lychee by checksum, actionlint, govulncheck and gorelease by module version.
+
+
 ## [3.4.1] - 2026-10-14
 
 **Why PATCH.** No change to `servo`/`servotest`'s exported API, the CLI, or generated code: this

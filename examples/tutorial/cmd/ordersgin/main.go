@@ -2,59 +2,29 @@ package main
 
 import (
 	"context"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
+
+	"github.com/okian/servo/v3/servo"
 
 	"example.com/servoorders/internal/transport/admin"
 )
 
-// shutdownTimeout bounds the whole teardown. servo.RunStop already caps each
-// node at servo.DefaultStopBudget, but nothing caps their sum, and a container
-// runtime sends SIGKILL when its grace period expires whether or not the
-// process has finished unwinding.
-const shutdownTimeout = 30 * time.Second
-
+// main hands the App to servo.Main, which runs it until SIGINT, SIGTERM or
+// SIGHUP, shuts it down under a deadline, logs any failure at ERROR and
+// exits 1 for it.
+//
+// The probes and metrics go on their own listener, never the public one —
+// see package admin. app.Health and app.Ready only exist once New has
+// built the App, so no component inside the graph could serve them: this
+// one piece of wiring belongs here. The address comes off the server
+// rather than being parsed a second time: the loaded config is a local
+// inside the generated New, so the one component that received it answers
+// for it.
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	app, err := New(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Health, readiness and metrics go on their own listener, never the
-	// public one — see package admin. app.Health and app.Ready are only
-	// reachable once App is fully constructed, so no component inside the
-	// graph could serve them: this one piece of wiring belongs here.
-	//
-	// The address comes off the server rather than being parsed a second
-	// time: the loaded config is a local inside the generated New, so the
-	// one component that received it answers for it.
-	adminSrv := admin.New(app.server.AdminAddr(), app, app.server.MetricsHandler())
-	go func() {
-		if err := adminSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Print(err)
+	servo.Main(func(ctx context.Context) (*admin.Server, error) {
+		app, err := New(ctx)
+		if err != nil {
+			return nil, err
 		}
-	}()
-
-	if err := app.Run(ctx); err != nil {
-		log.Print(err)
-	}
-
-	// Shutdown gets a fresh context: the one above is already cancelled — that
-	// cancellation is what started the shutdown — so a teardown inheriting it
-	// would abort before it began. It carries a deadline rather than being a
-	// bare context.Background(), so the unwind cannot outlast the grace period
-	// it is running inside.
-	sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	adminSrv.Shutdown(sctx)
-	if r := app.Shutdown(sctx); !r.Clean() {
-		log.Print(r)
-	}
+		return admin.Mount(app, app.server.AdminAddr(), app.server.MetricsHandler()), nil
+	})
 }

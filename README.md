@@ -45,39 +45,138 @@ against a separate runnable module at [`examples/tutorial`](examples/tutorial).
 
 ## Quick start
 
+In a Go module (`go mod init example.com/app` if you are starting from nothing), add the generator
+as a tool, once per module:
+
 ```
-go install github.com/okian/servo/v3/cmd/servo@latest
+go get -tool github.com/okian/servo/v3/cmd/servo
 ```
 
-That's the CLI you run by hand — `init`, `explain`, `why`, `doctor`. Generation itself runs through
-`go generate`, against a version pinned in your own `go.mod`; `servo init` sets that up below.
+That records servo in `go.mod` beside your other requirements and makes every command below
+available as `go tool servo`. The pin is the point: the version in `go.mod` decides whether a
+developer and CI produce the same file. And it is `go tool servo`, not
+`go run github.com/okian/servo/v3/cmd/servo`: a module requires servo for its marker package alone,
+so the generator's own dependencies aren't in its build list and `go run` fails on a missing
+`go.sum` entry; the tool directive is what puts them there. (`go install
+github.com/okian/servo/v3/cmd/servo@latest` gives you a `servo` on your `PATH` for interactive use,
+at whatever version is newest rather than the one your module pins.)
 
-Write ordinary constructors — no import of `servo` required:
+Every [release](https://github.com/okian/servo/releases) also attaches `servo` and `servo-vet` for
+Linux, macOS and Windows, with a checksums file and a signed build-provenance attestation per
+archive: `gh attestation verify <archive> --repo okian/servo` checks where one was built. They
+still need `go` on PATH, since servo loads your module through the go command;
+[RELEASING.md](RELEASING.md) has the rest, including how to rebuild a binary bit for bit.
+
+Write ordinary constructors. None of these files imports servo:
+
+```go
+// logger/logger.go
+package logger
+
+import (
+	"log"
+	"os"
+)
+
+type Logger struct{ *log.Logger }
+
+func New() *Logger { return &Logger{log.New(os.Stderr, "", 0)} }
+```
 
 ```go
 // store/store.go
 package store
 
 type Store interface{ Get(key string) string }
+```
 
-// postgres/postgres.go
-package postgres
+```go
+// memstore/memstore.go
+package memstore
 
-func New(log *logger.Logger) (*DB, error)      { ... }
-func (d *DB) Get(key string) string            { ... } // satisfies store.Store
-func (d *DB) Init(ctx context.Context) error   { ... } // connect
-func (d *DB) Stop(ctx context.Context) error   { ... } // disconnect
-func (d *DB) Health(ctx context.Context) error { ... }
+import (
+	"context"
 
+	"example.com/app/logger"
+)
+
+type Store struct {
+	log  *logger.Logger
+	data map[string]string
+}
+
+func New(log *logger.Logger) (*Store, error) {
+	return &Store{log: log, data: map[string]string{"hello": "world"}}, nil
+}
+
+func (s *Store) Get(key string) string { return s.data[key] } // satisfies store.Store
+
+func (s *Store) Init(ctx context.Context) error   { s.log.Print("memstore: open"); return nil }
+func (s *Store) Stop(ctx context.Context) error   { s.log.Print("memstore: closed"); return nil }
+func (s *Store) Health(ctx context.Context) error { return nil }
+```
+
+```go
 // api/api.go
 package api
 
-func New(s store.Store) *Server { ... } // depends on the interface, not postgres directly
+import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"time"
+
+	"example.com/app/logger"
+	"example.com/app/store"
+)
+
+type Server struct {
+	srv *http.Server
+	log *logger.Logger
+}
+
+// New depends on the interface, not on memstore directly.
+func New(s store.Store, log *logger.Logger) *Server {
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, s.Get(r.URL.Path[1:]))
+	})
+	srv := &http.Server{Addr: "localhost:8080", Handler: h, ReadHeaderTimeout: 5 * time.Second}
+	return &Server{srv: srv, log: log}
+}
+
+// Run serves until ctx is cancelled. A port already in use is Run's error.
+func (s *Server) Run(ctx context.Context) error {
+	ln, err := net.Listen("tcp", s.srv.Addr)
+	if err != nil {
+		return err
+	}
+	s.log.Print("api: listening on ", ln.Addr())
+	go s.srv.Serve(ln) // returns once Stop shuts the server down
+	<-ctx.Done()
+	return nil
+}
+
+// Stop drains in-flight requests; Shutdown calls it before memstore's Stop.
+func (s *Server) Stop(ctx context.Context) error {
+	s.log.Print("api: draining")
+	return s.srv.Shutdown(ctx)
+}
 ```
 
-Scaffold the spec file (`servo init` writes it as `servo_spec.go`; the examples in this repository
-name theirs `spec.go`) and declare the roots — everything they transitively depend on is what gets
-built; nothing else is:
+`Init`, `Run`, `Stop` and `Health` are [capabilities](#capabilities): servo calls each one because
+the type has the method, never because anything registered for it.
+
+Scaffold the injector, the package the generated code will live in:
+
+```
+go tool servo init --dir cmd/app
+```
+
+It writes `cmd/app/servo_spec.go`, the spec file, behind the `servoinject` build tag (the examples in
+this repository name theirs `spec.go`); `cmd/app/servo_generate.go`, which runs the generator; and,
+since `cmd/app` has no `main.go` yet, `cmd/app/main.go`. Declare the roots in the spec — everything
+they transitively depend on is what gets built, and nothing else is:
 
 ```go
 //go:build servoinject
@@ -86,7 +185,7 @@ package main
 
 import (
 	"example.com/app/api"
-	"example.com/app/postgres"
+	"example.com/app/memstore"
 	"example.com/app/store"
 	"github.com/okian/servo/v3/servo"
 )
@@ -94,13 +193,12 @@ import (
 func wire() {
 	servo.Build(
 		servo.Root[*api.Server](),
-		servo.Bind[store.Store, *postgres.DB](), // needed once a 2nd store.Store exists; harmless here
+		servo.Bind[store.Store, *memstore.Store](), // optional with one implementation; required with two
 	)
 }
 ```
 
-`servo init` writes a second file beside it, and the second file is the one that runs the
-generator:
+The other two files are complete as written:
 
 ```go
 // cmd/app/servo_generate.go — no build tag, deliberately
@@ -109,57 +207,59 @@ package main
 //go:generate go tool servo generate
 ```
 
+```go
+// cmd/app/main.go
+package main
+
+import "github.com/okian/servo/v3/servo"
+
+func main() { servo.Main(New) }
+```
+
 The directive cannot live in the spec file: `go generate` honours build constraints, so a directive
 behind the inactive `servoinject` tag is never reached — `go generate ./...` exits 0, prints
-nothing, and generates nothing. And it is `go tool servo`, not
-`go run github.com/okian/servo/v3/cmd/servo`: a consumer requires servo for the marker package
-alone, so the generator's own dependencies aren't in their build list and `go run` fails on a
-missing `go.sum` entry. The tool directive puts the generator in `go.mod`, which also pins the
-version — the thing that decides whether a developer and CI produce the same file. Add it once per
-module, which is what `servo init` tells you to do:
+nothing, and generates nothing.
+
+Generate, and run:
 
 ```
-go get -tool github.com/okian/servo/v3/cmd/servo
+$ go generate ./...
+$ go run ./cmd/app
+memstore: open
+api: listening on 127.0.0.1:8080
 ```
 
-Then `go generate ./...` emits `servo_gen.go` next to the spec file, containing `New`, `Run`,
+From another terminal, `curl localhost:8080/hello` prints `world`. Back in the first, press Ctrl+C:
+
+```
+^C
+api: draining
+memstore: closed
+```
+
+`go generate` wrote `cmd/app/servo_gen.go` next to the spec file, containing `New`, `Run`,
 `Shutdown`, `Health`, `Ready`, `Graph`, and `Report` — construction in dependency order, lifecycle
-calls only for the capabilities a type actually implements, reverse-order shutdown with budgets
-and a per-node report. A spec declaring `servo.HTTP(...)` additionally gets one emitted server per
-listener group and an `HTTPHandler(group)` method for driving it in tests — see
-[HTTP routes](#http-routes) below. `main.go` never grows with the graph — it stays this same
-shape:
+calls only for the capabilities a type actually implements, reverse-order shutdown with budgets and
+a per-node report. The output is that order: the store opens before the server listens, and the
+server drains before the store closes. A spec declaring `servo.HTTP(...)` additionally gets one
+emitted server per listener group and an `HTTPHandler(group)` method for driving it in tests — see
+[HTTP routes](#http-routes) below.
 
-```go
-// servo.RunStop caps each node at servo.DefaultStopBudget, but nothing caps
-// their sum, so the whole teardown gets a deadline of its own.
-const shutdownTimeout = 30 * time.Second
+`main.go` never grows with the graph, because `servo.Main` is all of it. It cancels the context
+`New` and `Run` receive on SIGINT, SIGTERM or SIGHUP; runs `Shutdown` under a deadline of its own,
+since by then that context is the one already cancelled; exits at once on a second signal; logs
+failures at ERROR level; and exits non-zero when `New` fails, `Run` fails, or the shutdown report
+is not clean — start a second copy while the first holds port 8080 and it exits 1 with the bind
+error. [Lifecycle](https://okian.github.io/servo/reference/lifecycle.html) documents each step,
+and the `main` to write by hand when you need more control. (Interrupted under `go run`, the go
+command exits 1 whatever the program returned; the built binary's exit status is the one that
+counts.)
 
-func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	app, err := New(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := app.Run(ctx); err != nil {
-		log.Print(err)
-	}
-	// Not ctx: it is already cancelled, and that cancellation is what started
-	// the shutdown. Not a bare context.Background() either, so the unwind
-	// cannot outlast the grace period it is running inside.
-	sctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-	defer cancel()
-	if r := app.Shutdown(sctx); !r.Clean() {
-		log.Print(r)
-	}
-}
-```
-
-A complete, runnable version of the above — including a genuinely ambiguous interface binding, an
+A complete, runnable version — including a genuinely ambiguous interface binding, an
 error-returning constructor with rollback, and every lifecycle capability — lives in
-[`examples/basic`](./examples/basic).
+[`examples/basic`](./examples/basic). If you already know wire or fx,
+[Coming from wire or fx](https://okian.github.io/servo/coming-from-wire-and-fx.html) maps each of
+their concepts onto servo's.
 
 ## Interfaces vs. concrete types
 
@@ -211,8 +311,8 @@ type Values struct {
 
 // New builds the app with the zero value of every servo.Value.
 // Prefer NewWith: the zero value is a real value for a struct of
-// options and a nil pointer for anything else, so this is right only when
-// the zero value is what you meant.
+// options, but a nil pointer, interface, map, func or chan is refused,
+// so this is right only when the zero value is what you meant.
 func New(ctx context.Context) (*App, error) {
 	return NewWith(ctx, Values{})
 }
@@ -251,8 +351,10 @@ example.com/app/conf.Flags
 (absolute path shortened)
 
 "Once" is the boundary worth reading twice: `Values` is filled in when the app is constructed, so
-this is a per-app value and not a per-call one — a `*testing.T` still has no way in (see
-[Mocking](#mocking)). A declared value nothing in the graph depends on is a generate-time
+this is a per-app value and not a per-call one. A value of pointer, interface, map, func or chan
+type left nil is refused by `NewWith` before anything is built, rather than handed to every
+consumer. A per-test mock goes in through `NewTestAppWith` instead (see [Mocking](#mocking)).
+A declared value nothing in the graph depends on is a generate-time
 diagnostic, not an unused struct field — except in the test variant, where an `Override` may have
 swapped out the value's only consumer, and the value is left off `TestValues` instead — and a
 graph declaring no value at all emits exactly the file it always did. Full contract:
@@ -364,12 +466,14 @@ type Healther    interface{ Health(ctx context.Context) error }
 type Readier     interface{ Ready(ctx context.Context) error }
 ```
 
-`Init` runs in topological order, one node per level or an `errgroup` across a level with more
-than one. `Run` launches every `Runner` into an `errgroup.WithContext`, so one failing runner
-cancels the rest. `Shutdown` runs in reverse-topological order — Drain, then Flush, then Stop (plus
-any cleanup func the constructor returned) — each phase budgeted, reported as stopped, failed, or
+`Init` runs in topological order, level by level, the nodes of one level concurrently; each call's
+context lasts for that call only, so long-lived work belongs in `Run`. A failing or panicking `Init`
+cancels its siblings and rolls back what was built. `Run` starts every `Runner` and stops them all
+when one fails or panics; once its context is cancelled it waits at most `servo.DefaultRunGrace`
+for them. `Shutdown` runs in reverse-topological order — Drain, then Flush, then Stop (plus any
+cleanup func the constructor returned) — each phase budgeted, reported as stopped, failed, or
 abandoned, never claiming a clean stop it didn't earn. A second interrupt/term signal during
-shutdown forces an immediate exit.
+shutdown forces an immediate exit with status 128+signal.
 
 ## Scoped instances
 
@@ -570,10 +674,20 @@ ambiguity:
 
 ```
 $ servo generate
-servo: no provider for *sqsaccounts.Client
-  2 functions produce *sqsaccounts.Client — remove or rename all but one:
-      processor.NewClientA   processor/naive.go:5:6
-      processor.NewClientB   processor/naive.go:6:6
+processor/naive.go:10:6: servo: ambiguous provider for *example.com/dup/sqsaccounts.Client
+  needed by *example.com/dup/processor.Processor  processor/naive.go:10:6
+  root                                            cmd/app/spec.go:11:14
+
+  2 functions produce *sqsaccounts.Client, and servo tells values apart by type alone, so they
+  are one contested node, not 2 instances:
+      processor.NewClientA  processor/naive.go:5:6
+      processor.NewClientB  processor/naive.go:6:6
+
+  Delete all but one. If you want 2 instances, give each its own named type and
+  have each constructor return its own — renaming a function cannot change the
+  type it returns:
+
+	type PrimaryClient struct{ *sqsaccounts.Client }
 ```
 
 The fix — needed for two SQS clients on two AWS accounts, a primary and a replica database, two
@@ -650,14 +764,16 @@ never a runtime panic, never a guess:
 
 ```
 $ servo generate
-servo: no provider for example.com/servobasic/store.Store
+api/api.go:15:6: servo: ambiguous provider for example.com/servobasic/store.Store
   needed by *example.com/servobasic/api.Server  api/api.go:15:6
   root                                          cmd/basic/spec.go:17:3
 
-  3 types implement example.com/servobasic/store.Store — add one of:
-      servo.Bind[example.com/servobasic/store.Store, *example.com/servobasic/memory.Store]()      memory/memory.go:15:6
-      servo.Bind[example.com/servobasic/store.Store, *example.com/servobasic/mockstore.Store]()      mockstore/mockstore.go:29:6
-      servo.Bind[example.com/servobasic/store.Store, *example.com/servobasic/postgres.DB]()      postgres/postgres.go:13:6
+  3 types in this module implement store.Store — pick one with servo.Bind:
+      servo.Bind[store.Store, *memory.Store]()     memory/memory.go:18:6
+      servo.Bind[store.Store, *mockstore.Store]()  mockstore/mockstore.go:29:6
+      servo.Bind[store.Store, *postgres.DB]()      postgres/postgres.go:13:6
+  with these imports in the spec file:
+      "example.com/servobasic/memory"
 ```
 
 (reproduced by deleting the `servo.Bind[store.Store, *postgres.DB]()` line from
@@ -676,20 +792,21 @@ isolation.
 
 | Command | Purpose |
 | --- | --- |
-| `servo generate [--dir]` | Resolve and emit `servo_gen.go` for **every** injector found under `--dir` (and `servo_gen_test.go` per injector that declares `servo.Override`), then type-check what it wrote so a file `go build` would reject fails here. Scans `//servo:` route directives module-wide and emits the servers for specs declaring `servo.HTTP`. Default command. |
-| `servo check [--dir]` | Verify every injector found under `--dir` — the override variant included — matches a fresh generation; prints a diff and reports every stale one, not just the first. |
+| `servo generate [--dir] [-v]` | Resolve and emit `servo_gen.go` for **every** injector found under `--dir` (and `servo_gen_test.go` per injector that declares `servo.Override`), then type-check what it wrote so a file `go build` would reject fails here. Scans `//servo:` route directives module-wide and emits the servers for specs declaring `servo.HTTP`. `-v` lists every generated file, written, unchanged or removed. Default command. |
+| `servo check [--dir]` | Verify every injector found under `--dir` — the override variant included — matches a fresh generation, and compile the files that match, since a file identical to a fresh generation can still fail `go build`; prints a diff and reports every stale one, not just the first. |
 | `servo graph [--dir] [--format=text\|json\|dot\|mermaid]` | Export one injector's resolved graph. |
-| `servo explain <type> [--dir]` | Which provider was selected and why, its dependencies, dependents, level, and capabilities. |
-| `servo why <type> [--dir]` | Shortest path from a root to that node. |
+| `servo explain [--dir] <type>` | Which provider was selected and why — the `servo.Bind` and where it is written, or the sole implementation — its dependencies, dependents, level, and capabilities. `<type>` may be a pointer (`*api.Server`), a generic instantiation as source spells it (`repo.Repo[model.User]`), or an interface the graph asks for; a type that isn't in the graph gets the reason why not. |
+| `servo why [--dir] [--all] <type>` | Shortest path from a root to that node, naming each interface a step went through; `--all` lists every path. |
 | `servo list [--rejected] [--all] [--dir]` | The candidate index, or every excluded function and the rule that excluded it — plus a `routes:` section when the module declares any. Defaults to the main module; `--all` includes stdlib/third-party. |
 | `servo config [--dir]` | Every setting one injector's `//servo:config` types read — env name, file key, type, default, secret — straight from the resolved graph, without running the binary. |
-| `servo init [--dir]` | Scaffold the spec file with the correct build tag, plus an untagged `servo_generate.go` holding the `go:generate` directive — and print the one-time `go get -tool` step. |
-| `servo doctor [--dir]` | Diagnose setup problems (missing build tag, stale/absent generated file, a route naming an undeclared group, routes no injector serves) before `go generate` ever runs. |
+| `servo init [--dir]` | Scaffold the spec file with the correct build tag, an untagged `servo_generate.go` holding the `go:generate` directive, and — for a `package main` with no `main` yet — a `main.go` calling `servo.Main(New)`; then print the one-time `go get -tool` step. |
+| `servo doctor [--dir]` | Diagnose setup problems before `go generate` ever runs: missing build tag, stale/absent generated file, a `go:generate` line `go generate` can never run (or none covering an injector), a missing `tool` directive, a servo version other than the one `go.mod` requires, injectors disagreeing about a shared config loader, a multi-module `go.work`, a route naming an undeclared group, routes no injector serves. |
 | `servo migrate [--dir]` | Read v1 `Register(X{}, N)` calls and emit a v3 skeleton plus a report flagging duplicate order values. See [`examples/migrate`](./examples/migrate) for a worked example. |
-| `servo new component <Name>` / `servo new adapter <pkg>` | Scaffold a component or third-party wrapper. Never imports `servo`. |
-| `servo new mock-adapter <moq\|mockery\|gomock> <GeneratedTypeName>` | Scaffold the adapter file a generated mock needs to become a valid provider (see [Mocking](#mocking)). |
-| `servo version` | `servo <version> <goversion> <os>/<arch>`. The stale report from `servo check` points here: two machines on two servo versions produce a diff that reads exactly like a forgotten regenerate. |
-| `servo help [command]` | The command list, or one command's usage. An unknown command prints the same list rather than a bare rejection. |
+| `servo new component <Name>` / `servo new adapter <pkg>` | Print a complete file — package clause and imports included — for a component, or a third-party wrapper whose settings are a `//servo:config` type. It compiles and generates as printed, and never imports `servo`. |
+| `servo new mock-adapter <moq\|mockery\|gomock> <GeneratedTypeName>` | Scaffold the adapter file a generated mock needs to become a valid provider (see [Mocking](#mocking)); `mockgen` is accepted for `gomock`. |
+| `servo completion <bash\|zsh\|fish>` | A shell completion script — commands, flags, flag values — read off the same command table the parser uses: `source <(servo completion bash)`. |
+| `servo version` | `servo <version> <goversion> <os>/<arch>`, also as `servo --version`. The stale report from `servo check` points here: two machines on two servo versions produce a diff that reads exactly like a forgotten regenerate. |
+| `servo help [command]` | The command list, or one command's usage and flags — as does `servo <command> -h`. An unknown command prints the same list rather than a bare rejection. |
 
 `--dir` (default `.`) is where the module scan starts. `generate`, `check`, and `doctor` process
 **every** injector they find within it — a monorepo with `cmd/api`, `cmd/worker`, `cmd/migrator`
@@ -701,6 +818,11 @@ you to disambiguate with `--dir` when more than one injector is in scope — poi
 specific injector's own directory (e.g. `--dir cmd/api`) scopes the scan to just that one, since a
 `package main` can never import another `package main`, so sibling injectors are structurally
 unreachable from it.
+
+A command's flags may come before or after its arguments. `generate` and the other commands that
+read `--dir` take no arguments, so `servo generate ./cmd/app` — what a wire user types — still
+generates everything under `--dir`, and says on stderr that it ignored the argument and which
+`--dir` would narrow the run.
 
 `explain`, `why`, and `list` accept `--json` for machine consumption, and `graph` takes
 `--format=json` alongside its text, DOT, and Mermaid renderers. Every command that loads packages
@@ -719,11 +841,13 @@ All are caught in the editor, not at runtime. The analyzer is an exported
 `servovet.Analyzer`, so golangci-lint's module plugin system, a multichecker, or `analysistest` can
 import it; `cmd/servo-vet` is the `singlechecker` binary wrapping it.
 
-**CI and pre-commit**: [`.github/workflows/go.yml`](./.github/workflows/go.yml) is a reference
-workflow — build, vet, test, then `servo check` against every injector, so a constructor signature
-change without a matching re-run of `servo generate` fails CI instead of shipping a stale generated
-file. [`githooks/pre-commit`](./githooks/pre-commit) runs the same check locally; enable it in a
-given clone with `git config core.hooksPath githooks` (it is not on by default).
+**CI and pre-commit**: run `go tool servo check` in CI against every injector, so a constructor
+signature change without a matching re-run of `servo generate` fails the build instead of shipping a
+stale generated file. [servo in CI](docs/servo-in-ci.md) has a workflow to copy, exit codes,
+workspaces, vendoring, cross-compiling and measured costs; this repository's own `go.yml` runs
+`go run ./cmd/servo` only because it is the servo repository. [`githooks/pre-commit`](./githooks/pre-commit)
+runs the check against what is staged; enable it in a given clone with
+`git config core.hooksPath githooks` (it is not on by default).
 
 ## Testing (`servotest`)
 
@@ -738,14 +862,23 @@ func TestApp(t *testing.T) {
 	}
 	...
 	rec := servotest.NewRecorder(app.Report(), app.Shutdown(ctx))
-	servotest.AssertStopOrder(t, rec, "*api.Server", "*postgres.DB") // asserted, not assumed
+	servotest.AssertStopOrder(t, rec, // asserted, not assumed
+		servotest.NodeName[*api.Server](),
+		servotest.NodeName[*postgres.DB](),
+	)
 }
 ```
+
+Reports name nodes by type with the full import path — `*example.com/app/api.Server`, never the
+`*api.Server` source code spells — so `servotest.NodeName[T]()` produces the name rather than you
+typing it; a hand-written short name never matches, and fails an order that was right.
 
 `servotest.Timeout` shrinks `servo.DefaultStopBudget` for one test, so the abandoned-node path — a
 component that ignores cancellation must be *reported* abandoned, never claimed clean — costs
 milliseconds instead of the real five seconds. It does not belong next to `NoLeaks`: the path it
-exists to exercise is by construction one that leaves a goroutine running.
+exists to exercise is by construction one that leaves a goroutine running. The budget is a package
+variable, so `Timeout` — and `Linger`, its scope-window twin — call `t.Setenv`, and Go refuses to
+combine either with `t.Parallel`, with a panic rather than a data race.
 
 ```go
 func TestHungStoreIsAbandoned(t *testing.T) {
@@ -786,6 +919,24 @@ fix in every case below is a few lines in a **separate, hand-written file** (nev
 with the actual tool run for real and the generated mock committed) — not just prose. `servo new
 mock-adapter <moq|mockery|gomock> <GeneratedTypeName>` scaffolds the adapter file for any of the
 three directly, instead of retyping the pattern below by hand.
+
+**A test can also hand the mock in.** `NewTestApp` builds each Override through its constructor,
+but `NewTestAppWith` takes a `TestValues` with a field per Override, typed as the interface: leave
+it nil and the adapter builds the mock as below; set it and your instance is used instead — built
+in the test, with the test's own `t`, so expectations report through `t` and tests run in parallel:
+
+```go
+mock := mockgenstore.NewMockStore(gomock.NewController(t)) // reports through t, finishes on t.Cleanup
+mock.EXPECT().Get("user:42").Return("mocked-value")
+
+app, err := NewTestAppWith(ctx, TestValues{Store: mock})
+```
+
+The Override still needs its adapter constructor — it is what `NewTestApp` and every test that
+leaves the field nil use — but it no longer has to be the only way in. The rules for which
+Overrides get a field (no lifecycle methods, every consumer taking the interface) are in
+[Generated API](docs/reference/generated-api.md#supplying-an-override-per-call); mocks always
+qualify.
 
 ### `moq`
 
@@ -894,18 +1045,20 @@ got := app.server.Lookup("user:42") // "mocked-value"
 ```
 
 **Be honest about the tradeoff here**: `Finish` belongs in a plain `defer` in the test, not routed
-through servo's `(T, func())` cleanup shape — that would run it inside `servo.RunStop`'s own
-goroutine during `Shutdown`, where an unmet expectation panics. `RunStop` recovers that panic and
+through servo's `(T, func())` cleanup shape — that would run it inside the goroutine
+`servoimpl.RunStop` gives each stop during `Shutdown`, where an unmet expectation panics. `RunStop` recovers that panic and
 reports the node `StatusFailed` with the panic value and stack rather than killing the process
 mid-teardown, but the failure then exists only in the shutdown report, so a test that never
 inspects `app.Shutdown(ctx)` passes with the expectation unmet. Called directly in the test's own
 goroutine instead, an unmet expectation still panics
 (`PanicReporter` has no `t.Fatalf` to soften it into) — Go's test runner reports which test failed
-before it re-panics, but the process still exits, unlike testify's clean, isolated failure. For
-strict expectation-count verification where that matters, construct and drive the mock directly in
-an isolated unit test (`api.New(mockedStore)`, with a real `gomock.NewController(t)`) instead of
-through `Override` — the graph-injection path is the right fit for exercising the wiring itself,
-not for gomock's stricter verification style.
+before it re-panics, but the process still exits, unlike testify's clean, isolated failure.
+
+That is the adapter's limit, not the graph's. For gomock's strict verification, hand the test's own
+mock to `NewTestAppWith`, as above: the controller holds the real `t`, an unmet expectation is an
+ordinary test failure, and `Finish` runs on `t.Cleanup` without anyone remembering it
+([`examples/mocking/gomock`](./examples/mocking/gomock/cmd/app/percall_test.go) does exactly
+this).
 
 ## Layout
 
@@ -936,11 +1089,11 @@ examples/migrate/     a pre-servo codebase for `servo migrate` to read (part of 
 ```
 
 Core (`internal/*`, `cmd/servo`, `servovet`) depends on nothing beyond `golang.org/x/tools`;
-`servotest` alone depends on `go.uber.org/goleak`. Neither the runtime package nor any generated
-output imports `reflect` for servo's own wiring (`encoding/json`, used by emitted HTTP servers,
-reflects internally like it does for everyone), and the generated package compiles with the `servo`
-module deleted save for the small runtime it calls into — both enforced as conformance checks, not
-just claimed.
+`servotest` alone depends on `go.uber.org/goleak`. Neither the runtime packages nor any generated
+output import `reflect` for servo's own wiring (`encoding/json`, used by emitted HTTP servers,
+reflects internally like it does for everyone). Generated code imports nothing from servo's module
+but its runtime: `servo`, `servoimpl`, and `conf` for config loaders. `TestConformance` in
+`internal/emit` enforces both, over every golden file and the runtime packages.
 
 ## Contributing
 

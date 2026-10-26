@@ -52,18 +52,22 @@ following in order and haven't created it yet, you'll see two implementers inste
 which makes exactly the same point.)
 
 ```
-$ go run github.com/okian/servo/v3/cmd/servo generate --dir .
+$ go tool servo generate --dir .
 example.com/servoorders/cmd/orders: servo: 4 diagnostic(s):
 
-.../service/service.go:28:6: servo: no provider for example.com/servoorders/internal/repository.OrderRepository
+.../service/service.go:28:6: servo: ambiguous provider for example.com/servoorders/internal/repository.OrderRepository
   needed by *example.com/servoorders/internal/service.OrderService  .../service/service.go:28:6
-  needed by *example.com/servoorders/internal/transport/api.Server            .../transport/api/server.go:49:6
-  root                                                      .../cmd/orders/spec.go:23:3
+  needed by *example.com/servoorders/internal/transport/api.Server  .../transport/api/server.go:57:6
+  root                                                              .../cmd/orders/spec.go:17:3
 
-  3 types implement example.com/servoorders/internal/repository.OrderRepository — add one of:
-      servo.Bind[example.com/servoorders/internal/repository.OrderRepository, *example.com/servoorders/internal/mocks.MockOrderRepository]()      .../mocks/repository_mock.go:34:6
-      servo.Bind[example.com/servoorders/internal/repository.OrderRepository, *example.com/servoorders/internal/mocks.OrderRepositoryForServo]()      .../mocks/servo_adapters.go:24:6
-      servo.Bind[example.com/servoorders/internal/repository.OrderRepository, *example.com/servoorders/internal/repository/postgres.Store]()      .../repository/postgres/postgres.go:41:6
+  3 types in this module implement repository.OrderRepository — pick one with servo.Bind:
+      servo.Bind[repository.OrderRepository, *mocks.MockOrderRepository]()      .../mocks/repository_mock.go:34:6
+      servo.Bind[repository.OrderRepository, *mocks.OrderRepositoryForServo]()  .../mocks/servo_adapters.go:24:6
+      servo.Bind[repository.OrderRepository, *postgres.Store]()                 .../repository/postgres/postgres.go:48:6
+  with these imports in the spec file:
+      "example.com/servoorders/internal/mocks"
+      "example.com/servoorders/internal/repository"
+      "example.com/servoorders/internal/repository/postgres"
 ```
 
 (Three more diagnostics follow, identical in shape, for `UserRepository`, `OrderCache`, and
@@ -82,7 +86,7 @@ succeed at all.
 With the binds in place:
 
 ```
-$ go run github.com/okian/servo/v3/cmd/servo generate --dir .
+$ go tool servo generate --dir .
 ```
 
 No output — success is silent, matching every other servo command. `cmd/orders/servo_gen.go` now
@@ -171,7 +175,7 @@ ended up with, in one place, and *why* each is what it is:
 | Type | Capabilities | Why |
 |---|---|---|
 | each package's `Config` | none | Pure data, filled by its generated `ServoConfig` loader before anything is constructed |
-| `session.Settings` | none | The singleton carrier between `session.Config` and the scope — [chapter 14](14-scoped-instances.md) |
+| `session.Settings` | none | The singleton carrier between `session.Config` and the scope — [chapter 15](15-scoped-instances.md) |
 | `observability.Logger` | none | Built from its own config; everything that logs depends on it |
 | `postgres.Store` | Initializer, Finalizer, Healther | Connects, disconnects, and can report a real health check |
 | `redis.Cache` | Initializer, Finalizer, Healther | Same shape as Store — connect/disconnect/health |
@@ -193,57 +197,53 @@ component to implement every capability, or even any of them.
 func New(ctx context.Context) (*App, error) {
 	a := &App{}
 
-	authConfig, err := auth.ServoConfig()
-	if err != nil {
-		return nil, err
-	}
+	authConfig, authConfigErr := auth.ServoConfig()
 	// ... one generated ServoConfig call per //servo:config type the graph
 	// uses — natsbroker, redis, observability, postgres, resilience,
-	// session, api — each loaded before anything is constructed, each held
-	// as a local rather than an App field ...
+	// session, api — each held as a local rather than an App field ...
+	if err := errors.Join(authConfigErr, natsbrokerConfigErr /* , ... */); err != nil {
+		return nil, err // every missing or malformed setting at once
+	}
+
+	var undo []func(context.Context) servo.NodeResult
 
 	store, err := postgres.New(postgresConfig)
 	if err != nil {
+		a.unwind(context.WithoutCancel(ctx), undo) // stop what was built, newest first
 		return nil, err
 	}
 	a.store = store
-	// ... then cache, publisher, logger, orderService, issuer,
-	// authService, server, notifier ...
+	undo = append(undo, a.stopStore)
+	// ... then cache, publisher, orderService, issuer, authService,
+	// server, notifier ...
 
-	{
-		var timingMu sync.Mutex
-		g, gctx := errgroup.WithContext(ctx)
-		g.Go(func() error {
-			start := time.Now()
-			err := a.store.Init(gctx)
-			timingMu.Lock()
-			a.startupReport.Nodes = append(a.startupReport.Nodes, servo.StartupNode{Type: "*example.com/servoorders/internal/repository/postgres.Store", Duration: time.Since(start)})
-			timingMu.Unlock()
-			return err
-		})
-		// ... cache.Init, publisher.Init, run concurrently in the same errgroup ...
-		if err := g.Wait(); err != nil {
-			report := a.Shutdown(context.WithoutCancel(ctx))
-			if report.Clean() {
-				return nil, err
-			}
-			return nil, errors.Join(err, report)
-		}
+	if err := servoimpl.Init(ctx, servo.DefaultInitBudget, &a.startupReport,
+		[]servoimpl.Call{
+			{Node: "*example.com/servoorders/internal/repository/postgres.Store", Fn: a.store.Init},
+			{Node: "*example.com/servoorders/internal/cache/redis.Cache", Fn: a.cache.Init},
+			{Node: "*example.com/servoorders/internal/broker/natsbroker.Publisher", Fn: a.publisher.Init},
+		},
+	); err != nil {
+		return nil, servoimpl.RolledBack(err, a.Shutdown(context.WithoutCancel(ctx)))
 	}
 	return a, nil
 }
 ```
 
 Construction happens in dependency order — `config` before anything that needs it, `store` before
-`orderService`. `Init` calls for the three Initializers run *concurrently*, in one `errgroup`,
-since none of them depend on each other (all three only depend on `config`, which is already
-built) — servo doesn't serialize work that has no reason to be serial. If any `Init` fails, `New`
-calls `Shutdown` itself before returning, so a failed startup never leaves the components that
-*did* succeed connected with nothing tracking them.
+`orderService`. `Init` calls for the three Initializers run *concurrently*, as one level of the
+single `servoimpl.Init` call, since none of them depend on each other (all three only depend on
+their configs, which are already loaded) — servo doesn't serialize work that has no reason to be
+serial. Each `Init` gets a context that lasts for that call only, and a panic in one is reported
+as that node's failure rather than taking the process down. If any `Init` fails, `New` calls
+`Shutdown` itself before returning, so a failed startup never leaves the components that *did*
+succeed connected with nothing tracking them; a failing *constructor* does the same through
+`unwind`, for the nodes built before it.
 
-`Run` launches every `Runner` and waits for all of them — this is exactly the errgroup shown in
-[chapter 10](10-api-layer.md#run-and-stop--and-a-bug-worth-hitting-on-purpose)'s postmortem, so
-its behavior should already feel familiar rather than new. `Shutdown` runs in *reverse* order —
+`Run` launches every `Runner`, stops them all when one fails or panics, and once its context is
+cancelled waits at most `servo.DefaultRunGrace` for them — the runner contract
+[chapter 10](10-api-layer.md#run-and-stop--and-a-bug-worth-hitting-on-purpose)'s postmortem is
+about, so its behavior should already feel familiar rather than new. `Shutdown` runs in *reverse* order —
 `api.Server` first (stop accepting new work before tearing down what it depends on), then the
 three infrastructure Finalizers — each one exactly once, via `sync.Once`, so a second `Shutdown`
 call (or two concurrent ones) is safe.
@@ -251,14 +251,14 @@ call (or two concurrent ones) is safe.
 ## Check it, graph it, ask it questions
 
 ```
-$ go run github.com/okian/servo/v3/cmd/servo check --dir .
+$ go tool servo check --dir .
 ```
 
 Silent, same as generate — `check` re-resolves and re-emits in memory, diffs against what's
 committed, and only prints something if they disagree.
 
 ```
-$ go run github.com/okian/servo/v3/cmd/servo graph --dir ./cmd/orders --format=mermaid
+$ go tool servo graph --dir ./cmd/orders --format=mermaid
 graph BT
   n0["example.com/servoorders/internal/auth.Config"]:::level0
   n1["example.com/servoorders/internal/broker/natsbroker.Config"]:::level0
@@ -397,7 +397,7 @@ graph BT
 And a targeted question — why does `postgres.Store` exist at all, from the graph's perspective:
 
 ```
-$ go run github.com/okian/servo/v3/cmd/servo why --dir ./cmd/orders postgres.Store
+$ go tool servo why --dir ./cmd/orders postgres.Store
 root  *example.com/servoorders/internal/transport/api.Server
   -> *example.com/servoorders/internal/service.OrderService
   -> *example.com/servoorders/internal/repository/postgres.Store
@@ -471,7 +471,7 @@ HTTP handler directly:
 ```go
 func TestFullAPIFlowWithMockedInfrastructure(t *testing.T) {
 	t.Setenv("NATS_URL", "unused-in-this-test")
-	t.Setenv("JWT_SECRET", "test-secret")
+	t.Setenv("JWT_SECRET", "test-secret-of-at-least-32-bytes")
 
 	app, err := NewTestApp(context.Background())
 	if err != nil {
@@ -534,8 +534,7 @@ exactly the way `main.go` wires it for real, running in well under a second, wit
   check the test's logged output for a line like `"msg":"api: panic recovered","panic":"Unexpected
   call to *mocks.MockOrderRepository.Create(...) because: there are no expected calls..."`. A
   `PanicReporter` panic raised from *inside* a request handler (a missing or wrong `.EXPECT()` on
-  the mock that handler calls) still happens inside `recoverMiddleware`'s reach ([chapter
-  10](10-api-layer.md)) — so it gets caught, logged, and turned into an ordinary `500` response,
+  the mock that handler calls) still happens inside `recoverMiddleware`'s reach ([chapter 10](10-api-layer.md)) — so it gets caught, logged, and turned into an ordinary `500` response,
   exactly the way a real, unrelated panic would. The test doesn't crash; it just fails with a
   confusing status code. The fix is almost always a missing or misconfigured `.EXPECT()`, not a bug
   in the handler.

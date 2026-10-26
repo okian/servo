@@ -147,9 +147,9 @@ func TestEmitScopedApp(t *testing.T) {
 		"func (x lobbiesAccessor) Acquire(ctx context.Context) (*Lobby, func(), error)",
 		"func (x roomsAccessor) Stats() servo.ScopeStats",
 
-		// Policy, read once through servo.LingerWindow so servotest can
-		// shorten it.
-		"servo.LingerWindow(90 * time.Second)",
+		// Policy, read once through servoimpl.LingerWindow so servotest
+		// can shorten it.
+		"servoimpl.LingerWindow(90 * time.Second)",
 		"max:     250,",
 
 		// The extractor is called on a typed nil.
@@ -166,12 +166,17 @@ func TestEmitScopedApp(t *testing.T) {
 		"for e := range s.tearing {",
 		// Every wait during shutdown is budgeted — and by as many budgets
 		// as the teardown it waits for actually spends.
-		"servo.RunStop(ctx, 6*servo.DefaultStopBudget, e.name(), e.waitTorn)",
+		"servoimpl.RunStop(ctx, 6*servo.DefaultStopBudget, e.name(), e.waitTorn)",
 		// A panic anywhere in construction unwinds through rollback.
 		"func (e *roomKeyEntry) rollback() {",
 		"entry.rollback()",
-		// An Init panic on a concurrent level must not escape the errgroup.
-		"if r := recover(); r != nil {\n\t\t\t\t\terr = fmt.Errorf(\"servo: panic in Init of",
+		// Every Init level, the lone Room's included, goes through the
+		// helper that recovers a panic into that member's Init error —
+		// which takes the error path's rollback, not the panic path's.
+		"if err := servoimpl.Init(e.ctx, servo.DefaultInitBudget, nil,\n\t\t[]servoimpl.Call{\n\t\t\t{Node: \"*example.com/app.RoomLog\", Fn: e.roomLog.Init},\n\t\t\t{Node: \"*example.com/app.Lobby\", Fn: e.lobby.Init},\n\t\t},\n\t\t[]servoimpl.Call{\n\t\t\t{Node: \"*example.com/app.Room\", Fn: e.room.Init},\n\t\t},\n\t); err != nil {\n\t\te.drainRoom(context.Background())",
+		// One tenant's Run panic is that instance's Run failure, recorded
+		// for its teardown — never a crash taking every key down with it.
+		"if err := servoimpl.Guard(e.ctx, \"Run\", servoimpl.Call{Node: \"*example.com/app.Room\", Fn: e.room.Run}); err != nil && !errors.Is(err, context.Canceled) {\n\t\t\te.runMu.Lock()\n\t\t\te.runErrs = append(e.runErrs, err)",
 		// The loop stops accepting joins once Shutdown has begun, and
 		// waits for the references it already handed out before tearing
 		// the instance down under them.

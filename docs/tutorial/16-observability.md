@@ -92,14 +92,13 @@ get configured before X" is not a question anyone can ask, because X cannot be b
 
 ```go
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
-	app, err := New(ctx)
-	if err != nil {
-		log.Fatal(err)
-	}
-	...
+	servo.Main(func(ctx context.Context) (*admin.Server, error) {
+		app, err := New(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return admin.Mount(app, app.server.AdminAddr(), app.server.MetricsHandler()), nil
+	})
 }
 ```
 
@@ -108,6 +107,25 @@ wire: the standard library and third-party packages log through `slog.Default()`
 constructor to inject into. Our own code never relies on it — every component here takes the logger.
 The global became a *consequence* of building the logger rather than the mechanism for configuring
 it, and it now happens at the right moment by construction.
+
+It also decides where the line that explains a dead process ends up. `servo.Main` reports a failed
+startup, a failed `Run` or an unclean shutdown at ERROR through `slog.Default()` *as it is at that
+moment* — so once `NewLogger` has run, the failure is one more JSON line in the same stream as
+everything else, and still shows at `OBS_LOG_LEVEL=warn`:
+
+```
+{"time":"…","level":"ERROR","msg":"servo: startup failed","err":"*example.com/servoorders/internal/broker/natsbroker.Publisher: Init: natsbroker: connect: nats: no servers available for connection"}
+```
+
+A failure before `NewLogger` runs — a required variable that is missing, checked before anything is
+constructed — goes through the standard library's default handler instead: plain text, on stderr.
+A log pipeline that only parses JSON from stdout should still keep stderr.
+
+The same `SetDefault` is the reason `main` must not use `log.Fatal`. It routes the `log` package
+through the new handler too, at INFO, so at `OBS_LOG_LEVEL=warn` a `log.Fatal(err)` writes nothing
+at all, and the process exits 1 without a word. This tutorial's `main` did exactly that before
+`servo.Main`: a failed start printed nothing, and a `Run` failure handed to `log.Print` vanished the
+same way, with the process exiting 0.
 
 ## Metrics, and a cardinality trap worth knowing about
 
@@ -287,7 +305,7 @@ Notice there's no `Init` here, even though `postgres.Store`, `redis.Cache`, and
 understanding rather than a style choice: `api.Server`'s own constructor needs a fully-working
 `*Tracer` immediately, to wrap its handler with tracing middleware — and servo only guarantees a
 *dependency's constructor* has already returned by the time a *dependent's* constructor runs, not
-that its `Init` has too. `Init` calls all happen later, together, in one `errgroup`. Splitting this
+that its `Init` has too. `Init` calls all happen later, after every constructor, level by level. Splitting this
 into `New` (build) + `Init` (start) the way `postgres.Store` does would hand `api.Server` a
 `*Tracer` whose provider field is still `nil`. Doing all the setup inside `New` itself — the same
 shape a generated config loader uses too — sidesteps the whole question.
@@ -465,8 +483,8 @@ func (s *Server) MetricsHandler() http.Handler {
 ```
 
 ```go
-// cmd/orders/main.go
-adminSrv := admin.New(app.apiConfig.AdminAddr, app, app.server.MetricsHandler())
+// cmd/orders/main.go, inside the closure handed to servo.Main
+return admin.Mount(app, app.server.AdminAddr(), app.server.MetricsHandler()), nil
 ```
 
 ## Try it — logs, metrics, and a real trace in Jaeger
@@ -544,10 +562,15 @@ anything.
   bounded set of values. `route` here is safe specifically because `r.Pattern` only ever takes one
   of a handful of registered values, never one per request.
 - **Log lines are plain text, not JSON, right at process startup** — a small, known gap: anything
-  logged before `NewLogger` runs uses the unconfigured default handler. Nothing in this codebase is
-  in that window, because every component that logs depends on the logger and so cannot be built
-  first — but a library logging from an `init` function would be, and it is worth knowing the gap
-  exists rather than assuming every line is guaranteed structured.
+  logged before `NewLogger` runs uses the unconfigured default handler. No component is in that
+  window, because every component that logs depends on the logger and so cannot be built first.
+  Two things are: a library logging from an `init` function, and `servo.Main` itself when startup
+  fails before the logger exists — a missing required variable, reported as `ERROR servo: startup
+  failed` in plain text on stderr. It is worth knowing the gap exists rather than assuming every
+  line is guaranteed structured.
+- **The process exits 1 and the JSON log on stdout says nothing** — look at stderr. A failure before
+  `NewLogger` ran is there, in plain text, and so is any line the configured handler would have
+  dropped: `servo.Main` writes a failure to stderr rather than lose it.
 
 ## Do's and don'ts
 
@@ -563,6 +586,9 @@ anything.
 - **Don't** reach for a global metrics/tracer registry out of habit. It's the more common pattern
   in small single-instance programs, but it's also exactly what makes two `*App`s (or an `*App` and
   a `NewTestApp`) in the same process collide.
+- **Don't** report a fatal error with `log.Fatal` or `log.Print` once `slog.SetDefault` has run.
+  Both go through the new handler at INFO, so at `OBS_LOG_LEVEL=warn` they print nothing at all.
+  `servo.Main` reports at ERROR, and falls back to stderr when even that would be dropped.
 
 ## Next
 

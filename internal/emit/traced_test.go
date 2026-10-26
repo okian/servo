@@ -21,8 +21,8 @@ import (
 // tracedAppSrc covers every method shape the wrapper has to render: a
 // context with an error result, with a value and an error, with results
 // and no error, with no results, a variadic, unnamed parameters,
-// parameters spelled like the wrapper's own locals, and methods with no
-// context at all.
+// parameters spelled like the wrapper's own locals or like each other's
+// renamed forms, and methods with no context at all.
 const tracedAppSrc = `
 package app
 
@@ -46,6 +46,7 @@ type Store interface {
 	Touch(ctx context.Context)
 	Scan(context.Context, int, bool) (string, bool, error)
 	Mark(ctx context.Context, span string, err error) error
+	Pick(ctx context.Context, len int, len2 int) error
 	Close() error
 	Name() string
 }
@@ -58,6 +59,7 @@ func (d *DB) Each(ctx context.Context, fn func(string)) int { return 0 }
 func (d *DB) Touch(ctx context.Context) {}
 func (d *DB) Scan(ctx context.Context, n int, b bool) (string, bool, error) { return "", false, nil }
 func (d *DB) Mark(ctx context.Context, span string, err error) error { return nil }
+func (d *DB) Pick(ctx context.Context, len int, len2 int) error { return nil }
 func (d *DB) Close() error { return nil }
 func (d *DB) Name() string { return "db" }
 func (d *DB) Init(ctx context.Context) error { return nil }
@@ -178,6 +180,11 @@ func TestEmitTracedWrapper(t *testing.T) {
 		"return r0, r1, err",
 		// Parameters spelled like the body's own locals are renamed.
 		"func (t *tracedStore) Mark(ctx context.Context, p1 string, p2 error) error {",
+		// A builtin's name moves to its suffixed form, and the parameter
+		// already spelled that way moves too, rather than both landing on
+		// len2: a duplicate parameter the compiler rejects.
+		"func (t *tracedStore) Pick(ctx context.Context, len2 int, p2 int) error {",
+		"err := t.inner.Pick(ctx, len2, p2)",
 		// No context: delegated untouched.
 		"func (t *tracedStore) Close() error {\n\treturn t.inner.Close()\n}",
 		"func (t *tracedStore) Name() string {\n\treturn t.inner.Name()\n}",
@@ -185,7 +192,7 @@ func TestEmitTracedWrapper(t *testing.T) {
 		"storeTraced := newTracedStore(db, sdk)\n\ta.storeTraced = storeTraced",
 		"server := NewServer(storeTraced)",
 		// The implementation keeps its lifecycle; the wrapper has none.
-		"a.db.Init(ctx)",
+		`{Node: "*example.com/app.DB", Fn: a.db.Init}`,
 		"func (a *App) stopDb(ctx context.Context) servo.NodeResult",
 		`Binding: "traced"`,
 		`Wraps: "*example.com/app.DB"`,
@@ -380,5 +387,95 @@ func TestEmitTwoTracedInterfacesWithOneName(t *testing.T) {
 func TestTracedTypeNameFallsBackForAnUnnamedInterface(t *testing.T) {
 	if got := tracedTypeName(types.NewInterfaceType(nil, nil)); got != "Iface" {
 		t.Fatalf("tracedTypeName(interface{}) = %q, want Iface", got)
+	}
+}
+
+const genericTracedSrc = `
+package app
+
+import "context"
+
+type User struct{}
+type Order struct{}
+
+type Store[T any] interface {
+	Get(ctx context.Context, id string) (T, error)
+}
+
+type UserDB struct{}
+func (d *UserDB) Get(ctx context.Context, id string) (User, error) { return User{}, nil }
+func NewUserDB() *UserDB { return &UserDB{} }
+
+type OrderDB struct{}
+func (d *OrderDB) Get(ctx context.Context, id string) (Order, error) { return Order{}, nil }
+func NewOrderDB() *OrderDB { return &OrderDB{} }
+
+type TracerProvider interface{ Tracer(name string) string }
+type SDK struct{}
+func (s *SDK) Tracer(name string) string { return name }
+func NewSDK() *SDK { return &SDK{} }
+
+type Server struct{}
+func NewServer(u Store[User], o Store[Order]) *Server { return &Server{} }
+`
+
+// TestEmitTracedGenericInstantiationsStayApart pins that two traced
+// instantiations of one generic interface get distinct span names and
+// wrapper types. Both used to emit the span "app.Store/Get", so a trace
+// could not say whether a slow call read users or orders.
+func TestEmitTracedGenericInstantiationsStayApart(t *testing.T) {
+	servoPkg := loadServoPackage(t)
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "app.go", genericTracedSrc, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	pkg, err := (&types.Config{Importer: newPkgImporter(servoPkg)}).Check("example.com/app", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	appPkg := &packages.Package{Name: "app", PkgPath: "example.com/app", Types: pkg, Fset: fset}
+	candidates, _ := graph.ScanCandidates([]*packages.Package{appPkg}, "example.com/app")
+	caps, err := graph.LoadCapabilities(servoPkg.Types)
+	if err != nil {
+		t.Fatalf("LoadCapabilities: %v", err)
+	}
+	params := pkg.Scope().Lookup("NewServer").Type().(*types.Signature).Params()
+	storeUser, storeOrder := params.At(0).Type(), params.At(1).Type()
+	server := types.NewPointer(pkg.Scope().Lookup("Server").Type())
+	tp := pkg.Scope().Lookup("TracerProvider").Type()
+	spec := &load.Spec{
+		InjectorPkg: appPkg,
+		Roots:       []load.RootDecl{{Key: graph.NewKey(server, ""), Type: server, Pos: token.Position{Filename: "spec.go", Line: 9}}},
+		Traces: []load.TraceDecl{
+			{Iface: graph.NewKey(storeUser, ""), IfaceType: storeUser, Pos: token.Position{Filename: "spec.go", Line: 10}},
+			{Iface: graph.NewKey(storeOrder, ""), IfaceType: storeOrder, Pos: token.Position{Filename: "spec.go", Line: 11}},
+		},
+	}
+	resolved, diags := resolve.Resolve(resolve.Input{
+		Spec: spec, Candidates: candidates, Caps: caps,
+		Scope: map[string]bool{"example.com/app": true},
+		Trace: &resolve.TraceInput{ProviderKey: graph.NewKey(tp, ""), ProviderType: tp},
+	})
+	if len(diags) > 0 {
+		t.Fatalf("unexpected diagnostics: %v", diags)
+	}
+	out, err := Emit(resolved, spec, false)
+	if err != nil {
+		t.Fatalf("Emit: %v", err)
+	}
+	src := string(out)
+	for _, want := range []string{
+		`t.tracer.Start(ctx, "app.Store[app.User]/Get")`,
+		`t.tracer.Start(ctx, "app.Store[app.Order]/Get")`,
+		"type tracedStoreUser struct",
+		"type tracedStoreOrder struct",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("generated source missing %q\n---\n%s", want, src)
+		}
+	}
+	if strings.Contains(src, `"app.Store/Get"`) {
+		t.Errorf("a generic instantiation still traces under the bare interface name:\n%s", src)
 	}
 }

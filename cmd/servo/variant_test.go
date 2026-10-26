@@ -733,13 +733,13 @@ func TestDiscoverVariantsReportsADirectoryItCannotScan(t *testing.T) {
 	}
 }
 
-// TestGenerateOneRefusesAnOverlapItsCallerAlreadyChecked: runGenerate
-// checks every injector's overlap up front, before writing anything, which
-// makes generateOne's own check look redundant. It is not — it is what
-// stops any future caller that skips the pre-pass from writing a pair of
-// files that cannot compile together — and because runGenerate can never
-// reach it, direct is the only way it is ever exercised.
-func TestGenerateOneRefusesAnOverlapItsCallerAlreadyChecked(t *testing.T) {
+// TestPlanOneRefusesAnOverlapItsCallerAlreadyChecked: runGenerate checks
+// every injector's overlap up front, before writing anything, which makes
+// planOne's own check look redundant. It is not — it is what stops any
+// future caller that skips the pre-pass from writing a pair of files that
+// cannot compile together — and because runGenerate can never reach it,
+// direct is the only way it is ever exercised.
+func TestPlanOneRefusesAnOverlapItsCallerAlreadyChecked(t *testing.T) {
 	// The spec is a plain `//go:build servoinject`, so its prod variant
 	// would not exclude its default one.
 	dir := writeAppModule(t, "example.com/overlapgenone", true, "")
@@ -759,9 +759,9 @@ func TestGenerateOneRefusesAnOverlapItsCallerAlreadyChecked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	_, _, err = generateOne(pipelines[0], resolved)
+	_, err = planOne(pipelines[0], resolved)
 	if err == nil || !strings.Contains(err.Error(), "would both compile") {
-		t.Fatalf("generateOne = %v, want the overlap refusal", err)
+		t.Fatalf("planOne = %v, want the overlap refusal", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, "cmd", "app", "servo.prod_gen.go")); !os.IsNotExist(statErr) {
 		t.Errorf("servo.prod_gen.go exists after a refused generation (stat err = %v)", statErr)

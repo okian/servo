@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -16,33 +17,21 @@ import (
 	"github.com/okian/servo/v3/internal/graph"
 )
 
-// directivePrefix is reserved in full: any comment starting with it that
-// does not parse as a valid directive is an error, never a silent no-op —
-// a typo'd method must not leave a route unserved.
-const directivePrefix = "//servo:"
-
-// methods maps the directive spelling to the ServeMux method token.
-var methods = map[string]string{
-	"get": "GET", "post": "POST", "put": "PUT", "patch": "PATCH",
-	"delete": "DELETE", "head": "HEAD", "options": "OPTIONS",
-}
-
-// IsDirectiveMethod reports whether name is one of the route verbs this
-// scanner owns. servovet uses it to decide whether an unknown //servo:
-// name belongs to routes or to the config feature.
-func IsDirectiveMethod(name string) bool {
-	_, ok := methods[name]
-	return ok
-}
+// methods maps the directive spelling to the ServeMux method token, built
+// from graph.RouteVerbs so the verbs the claim rules recognize and the
+// verbs this scanner parses are one list.
+var methods = func() map[string]string {
+	m := make(map[string]string, len(graph.RouteVerbs))
+	for _, v := range graph.RouteVerbs {
+		m[v] = strings.ToUpper(v)
+	}
+	return m
+}()
 
 // bodylessMethods are the methods whose requests the generated decoder
 // refuses to read a body (JSON or form) for.
 var bodylessMethods = map[string]bool{"GET": true, "HEAD": true, "DELETE": true, "OPTIONS": true}
 
-// Scan walks every main-module package's comments for //servo: directives
-// and validates each against its handler, returning the sorted route list
-// and every failure as a positioned diagnostic. servoPkg is the loaded
-// runtime package, needed to recognize servo.Json by identity.
 // servoHTTPTypes bundles the runtime identities the scanner validates
 // against: the typed response wrappers (whose type argument is the payload
 // schema) and the sealed base interface every response kind implements.
@@ -65,8 +54,20 @@ func loadServoHTTPTypes(servoPkg *types.Package) *servoHTTPTypes {
 	return st
 }
 
+// Scan walks every main-module package's comments for //servo: directives
+// and validates each route against its handler, returning the sorted route
+// list and every failure as a positioned diagnostic. servoPkg is the loaded
+// runtime package, needed to recognize servo.Json by identity.
+//
+// It is also where the reserved prefix is enforced for the whole module:
+// every //servo: line graph.FileDirectives finds is a route claimed here, a
+// //servo:config left for graph.ScanConfigs, or reported — a misspelled
+// name, a config directive on a var, a route verb off a function. Every
+// line is judged in this one place, so none can fall between the two
+// scanners.
 func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagnostic) {
 	st := loadServoHTTPTypes(servoPkg)
+	order := graph.NewSourceOrder(pkgs)
 
 	var routes []*Route
 	var diags []Diagnostic
@@ -78,16 +79,6 @@ func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagno
 			continue
 		}
 		for _, file := range pkg.Syntax {
-			// Directives are just comments: they parse fine against a servo
-			// version that predates the HTTP feature, and the CLI can be
-			// newer than the module's library. That mismatch must name its
-			// fix rather than drop routes or chase a missing type.
-			if st == nil {
-				if pos, found := firstDirective(pkg, file); found {
-					return nil, []Diagnostic{{Pos: pos, Message: "servo: //servo: directives need a servo version that exports the servo.Response family — update github.com/okian/servo/v3 in this module"}}
-				}
-				continue
-			}
 			scanFile(pkg, file, st, &routes, &diags)
 		}
 	}
@@ -96,7 +87,7 @@ func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagno
 	// everything downstream — emit, the generated header, duplicate
 	// reporting — uses. Group first so each emitted server's routes are
 	// contiguous.
-	sort.Slice(routes, func(i, j int) bool {
+	sort.SliceStable(routes, func(i, j int) bool {
 		if routes[i].Group != routes[j].Group {
 			return routes[i].Group < routes[j].Group
 		}
@@ -106,42 +97,36 @@ func Scan(pkgs []*packages.Package, servoPkg *types.Package) ([]*Route, []Diagno
 		if routes[i].Method != routes[j].Method {
 			return routes[i].Method < routes[j].Method
 		}
-		return graph.ComparePos(routes[i].Pos, routes[j].Pos) < 0
+		return order.Compare(routes[i].Pos, routes[j].Pos) < 0
 	})
 
 	routes, dupDiags := dedupAndProbe(routes)
 	diags = append(diags, dupDiags...)
 
-	sort.Slice(diags, func(i, j int) bool { return graph.ComparePos(diags[i].Pos, diags[j].Pos) < 0 })
+	// Several problems can share one position — every field of a request
+	// struct is reported against the directive line — so position alone is
+	// not a total order, and the packages arrive in whatever order the
+	// loader's import walk produced. The message breaks the tie, which
+	// makes two runs over the same source print the same report.
+	sort.SliceStable(diags, func(i, j int) bool {
+		if c := order.Compare(diags[i].Pos, diags[j].Pos); c != 0 {
+			return c < 0
+		}
+		return diags[i].Message < diags[j].Message
+	})
 	return routes, diags
 }
 
-// CheckDirectiveComment validates one comment line against the //servo:
-// grammar (method, pattern, optional group, ServeMux pattern syntax).
-// Non-directive lines pass. servo-vet uses this for in-editor feedback;
-// the authoritative check — including handler validation and cross-route
-// conflicts — runs in Scan.
-func CheckDirectiveComment(text string) (problem string, ok bool) {
-	if !strings.HasPrefix(text, directivePrefix) {
-		return "", true
-	}
-	if _, diag := parseDirective(text, token.Position{}); diag != nil {
+// CheckDirective validates one route directive, as graph.ParseDirective
+// tokenized it, against the route grammar: method, pattern, optional group,
+// and ServeMux pattern syntax. servovet uses it for in-editor feedback on
+// the lines graph.Directive.IsRoute claims; the authoritative check —
+// including handler validation and cross-route conflicts — runs in Scan.
+func CheckDirective(name string, args []string) (problem string, ok bool) {
+	if _, diag := parseDirective(name, args, token.Position{}); diag != nil {
 		return diag.Message, false
 	}
 	return "", true
-}
-
-// firstDirective finds the first //servo: line in file, for the
-// version-mismatch diagnostic above.
-func firstDirective(pkg *packages.Package, file *ast.File) (token.Position, bool) {
-	for _, group := range file.Comments {
-		for _, c := range group.List {
-			if strings.HasPrefix(c.Text, directivePrefix) {
-				return pkg.Fset.Position(c.Pos()), true
-			}
-		}
-	}
-	return token.Position{}, false
 }
 
 // directive is one parsed //servo:<method> <pattern> [group] line.
@@ -153,75 +138,56 @@ type directive struct {
 }
 
 // groupTokenRE is the directive-token half of the group-name grammar; the
-// spec-marker half lives in internal/load and must stay identical.
-var groupTokenRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+// spec-marker half, in internal/load, compiles the same graph pattern.
+var groupTokenRE = regexp.MustCompile(graph.GroupNamePattern)
 
 func scanFile(pkg *packages.Package, file *ast.File, st *servoHTTPTypes, routes *[]*Route, diags *[]Diagnostic) {
-	// Doc comment groups are shared pointers between file.Comments and
-	// decl.Doc, so a group can be matched back to the function it
-	// documents by identity.
-	docOf := map[*ast.CommentGroup]*ast.FuncDecl{}
-	for _, decl := range file.Decls {
-		if fd, ok := decl.(*ast.FuncDecl); ok && fd.Doc != nil {
-			docOf[fd.Doc] = fd
-		}
-	}
-
-	handled := map[*ast.FuncDecl]bool{}
-	for _, group := range file.Comments {
-		fd := docOf[group]
-		var claimed []directive
-		bad := false
-		for _, c := range group.List {
-			if !strings.HasPrefix(c.Text, directivePrefix) {
-				continue
-			}
-			// Which //servo: lines this scanner claims: only the route
-			// verbs, plus a verb misplaced off a function (a real mistake
-			// worth reporting). Everything else under the reserved prefix —
-			// //servo:config, or a typo of it on a type — belongs to the
-			// config feature, which reads directives off type declarations;
-			// claiming it here would double-report or mislead.
-			name, _, ok := graph.DirectiveLine(c.Text)
-			if ok && !IsDirectiveMethod(name) && fd == nil {
-				continue
-			}
-			pos := pkg.Fset.Position(c.Pos())
-			d, diag := parseDirective(c.Text, pos)
-			if diag != nil {
-				*diags = append(*diags, *diag)
-				bad = true
-				continue
-			}
-			claimed = append(claimed, d)
-		}
-		if len(claimed) == 0 && !bad {
+	// The lines each handler's doc comment carries, in source order; a
+	// function whose every line is malformed has none, and is not
+	// validated — its lines are already reported.
+	var handlers []*ast.FuncDecl
+	claimed := map[*ast.FuncDecl][]directive{}
+	mismatchReported := false
+	for _, d := range graph.FileDirectives(file) {
+		pos := pkg.Fset.Position(d.Comment.Pos())
+		if problem := d.Unclaimed(); problem != "" {
+			*diags = append(*diags, Diagnostic{Pos: pos, Message: problem})
 			continue
 		}
-
-		if fd == nil {
-			// Report against each directive line: a floating directive
-			// registers nothing, which is exactly the silent failure the
-			// reserved prefix exists to prevent.
-			for _, d := range claimed {
-				*diags = append(*diags, Diagnostic{Pos: d.pos, Message: "servo: //servo: directive must be the doc comment of a top-level function"})
+		if !d.IsRoute() {
+			continue // a //servo:config, which graph.ScanConfigs reads
+		}
+		// Directives are just comments: they parse fine against a servo
+		// version that predates the HTTP feature, and the CLI can be newer
+		// than the module's library. That mismatch must name its fix
+		// rather than drop routes or chase a missing type — once per file,
+		// not once per route.
+		if st == nil {
+			if !mismatchReported {
+				mismatchReported = true
+				*diags = append(*diags, Diagnostic{Pos: pos, Message: "servo: //servo: route directives need a servo version that exports the servo.Response family — update github.com/okian/servo/v3 in this module"})
 			}
 			continue
 		}
-		if len(claimed) == 0 {
-			continue // every line was malformed; already reported
-		}
-		if handled[fd] {
-			continue
-		}
-		handled[fd] = true
-
-		h, diag := validateHandler(pkg, fd, st, claimed[0].pos)
+		parsed, diag := parseDirective(d.Name, d.Args, pos)
 		if diag != nil {
 			*diags = append(*diags, *diag)
 			continue
 		}
-		for _, d := range claimed {
+		if _, seen := claimed[d.Func]; !seen {
+			handlers = append(handlers, d.Func)
+		}
+		claimed[d.Func] = append(claimed[d.Func], parsed)
+	}
+
+	for _, fd := range handlers {
+		lines := claimed[fd]
+		h, diag := validateHandler(pkg, fd, st, lines[0].pos)
+		if diag != nil {
+			*diags = append(*diags, *diag)
+			continue
+		}
+		for _, d := range lines {
 			rt := &Route{
 				Method:   d.method,
 				Pattern:  d.pattern,
@@ -247,40 +213,38 @@ func scanFile(pkg *packages.Package, file *ast.File, st *servoHTTPTypes, routes 
 	}
 }
 
-// parseDirective parses one claimed comment line. The method must be one of
-// the seven verbs and the pattern a single "/"-rooted token.
-func parseDirective(text string, pos token.Position) (directive, *Diagnostic) {
-	rest := strings.TrimPrefix(text, directivePrefix)
-	fields := strings.Fields(rest)
-	if len(fields) == 0 {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: empty //servo: directive — the //servo: comment prefix is reserved; methods: %s", graph.RouteVerbList)}
-	}
-	method, ok := methods[fields[0]]
+// parseDirective parses one route directive from the tokens
+// graph.ParseDirective split it into. The method must be one of the seven
+// verbs — a line graph.Directive.IsRoute claims always is — and the
+// pattern a single "/"-rooted token.
+func parseDirective(name string, args []string, pos token.Position) (directive, *Diagnostic) {
+	method, ok := methods[name]
 	if !ok {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: unknown //servo: directive %q — the //servo: comment prefix is reserved; methods: %s", fields[0], graph.RouteVerbList)}
+		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s is not a route directive — the route verbs are %s", name, graph.RouteVerbList)}
 	}
-	if len(fields) < 2 {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s needs a route pattern, e.g. //servo:%s /order/{category}/", fields[0], fields[0])}
+	if len(args) == 0 {
+		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s needs a route pattern, e.g. //servo:%s /order/{category}/", name, name)}
 	}
-	if !strings.HasPrefix(fields[1], "/") {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: route pattern %q must start with %q", fields[1], "/")}
+	pattern := args[0]
+	if !strings.HasPrefix(pattern, "/") {
+		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: route pattern %q must start with %q", pattern, "/")}
 	}
-	if len(fields) > 3 {
-		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s takes a pattern and an optional group — unexpected %q after %q", fields[0], fields[3], fields[2])}
+	if len(args) > 2 {
+		return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: //servo:%s takes a pattern and an optional group — unexpected %q after %q", name, args[2], args[1])}
 	}
 	group := ""
-	if len(fields) == 3 {
-		if !groupTokenRE.MatchString(fields[2]) {
-			return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: group %q must match [A-Za-z0-9_-]+", fields[2])}
+	if len(args) == 2 {
+		if !groupTokenRE.MatchString(args[1]) {
+			return directive{}, &Diagnostic{Pos: pos, Message: fmt.Sprintf("servo: group %q must match %s", args[1], graph.GroupNameGrammar)}
 		}
-		if fields[2] != "default" {
-			group = fields[2]
+		if args[1] != "default" {
+			group = args[1]
 		}
 	}
-	if diag := probePattern(method, fields[1], pos); diag != nil {
+	if diag := probePattern(method, pattern, pos); diag != nil {
 		return directive{}, diag
 	}
-	return directive{method: method, pattern: fields[1], group: group, pos: pos}, nil
+	return directive{method: method, pattern: pattern, group: group, pos: pos}, nil
 }
 
 // probePattern registers the single pattern on a fresh ServeMux: a panic
@@ -534,15 +498,21 @@ func buildReqPlan(reqType types.Type, named *types.Named, d directive) (*ReqPlan
 	// with no segment reads an empty string forever, a segment with no tag
 	// is routing data the handler silently never sees.
 	segments := wildcards(d.pattern)
+	inPattern := make(map[string]bool, len(segments))
+	for _, seg := range segments {
+		inPattern[seg] = true
+	}
 	for _, f := range plan.Fields {
 		if f.Kind != BindPath {
 			continue
 		}
-		if !segments[f.Param] {
+		if !inPattern[f.Param] {
 			diags = append(diags, Diagnostic{Pos: d.pos, Message: fmt.Sprintf("servo: field %s of %s binds path %q, but the pattern %q has no {%s} segment", f.Name, structName, f.Param, d.pattern, f.Param)})
 		}
 	}
-	for seg := range segments {
+	// In the pattern's own order, so two missing segments are reported the
+	// same way every run.
+	for _, seg := range segments {
 		if seg == "$" {
 			continue
 		}
@@ -596,19 +566,20 @@ func isScalar(t types.Type) bool {
 	}
 }
 
-// wildcards extracts the {name} segments of a ServeMux pattern, with any
-// "..." suffix stripped. "{$}" comes back as "$", which callers treat as
-// structural rather than bindable. A malformed pattern simply yields fewer
-// names — the ServeMux probe below reports it with net/http's own words.
-func wildcards(pattern string) map[string]bool {
-	out := map[string]bool{}
+// wildcards extracts the {name} segments of a ServeMux pattern, in pattern
+// order, each once, with any "..." suffix stripped. "{$}" comes back as
+// "$", which callers treat as structural rather than bindable. A malformed
+// pattern simply yields fewer names — the ServeMux probe below reports it
+// with net/http's own words.
+func wildcards(pattern string) []string {
+	var out []string
 	for seg := range strings.SplitSeq(pattern, "/") {
 		if len(seg) < 3 || seg[0] != '{' || seg[len(seg)-1] != '}' {
 			continue
 		}
 		name := strings.TrimSuffix(seg[1:len(seg)-1], "...")
-		if name != "" {
-			out[name] = true
+		if name != "" && !slices.Contains(out, name) {
+			out = append(out, name)
 		}
 	}
 	return out

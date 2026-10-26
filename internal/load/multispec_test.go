@@ -111,10 +111,10 @@ func TestFindSpecAsksToDisambiguateWhenMultipleFound(t *testing.T) {
 
 func TestFindSpecScopedToOneInjectorDirectorySucceeds(t *testing.T) {
 	dir := writeMultiInjectorModule(t)
-	// Scoping the load to one injector's own directory is the workaround
-	// this test documents: package main can never import another package
-	// main, so cmd/workersvc is simply unreachable from cmd/apisvc's own
-	// transitive closure regardless of directory layout.
+	// Pointing Dir at one injector's own directory is how the caller picks
+	// it: Dir selects which injectors are processed, and only that. The
+	// load still reads the whole module, cmd/workersvc included — which is
+	// what keeps the picked graph the same one the module root resolves.
 	loaded, err := Load(Config{Dir: filepath.Join(dir, "cmd", "apisvc")})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -125,6 +125,13 @@ func TestFindSpecScopedToOneInjectorDirectorySucceeds(t *testing.T) {
 	}
 	if !strings.Contains(spec.InjectorPkg.PkgPath, "apisvc") {
 		t.Errorf("got injector %s, want apisvc", spec.InjectorPkg.PkgPath)
+	}
+	if _, ok := loaded.ByPath["example.com/multiapp/cmd/workersvc"]; !ok {
+		t.Error("the load skipped cmd/workersvc: Dir must select injectors, not narrow what is loaded")
+	}
+	all, err := ModuleSpecs(loaded)
+	if err != nil || len(all) != 2 {
+		t.Errorf("ModuleSpecs = %d specs, %v; want both injectors, whichever one Dir selects", len(all), err)
 	}
 }
 

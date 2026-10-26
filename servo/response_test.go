@@ -1,7 +1,9 @@
 package servo
 
 import (
+	"errors"
 	"io"
+	"math"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -110,13 +112,112 @@ func TestTypedResponsesAreResponses(t *testing.T) {
 	}
 }
 
-// An encoding failure surfaces as WriteResponse's error, not a panic —
-// json can't marshal a channel.
-func TestWriteResponseEncodeError(t *testing.T) {
-	w := httptest.NewRecorder()
-	if err := WriteResponse(w, 200, JSON(make(chan int))); err == nil {
-		t.Fatalf("expected an encoding error")
+// A payload that does not encode must not go out as the success status over
+// an empty body: the encoder runs before anything is written, and the
+// failure becomes a whole 500 in the adapters' error envelope, with an error
+// that carries the 500 so the caller knows only the log is left to write.
+func TestWriteResponseEncodeFailureIsA500(t *testing.T) {
+	cases := []struct {
+		name string
+		res  Response
+		want string
+	}{
+		{"json NaN", JSON(map[string]float64{"v": math.NaN()}), "unsupported value"},
+		{"json channel", JSON(make(chan int)), "unsupported type"},
+		{"xml map", XML(map[string]int{"n": 1}), "unsupported type"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			err := WriteResponse(w, 201, c.res)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("err = %v, want the encoder's error (%q)", err, c.want)
+			}
+			var hs HTTPStatus
+			if !errors.As(err, &hs) || hs != Status.INTERNAL_SERVER_ERROR {
+				t.Fatalf("err carries %+v, want Status.INTERNAL_SERVER_ERROR", hs)
+			}
+			if w.Code != 500 {
+				t.Fatalf("code = %d, want 500 — the success status must not go out before the body encodes", w.Code)
+			}
+			if ct := w.Header().Get("Content-Type"); ct != "application/json" {
+				t.Fatalf("Content-Type = %q, want the error envelope's", ct)
+			}
+			if got := w.Body.String(); got != "{\"error\":\"Internal Server Error\"}\n" {
+				t.Fatalf("body = %q, want the canonical error envelope", got)
+			}
+		})
 	}
 }
 
-var _ io.Reader = strings.NewReader("") // keep io imported for the Stream case above
+// net/http panics on a code outside 100–999. A file generated before
+// v3.5.0 passes a zero HTTPStatus's code straight through, so WriteResponse
+// answers 500 for one rather than take the request down.
+func TestWriteResponseRefusesACodeThatIsNoStatus(t *testing.T) {
+	for _, code := range []int{0, 42, 1000} {
+		w := httptest.NewRecorder()
+		err := WriteResponse(w, code, JSON(1))
+		var hs HTTPStatus
+		if !errors.As(err, &hs) || hs.Code() != 500 {
+			t.Fatalf("code %d: err = %v, want one carrying the 500", code, err)
+		}
+		if w.Code != 500 || !strings.Contains(w.Body.String(), "Internal Server Error") {
+			t.Fatalf("code %d: wrote %d %q, want the 500 envelope", code, w.Code, w.Body.String())
+		}
+	}
+}
+
+type countingCloser struct {
+	io.Reader
+	closed int
+}
+
+func (c *countingCloser) Close() error { c.closed++; return nil }
+
+type failingReader struct{ sent bool }
+
+func (f *failingReader) Read(p []byte) (int, error) {
+	if f.sent {
+		return 0, errors.New("upstream reset")
+	}
+	f.sent = true
+	return copy(p, "partial"), nil
+}
+
+// A Stream owns its reader: it is closed once the copy ends, however it
+// ends — otherwise every file or upstream body a handler streams is a
+// leaked descriptor or pooled connection.
+func TestStreamClosesItsReader(t *testing.T) {
+	t.Run("after a whole copy", func(t *testing.T) {
+		r := &countingCloser{Reader: strings.NewReader("a,b\n")}
+		w := httptest.NewRecorder()
+		if err := WriteResponse(w, 200, Stream("text/csv", r)); err != nil {
+			t.Fatalf("WriteResponse: %v", err)
+		}
+		if r.closed != 1 || w.Body.String() != "a,b\n" {
+			t.Fatalf("closed %d times, body %q; want closed once after the body", r.closed, w.Body.String())
+		}
+	})
+	t.Run("after a failed copy", func(t *testing.T) {
+		r := &countingCloser{Reader: &failingReader{}}
+		w := httptest.NewRecorder()
+		err := WriteResponse(w, 200, Stream("", r))
+		if err == nil || err.Error() != "upstream reset" {
+			t.Fatalf("err = %v, want the reader's own error", err)
+		}
+		if r.closed != 1 {
+			t.Fatalf("closed %d times, want once", r.closed)
+		}
+		// The status was committed before the reader failed, so this
+		// error is not one WriteResponse could still answer — it carries
+		// no status, which is how the adapter knows to break the
+		// connection instead.
+		var hs HTTPStatus
+		if errors.As(err, &hs) {
+			t.Fatalf("a mid-copy failure must not claim a status: %+v", hs)
+		}
+		if w.Code != 200 || w.Body.String() != "partial" {
+			t.Fatalf("wrote %d %q", w.Code, w.Body.String())
+		}
+	})
+}

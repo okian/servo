@@ -1,16 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/okian/servo/v3/internal/emit"
 	"github.com/okian/servo/v3/internal/load"
 	"github.com/okian/servo/v3/internal/resolve"
 )
+
+// checkOptions are the flags check takes beyond the load configuration
+// every loading command shares.
+type checkOptions struct {
+	// invoked is the loading flags the run was given, which any command it
+	// suggests repeats.
+	invoked invocation
+}
 
 // runCheck verifies every injector found within dir's scope matches a fresh
 // generation, reporting every stale one — not just the first — so a CI job
@@ -18,6 +28,11 @@ import (
 // same way `wire ./... && git diff --exit-code` would. Never rewrites
 // anything itself (that's `generate`'s job).
 func runCheck(cfg load.Config) error {
+	return runCheckWith(cfg, checkOptions{})
+}
+
+// runCheckWith is runCheck with check's own flags.
+func runCheckWith(cfg load.Config, opts checkOptions) error {
 	pipelines, err := buildPipelines(cfg)
 	if err != nil {
 		return err
@@ -34,66 +49,61 @@ func runCheck(cfg load.Config) error {
 		errs = append(errs, agreementErr)
 	}
 
+	c := newChecker(opts.invoked)
 	for i, p := range pipelines {
 		if resolveds[i] == nil {
 			continue // resolution already failed and is already in errs
 		}
-		if err := checkOne(p, resolveds[i]); err != nil {
+		if err := c.checkOne(p, resolveds[i]); err != nil {
 			errs = append(errs, err)
 		}
-		if err := checkTestVariant(p); err != nil {
+		if err := c.checkTestVariant(p); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	orphans, err := orphanedCompanions(pipelines)
+	if err != nil {
+		errs = append(errs, err)
 	}
-	return nil
+	for _, path := range orphans {
+		errs = append(errs, fmt.Errorf("servo check: %s is left over from a //servo:config type its package no longer declares — run %s, which removes it", path, c.invoked.command("generate", cfg.Build.TagList())))
+	}
+	if err := c.verify(cfg); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
-// checkTestVariant is checkOne for the override variant, resolved here
-// rather than handed in since no cross-injector check needs it. A spec
-// with no Override must have no servo-written test variant beside it:
-// generate removes one it finds, and check refuses one that lingered —
-// it still compiles under go test, and nothing regenerates it.
-func checkTestVariant(p *pipeline) error {
-	dir := filepath.Dir(p.spec.Pos.Filename)
-	path := filepath.Join(dir, variantFileName(p.spec.Variant, true))
-	if len(p.spec.Overrides) == 0 {
-		if _, ok := servoGeneratedConstraint(path); ok {
-			return fmt.Errorf("servo check: %s is left over from a spec that no longer declares servo.Override — run %s, which removes it", path, regenerateCommand(p.spec.Variant))
-		}
-		return nil
-	}
-	resolved, err := p.resolve(p.spec.Overrides)
-	if err != nil {
-		return err
-	}
-	fresh, err := emit.Emit(resolved, p.spec, true)
-	if err != nil {
-		return err
-	}
-	if err := compareGenerated(path, fresh, p.spec.Variant); err != nil {
-		return err
-	}
-	companions, err := companionFiles(resolved, p.spec.ConfigFile != nil)
-	if err != nil {
-		return err
-	}
-	return compareCompanions(companions, p.spec.Variant)
+// checker compares generated files with a fresh generation, and keeps the
+// ones that match so they can be compiled once every comparison is done.
+type checker struct {
+	invoked invocation
+	// current is every generated file found byte-identical to a fresh
+	// generation, as committed, and pkgs the packages they sit in.
+	current map[string][]byte
+	pkgs    []string
+}
+
+func newChecker(invoked invocation) *checker {
+	return &checker{invoked: invoked, current: map[string][]byte{}}
 }
 
 // checkPipeline is resolve + checkOne in one call, for callers (doctor)
 // that check a single injector and have no cross-injector concerns.
 func checkPipeline(p *pipeline) error {
+	return newChecker(invocation{}).checkPipeline(p)
+}
+
+func (c *checker) checkPipeline(p *pipeline) error {
 	resolved, err := p.resolve(nil)
 	if err != nil {
 		return err
 	}
-	return checkOne(p, resolved)
+	return c.checkOne(p, resolved)
 }
 
-func checkOne(p *pipeline, resolved *resolve.Resolved) error {
+// checkOne compares one injector's production file and companions.
+func (c *checker) checkOne(p *pipeline, resolved *resolve.Resolved) error {
 	fresh, err := emit.Emit(resolved, p.spec, false)
 	if err != nil {
 		return err
@@ -108,50 +118,108 @@ func checkOne(p *pipeline, resolved *resolve.Resolved) error {
 		return err
 	}
 
-	if err := compareGenerated(filepath.Join(dir, name), fresh, p.spec.Variant); err != nil {
+	if err := c.compare(filepath.Join(dir, name), fresh, p.spec.Variant, p.spec.InjectorPkg.PkgPath); err != nil {
 		return err
 	}
 
 	// Companion config loaders are as much this graph's output as the
 	// injector file is, and drift the same way: a renamed tag regenerated
 	// on one machine and committed without the companion.
-	companions, err := companionFiles(resolved, p.spec.ConfigFile != nil)
-	if err != nil {
-		return err
-	}
-	return compareCompanions(companions, p.spec.Variant)
+	return c.compareCompanions(resolved, p.spec.ConfigFile != nil, p.spec.Variant)
 }
 
-// compareGenerated reports a generated file that is missing or differs
-// from fresh, naming the command that would produce it.
-func compareGenerated(path string, fresh []byte, tags []string) error {
+// checkTestVariant is checkOne for the override variant, resolved here
+// rather than handed in since no cross-injector check needs it. A spec
+// with no Override must have no servo-written test variant beside it:
+// generate removes one it finds, and check refuses one that lingered —
+// it still compiles under go test, and nothing regenerates it.
+func (c *checker) checkTestVariant(p *pipeline) error {
+	dir := filepath.Dir(p.spec.Pos.Filename)
+	path := filepath.Join(dir, variantFileName(p.spec.Variant, true))
+	if len(p.spec.Overrides) == 0 {
+		if _, ok := servoGeneratedConstraint(path); ok {
+			return fmt.Errorf("servo check: %s is left over from a spec that no longer declares servo.Override — run %s, which removes it", path, c.invoked.command("generate", p.spec.Variant))
+		}
+		return nil
+	}
+	resolved, err := p.resolve(p.spec.Overrides)
+	if err != nil {
+		return inTestGraph(p, err)
+	}
+	fresh, err := emit.Emit(resolved, p.spec, true)
+	if err != nil {
+		return inTestGraph(p, err)
+	}
+	if err := c.compare(path, fresh, p.spec.Variant, p.spec.InjectorPkg.PkgPath); err != nil {
+		return err
+	}
+	return c.compareCompanions(resolved, p.spec.ConfigFile != nil, p.spec.Variant)
+}
+
+// compare reports a generated file that is missing or differs from fresh,
+// naming the command that would produce it, and otherwise records it as
+// current, in package pkgPath.
+//
+// Line endings are not a difference. Git for Windows checks text files out
+// with CRLF endings by default (core.autocrlf), so a file committed exactly
+// as servo generates it came back different on every byte that ends a
+// line: every Windows checkout called every generated file stale, with a
+// diff of identical-looking lines and a note blaming another servo
+// version.
+func (c *checker) compare(path string, fresh []byte, tags []string, pkgPath string) error {
 	committed, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return fmt.Errorf("servo check: %s does not exist — run %s", path, regenerateCommand(tags))
+			return fmt.Errorf("servo check: %s does not exist — run %s", path, c.invoked.command("generate", tags))
 		}
 		return err
 	}
-	if string(committed) != string(fresh) {
-		return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", path, regenerateCommand(tags), unifiedDiff(string(committed), string(fresh), path), versionSkewNote())
+	if lf := bytes.ReplaceAll(committed, []byte("\r\n"), []byte("\n")); !bytes.Equal(lf, fresh) {
+		return fmt.Errorf("servo check: %s is stale — run %s\n%s\n%s", path, c.invoked.command("generate", tags), unifiedDiff(string(lf), string(fresh), path), versionSkewNote())
 	}
+	c.current[path] = committed
+	c.pkgs = append(c.pkgs, pkgPath)
 	return nil
 }
 
-// compareCompanions is compareGenerated over every companion loader, in
-// path order so a report is stable.
-func compareCompanions(companions map[string][]byte, tags []string) error {
-	paths := make([]string, 0, len(companions))
-	for path := range companions {
-		paths = append(paths, path)
+// compareCompanions is compare over every companion loader resolved's
+// graph needs, in path order so a report is stable.
+func (c *checker) compareCompanions(resolved *resolve.Resolved, withFile bool, tags []string) error {
+	companions, err := companionFiles(resolved, withFile)
+	if err != nil {
+		return err
 	}
-	sort.Strings(paths)
-	for _, path := range paths {
-		if err := compareGenerated(path, companions[path], tags); err != nil {
+	pkgOf := make(map[string]string, len(resolved.Configs))
+	for _, n := range resolved.Configs {
+		pkgOf[filepath.Join(n.Config.Dir, emit.ConfigLoaderFileName)] = n.Config.PkgPath
+	}
+	for _, path := range slices.Sorted(maps.Keys(companions)) {
+		if err := c.compare(path, companions[path], tags, pkgOf[path]); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// verify compiles the generated files found current. Matching a fresh
+// generation byte for byte is not the same as compiling: a Bind to a mock
+// whose interface has since grown a method generates the same broken file
+// every time, and check used to call it current — doctor too — while
+// `go build` failed inside it.
+func (c *checker) verify(cfg load.Config) error {
+	if len(c.current) == 0 {
+		return nil
+	}
+	v, err := load.Verify(cfg, c.current, c.pkgs)
+	if err != nil {
+		return fmt.Errorf("servo check: compiling the generated code: %w", err)
+	}
+	tags := cfg.Build.TagList()
+	warnUnchecked(os.Stderr, "servo check", v.Unchecked, c.invoked.command("check", tags))
+	if len(v.Problems) == 0 {
+		return nil
+	}
+	return compileFailure("servo check: the generated code does not compile", v.Problems, c.invoked.command("generate", tags))
 }
 
 // versionSkewNote is appended to every stale report because the message

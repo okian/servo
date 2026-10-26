@@ -15,7 +15,8 @@ This chapter and the next are the one pair you can skip. The service is complete
 to see how little a transport swap actually disturbs. The spec file they each change by one line
 is the subject of chapter 14, so if that section reads ahead of you, come back to it after.
 
-The working code is [`examples/tutorial/ginapi`](https://github.com/okian/servo/tree/master/examples/tutorial/ginapi),
+The working code is
+[`examples/tutorial/internal/transport/ginapi`](https://github.com/okian/servo/tree/master/examples/tutorial/internal/transport/ginapi),
 wired by `cmd/ordersgin`.
 
 ## The router
@@ -104,6 +105,10 @@ servo.Build(
 
 `diff` the two spec files and you get that root declaration and the import that serves it, and
 nothing else. `ginapi.Server` has the same `Run`/`Stop` shape, so servo treats it identically.
+
+Run it the way [chapter 10](10-api-layer.md#try-the-whole-thing) runs `cmd/orders` — Postgres,
+Redis and NATS up, and `POSTGRES_DSN`, `REDIS_ADDR`, `NATS_URL` and `JWT_SECRET` exported in your
+shell — in the finished module, or in your own once chapter 14 has given it its injectors:
 
 ```
 $ make run-gin

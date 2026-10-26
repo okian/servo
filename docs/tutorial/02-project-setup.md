@@ -11,9 +11,12 @@ this out later, in the middle of a chapter where it'll be more disruptive.
 mkdir servoorders && cd servoorders
 go mod init example.com/servoorders
 go get github.com/okian/servo/v3
+go get -tool github.com/okian/servo/v3/cmd/servo
 ```
 
-That's the whole setup — one module, one dependency so far. (The tutorial's own copy, at
+That's the whole setup — one module, servo as its one dependency so far, and servo's generator
+recorded in `go.mod` as a tool, so `go tool servo` runs the version this module pins, on every
+machine. (The tutorial's own copy, at
 [`examples/tutorial`](https://github.com/okian/servo/tree/master/examples/tutorial) inside the servo repo, points
 `github.com/okian/servo/v3` at the local checkout with a `replace` directive instead of a published
 version, because it's developing servo itself alongside the tutorial. You won't need that; plain
@@ -101,14 +104,21 @@ where what sits at the top level is a deliberate, small public API.
 
 | Tool | You'll use it for | Install |
 |---|---|---|
-| `servo` | Generating and checking the wiring (chapter 14) | `go install github.com/okian/servo/v3/cmd/servo@latest` |
+| `servo` | Generating and checking the wiring (chapter 14) | Done already: the `go get -tool` line above. Run it as `go tool servo` |
 | Docker + `docker compose` | Running Postgres, Redis, NATS locally | [docs.docker.com](https://docs.docker.com/get-docker/) |
 | `golangci-lint` | The CI lint step (chapter 19) | `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest` |
 
-You can actually skip installing `servo` globally — every command in this tutorial works equally
-well as `go run github.com/okian/servo/v3/cmd/servo <command>`, and that's what the Makefile below
-uses, so a fresh clone of the finished project works with nothing pre-installed except Go and
-Docker.
+You don't need `servo` installed globally. Every command in this tutorial runs as
+`go tool servo <command>`, the generator `go.mod` pins, and that's what the Makefile below uses —
+so a fresh clone of the finished project works with nothing pre-installed except Go and Docker.
+
+A global `servo`, from `go install github.com/okian/servo/v3/cmd/servo@latest`, is fine for typing
+`servo explain` by hand, but it's whatever version was latest the day you installed it, and a
+generated file is only fresh relative to the generator that wrote it; `servo doctor` warns when the
+two differ. And not `go run github.com/okian/servo/v3/cmd/servo`: your module requires servo for its
+marker package alone, so the generator's own dependencies aren't in your build list, and `go run`
+stops at a missing `go.sum` entry for `golang.org/x/tools`. The `tool` directive `go get -tool`
+writes is what puts them there.
 
 ## Write the Makefile
 
@@ -146,10 +156,10 @@ run-grpc:
 	go run ./cmd/ordersgrpc
 
 generate:
-	go run github.com/okian/servo/v3/cmd/servo generate
+	go tool servo generate
 
 check:
-	go run github.com/okian/servo/v3/cmd/servo check
+	go tool servo check
 ```
 
 Two test targets, not one, and that split is worth understanding now rather than discovering by
@@ -165,6 +175,11 @@ you'll use it starting in chapter 5, the moment there's a real database to test 
   following along outside the servo repo and haven't run `go get github.com/okian/servo/v3` yet
   (or you're pointed at an unpublished fork — use a `replace` directive at your local checkout in
   that case, the same way `examples/tutorial/go.mod` does).
+- **`go: no such tool "servo"`** — `go.mod` has no `tool` directive for the generator yet; run
+  `go get -tool github.com/okian/servo/v3/cmd/servo` once.
+- **`missing go.sum entry for module providing package golang.org/x/tools/go/packages`** — something
+  ran `go run github.com/okian/servo/v3/cmd/servo`. Use `go tool servo` instead, for the reason under
+  [Install what you'll need](#install-what-youll-need).
 - **`make: docker: command not found`** — install Docker before continuing; nothing from chapter 5
   onward works without it.
 

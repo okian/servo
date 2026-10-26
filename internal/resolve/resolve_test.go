@@ -245,8 +245,8 @@ func TestResolveInterfaceAsRootAmbiguity(t *testing.T) {
 		t.Fatalf("got %d diagnostics, want 1", len(diags))
 	}
 	msg := diags[0].String()
-	if !strings.Contains(msg, "no provider for example.com/app.DBIface") {
-		t.Errorf("message = %q, want it to name DBIface as unresolved", msg)
+	if !strings.Contains(msg, "ambiguous provider for example.com/app.DBIface") {
+		t.Errorf("message = %q, want it headed as the ambiguity it is", msg)
 	}
 	if strings.Contains(msg, "needed by") {
 		t.Errorf("message = %q, want no 'needed by' line: DBIface is the root itself, not a dependency", msg)
@@ -271,17 +271,23 @@ func TestResolveAmbiguousInterface(t *testing.T) {
 		t.Fatalf("got %d diagnostics, want 1", len(diags))
 	}
 	msg := diags[0].String()
-	if !strings.Contains(msg, "no provider for example.com/app.DBIface") {
-		t.Errorf("message = %q, want it to name DBIface as unresolved", msg)
+	if !strings.Contains(msg, "ambiguous provider for example.com/app.DBIface") {
+		t.Errorf("message = %q, want it headed as the ambiguity it is", msg)
 	}
-	if !strings.Contains(msg, "types implement") {
+	if !strings.Contains(msg, "2 types in this module implement app.DBIface") {
 		t.Errorf("message = %q, want the interface-ambiguity phrasing", msg)
 	}
-	if !strings.Contains(msg, "servo.Bind[example.com/app.DBIface, *example.com/app.Memory]()") {
+	// Written the way a spec file writes types — package names, not
+	// import paths — with the import the spec would need listed, since a
+	// suggestion naming example.com/app.DBIface is not Go anyone can paste.
+	if !strings.Contains(msg, "servo.Bind[app.DBIface, *app.Memory]()") {
 		t.Errorf("message = %q, want a paste-ready Bind line for Memory", msg)
 	}
-	if !strings.Contains(msg, "servo.Bind[example.com/app.DBIface, *example.com/app.Postgres]()") {
+	if !strings.Contains(msg, "servo.Bind[app.DBIface, *app.Postgres]()") {
 		t.Errorf("message = %q, want a paste-ready Bind line for Postgres", msg)
+	}
+	if !strings.Contains(msg, "with these imports in the spec file:\n      \"example.com/app\"") {
+		t.Errorf("message = %q, want the import to add", msg)
 	}
 	if !strings.Contains(msg, "needed by *example.com/app.Server") {
 		t.Errorf("message = %q, want the chain to name Server as the consumer", msg)
@@ -353,11 +359,16 @@ func TestResolveAmbiguousExactDuplicate(t *testing.T) {
 		t.Fatalf("got %d diagnostics, want 1", len(diags))
 	}
 	msg := diags[0].String()
-	if !strings.Contains(msg, "2 functions produce *example.com/app.Logger") {
+	if !strings.Contains(msg, "ambiguous provider for *example.com/app.Logger") || !strings.Contains(msg, "2 functions produce *app.Logger") {
 		t.Errorf("message = %q, want the duplicate-producer phrasing", msg)
 	}
 	if strings.Contains(msg, "servo.Bind[") {
 		t.Errorf("message = %q, a same-type duplicate has no Bind fix to suggest", msg)
+	}
+	// Renaming a function cannot change the type it returns, so the advice
+	// is distinct named types, never "rename".
+	if strings.Contains(msg, "rename all but one") || !strings.Contains(msg, "type PrimaryLogger struct{ *app.Logger }") {
+		t.Errorf("message = %q, want the distinct-named-types advice", msg)
 	}
 }
 

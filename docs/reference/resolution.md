@@ -47,9 +47,12 @@ Consequences, all of which follow from that single rule:
 
 - **`T` and `*T` are different nodes.** A constructor returning `*postgres.DB` does not satisfy a
   parameter of type `postgres.DB`.
-- **Aliases collapse to their target.** `types.Unalias` is applied, and applied through pointer
-  indirection too, so `*Alias` and `*Underlying` are the same key rather than two strings that
-  merely look different.
+- **Aliases collapse to their target, at any depth.** An alias is resolved wherever it appears —
+  the type itself, a pointer's element, a type argument, a slice, map or channel element, a
+  function's parameters and results, a struct's fields — so `*Alias` and `*Underlying`, or
+  `*Cache[DBAlias]` and `*Cache[*DB]`, are one key rather than two strings that merely look
+  different. An embedded field is the exception, because it is named after the type written for
+  it: `struct{ Alias }` and `struct{ Target }` are different types.
 - **Import paths are always written in full**, never abbreviated to a package name, so two
   same-named types from different packages can never collide.
 - **A node is a singleton.** Each key resolves once; every consumer of that key gets the same
@@ -83,8 +86,9 @@ refuse. The same rule applies to a [`//servo:` handler](http.md) declared in a m
 
 **It is neither generic nor variadic.** A generic function has no single result type to key on. A
 variadic parameter's static type is a slice, and a slice can never be provided, so such a function
-could never resolve anyway; both are rejected up front with a specific reason rather than
-surfacing later as a confusing "no provider for `[]T`".
+could never resolve anyway; both are rejected up front with a specific reason, and that reason is
+what a "no provider" diagnostic for the type the function would have returned prints — see
+[near misses](#near-misses) below.
 
 **Its results match one of four shapes**, and only these four:
 
@@ -114,6 +118,31 @@ whole module would be the same node. Wrap configuration values in a named type.
 construct anything, and listing them would bury the real answers in `servo list --rejected` under
 every helper function in the module.
 
+### The injector has to be able to refer to it
+
+Everything above is about the function alone, and holds for every injector. One more rule depends
+on which injector is asking: the generated file lives in the injector's package, calls the
+constructor there, and holds the result in a field of the `App`, so both have to be things that
+package can name. A candidate is set aside for an injector when:
+
+- **it is under another tree's `internal/` directory** — Go lets only the tree rooted at the
+  `internal` element's parent import it, and the same goes for a package its result type is
+  declared in;
+- **its result type is unexported in another package** — `func NewEvictor() *evictor` is fine Go,
+  and a caller can hold the value, but the `App` field holding it cannot be declared outside
+  package `cache`;
+- **its package imports the injector's package**, directly or through others — an adapter that
+  imports the core package it serves, with the spec file in that core package; importing it back
+  would be a cycle.
+
+Such a candidate is still in the index (`servo list` shows it, since the index is the same for
+every injector), but resolution never selects it for an injector that cannot use it. It drops out
+of structural search, so it cannot make an ambiguity of an implementation that is usable; an exact
+or `Bind` request that it alone would have answered is reported as `no usable provider for …`,
+with the reason. Parameter types are deliberately not judged: an argument is passed as a value the
+generated code already holds, so its type is never written down. Each of these used to end in a
+file the compiler refused, reported by `servo generate` as a bug in servo.
+
 ## Rejection reasons
 
 Every reason string `servo list --rejected` can print, with what to do about it:
@@ -124,7 +153,10 @@ Every reason string `servo list --rejected` can print, with what to do about it:
 | `declared in another package main, which nothing can import` | A constructor in a sibling binary's main package | Move it to an importable package; only that package's own injector can use it where it is |
 | `generic function — unsupported` | The function has type parameters | Write a concrete wrapper that instantiates it |
 | `variadic parameter — unsupported` | A `...T` parameter, e.g. an options pattern | Wrap: `func New() *Client { return newClient(opts...) }` |
-| `does not match a supported result shape` | Results aren't one of the four shapes above | Reduce to one value, plus optionally a cleanup func and `error` |
+| `does not match a supported result shape: the error comes last — return (T, error)` | `(error, T)` | Swap the results |
+| `does not match a supported result shape: the cleanup func comes before the error — return (T, func(), error)` | `(T, error, func())` | Swap the last two |
+| `does not match a supported result shape: the second result is X, and must be error or a func() cleanup` | Two results, the second neither | Reduce to one value, plus optionally a cleanup func and `error` |
+| `does not match a supported result shape: three results must be (T, func(), error)` / `N results — …` | Any other count or order | The same |
 | `second result is X, which implements error but is not the error interface itself` | Returned `*MyError` rather than `error` | Return `error` |
 | `third result is X, which implements error but is not the error interface itself` | Same, in the `(T, func(), error)` shape | Return `error` |
 | `result type is a primitive (string)` | Returns a bare `string`, `int`, `bool`, … | Wrap it in a named type |
@@ -134,9 +166,42 @@ Every reason string `servo list --rejected` can print, with what to do about it:
 | `result type is not a named type, pointer-to-named, or interface` | Anything else — a channel, a func type, … | Wrap it |
 | `method, not a function` | An exported method with at least one result | Add a package-level constructor |
 
-`method, not a function` will be the bulk of the output on any real project, because every
-`Init`/`Stop`/`Health` method in your module lands here. That's deliberate: it means the answer to
-"why wasn't my `Get` method used as a provider" is present rather than absent.
+`method, not a function` would be the bulk of the output on any real project, because every
+`Init`/`Stop`/`Health` method in your module lands here, so the text listing groups methods by
+receiver after the functions — one line per type — instead of repeating the reason per method. The
+answer to "why wasn't my `Get` method used as a provider" is still present rather than absent, and
+`--json` keeps one entry per method.
+
+`servo list --rejected` also lists, under `candidates <injector> cannot use:`, the accepted
+candidates the injector [cannot refer to](#the-injector-has-to-be-able-to-refer-to-it), each with
+its reason: `it is declared in …, which … cannot import: it is internal to …`, `its result type … is
+unexported, so the App generated in … cannot name it`, or `… which imports …, the injector's own
+package, so importing it back from there would be an import cycle`.
+
+### Near misses
+
+When nothing provides a type, the diagnostic ends with whatever came close, one line each, with
+the position to go to:
+
+```
+servo: no provider for *example.com/app/a.Client
+  needed by *example.com/app/a.Server  a/a.go:17:6
+  root                                 cmd/app/spec.go:12:3
+
+  rejected: a.NewClient (a/a.go:7:6) — variadic parameter — unsupported
+```
+
+- `rejected:` — a main-module function the scan refused that would have returned the type (or,
+  for an interface, a type implementing it), with the reason from the table above. A generic
+  constructor counts when the type is one of its instantiations, and a package-level variable of
+  function type (`var NewClient = newClient`) is named too: it reads like a constructor and has
+  never been one.
+- `unusable:` — a candidate the injector cannot refer to, with the reason.
+- `near miss:` — a provider of the type's other half: `T` where `*T` was asked for or the reverse
+  (named wherever it lives, so asking for `slog.Logger` points at `slog.New`), or, for an
+  interface, a main-module type whose pointer has the methods: `returns memory.Store, which does
+  not implement store.Store: Get has a pointer receiver, so only *memory.Store does`.
+- `note:` — the type itself can never be provided: a slice, a map, a primitive, `any`.
 
 ## Where candidates come from
 
@@ -154,27 +219,47 @@ Two different scopes then apply, and the difference matters:
 Restricting the structural search is a guard against deep third-party dependency trees producing
 false ambiguity at scale. It is deliberately the whole main module rather than "packages the
 consumer imports": an implementation living in a package the consumer doesn't import is the entire
-point of depending on an interface.
+point of depending on an interface. And it is the whole module whichever directory servo runs from
+— `--dir` [only picks the injectors](cli.md#--dir-and-injector-scope), so a `go generate` run from
+an injector's own directory searches exactly what a run from the module root does.
 
-**The exact-type lookup being unscoped has a real consequence.** Depend directly on a third-party
-concrete type and its own constructors become the candidates — including cases you can't fix by
-deleting one:
+"The main module" is the module `--dir` is in. A module that a `go.work` lists beside it is not
+part of it unless you pass [`--scope=workspace`](cli.md#--scope): by default its implementations
+are as invisible to the search as any other dependency's, which is what a `GOWORK=off` build — CI's
+usual one — would make of them anyway.
+
+**The exact-type lookup covers every package, and prefers yours.** Depend directly on a stdlib or
+third-party concrete type — `*slog.Logger`, `*sql.DB`, `*http.ServeMux` — and that package's own
+constructors are candidates too. Your module's constructors decide: one `NewLogger() *slog.Logger`
+of your own is selected over `slog.New` and `slog.Default`, and the outside ones are consulted only
+when your module has none. A lone outside constructor is then selected, as it always was; several
+are an ambiguity — but not one that asks you to delete a function you do not own:
 
 ```
 $ servo generate
-servo: no provider for *database/sql.DB
+servo: ambiguous provider for *database/sql.DB
   needed by *example.com/probe/app.Server  app/app.go:7:6
   root                                     spec.go:12:3
 
-  2 functions produce *database/sql.DB — remove or rename all but one:
-      sql.OpenDB      database/sql/sql.go:837:6
-      sql.Open        database/sql/sql.go:868:6
+  2 functions outside this module produce *sql.DB, and servo will not pick one of
+  them for you:
+      sql.OpenDB  database/sql/sql.go:837:6
+      sql.Open    database/sql/sql.go:868:6
+
+  Write its provider in this module — a constructor of your own is preferred
+  over all of these:
+
+	func NewDB(...) *sql.DB
+
+  or declare servo.Value[*sql.DB]() and hand one to NewWith.
+  with these imports in the spec file:
+      "database/sql"
 ```
 
-You cannot remove `sql.Open`. The fix is to stop asking the graph for a foreign type: write your
-own thin wrapper (`servo new adapter postgres` scaffolds one), give it a constructor with the
-configuration it needs, and depend on `*postgres.DB` instead. That indirection is a good idea for
-its own reasons anyway — it's where retries, tracing and connection settings live.
+Writing that constructor is the usual answer, and wrapping the foreign type in one of your own
+(`servo new adapter postgres` scaffolds one) is often the better one: it's where retries, tracing
+and connection settings live. A `context.Context` parameter never reaches this lookup at all — it
+is the [construction context](#selection-precedence).
 
 ## Selection precedence
 
@@ -188,6 +273,17 @@ you say "this comes from the caller", which is only meaningful if it wins. (The 
 resolves a scope's key type and a scope's accessor interface, for the same reason: both are
 declared, not searched for. See [Scoped instances](scopes.md).)
 
+**0¼. `context.Context`: the construction context.** A constructor parameter of type
+`context.Context` receives the context `New`, `NewWith` or `NewTestApp` was called with — supplied
+by the caller, like a value, and never searched for (the search used to find ten functions in the
+standard library and call it an ambiguity). Use it for work done while constructing — a dial, a
+ping — not for anything that outlives the call: `Run`'s context is the one that lasts. A declared
+`servo.Value[context.Context]()` still wins, and so does a `Bind` or `Override` naming the type;
+both are the spec file speaking. Only constructors `New` calls can take it: a
+[scoped](scopes.md) constructor runs inside `Acquire`, after `New` has returned, and is refused
+with a pointer to `Init(ctx)` instead; so is a context.Context among a `ScopeKey` extractor's or a
+`//servo:` handler's later parameters, whose first parameter is already the context that matters.
+
 **0½. A `//servo:config` type.** A key carrying the
 [config directive](config.md) resolves to its generated `ServoConfig` loader, ahead of every
 provider — which is also why a hand-written constructor for such a type is a diagnostic rather
@@ -199,26 +295,37 @@ consulted and not generated for that graph.
 named concrete type, and resolution continues from step 2 looking for that type instead.
 `Override` beats `Bind` for the same key, and only applies when generating the test variant.
 
-**2. Exact type match.** Look for functions returning exactly this type.
+**2. Exact type match.** Look for functions returning exactly this type — leaving out any the
+injector [cannot refer to](#the-injector-has-to-be-able-to-refer-to-it) — and count your module's
+first.
 
-- **One** → selected. Binding is reported as `explicit bind` if step 1 redirected here, otherwise
-  `sole candidate`.
-- **More than one** → ambiguity diagnostic:
-  `N functions produce X — remove or rename all but one`, listing each with its position. No
-  `Bind` can resolve this, because there's no interface involved; make the instances distinct
-  types.
-- **Zero** → if step 1 redirected here, that's a missing-provider diagnostic for the bound type,
-  with no suggestions (servo won't second-guess an explicit instruction). Otherwise continue to
-  step 3.
+- **One of your module's** → selected. Binding is reported as `explicit bind` if step 1 redirected
+  here, otherwise `sole candidate`. Constructors outside the module are not consulted.
+- **More than one of your module's** → `ambiguous provider for X`: `N functions produce X, and
+  servo tells values apart by type alone`, listing each with its position. No `Bind` can resolve
+  this, because there's no interface involved, and renaming a function changes nothing: make the
+  instances distinct named types — the message shows one.
+- **None of yours, exactly one outside** → selected, as before.
+- **None of yours, several outside** → if step 1 redirected here, or the type is not an interface,
+  `ambiguous provider for X` naming them, with the two things you can do: write a constructor in
+  your module, or declare a `servo.Value`. For an interface, step 3 runs first, and this is
+  reported only if it finds nothing.
+- **Zero** → if step 1 redirected here, a missing-provider diagnostic for the bound type: no
+  alternative types are suggested (servo won't second-guess an explicit instruction), but the
+  [near misses](#near-misses) say why nothing provides it — and when only candidates the injector
+  cannot use produce it, the heading is `no usable provider for X`, with each one's reason.
+  Otherwise continue to step 3.
 
 **3. Structural interface search.** Only if the requested type is a non-empty interface. Every
 main-module candidate whose result type satisfies it — via `types.Implements`, at generation time,
-never a runtime assertion — is collected.
+never a runtime assertion — is collected, apart from the ones the injector cannot refer to.
 
 - **One** → selected, binding reported as `sole implementation`. This is the auto-binding that
   makes most interface dependencies need no configuration at all.
-- **More than one** → ambiguity diagnostic listing the exact `servo.Bind[…]` line to add for each.
-- **Zero** → missing-provider diagnostic.
+- **More than one** → `ambiguous provider for I`, listing the `servo.Bind[…]` line to add for
+  each, written the way the spec file writes types — `servo.Bind[store.Store, *memory.Store]()`,
+  bare for the spec's own package — followed by the imports the spec file still needs.
+- **Zero** → missing-provider diagnostic, ending with the near misses.
 
 Nothing here depends on how the *rest* of the graph is written. A dependency's declared type
 decides how it resolves: declare an interface where a component should accept any of several
@@ -235,9 +342,9 @@ Two things sit *around* these steps rather than among them, both declared in the
 [traced interface](tracing.md) resolves exactly as above, and then every request for it is
 answered with the generated wrapper around that answer — so a `Bind`, a `Value` or an `Override`
 decides what gets wrapped, never whether. And the wrapper's own dependency on
-`trace.TracerProvider` is the one key whose exact-type step considers your module's constructors
-only: the OpenTelemetry packages return that interface from several functions of their own, none
-of which is the one you meant.
+`trace.TracerProvider` is the one key whose exact-type step never looks outside your module, not
+even at a lone candidate: the OpenTelemetry packages return that interface from several functions
+of their own, none of which is the one you meant.
 
 ## Construction order and levels
 
@@ -305,15 +412,22 @@ CI gate:
 
 - The candidate index is sorted by source position (file, then line, then column), so package load
   order can't perturb it.
-- Ambiguity candidate lists are sorted the same way.
-- Positions embedded in the generated file are rewritten relative to the module root, so two
-  checkouts at different absolute paths produce identical files. A provider outside the module — in
-  a dependency, or in the standard library — is written as its package's import path plus the file
-  name (`github.com/okian/servo/v3/middleware/recover.go:17:6`, `$GOROOT/src/net/http/server.go:…`),
-  never as the module cache or replace directory it was read from, so `servo check` on another
-  machine agrees too. `servo graph` applies the same rewriting, because its output has to match the
-  generated `App.Graph()` exactly; `explain`, `why` and `list` print absolute paths, which are for
-  you and your editor rather than for a diff.
+- Everything whose order reaches the generated file — the `servo.Trace` wrappers, the config
+  loaders `New` calls first — is ordered by the module a declaration lives in, then its file's
+  slash-separated path within that module, then line and column: never by the directory a module
+  happened to be read from, so moving a module a `servo.Include` names from `../a-shared` to
+  `../z-shared` changes nothing, and Windows' `\` sorts no differently from `/`.
+- Ambiguity candidate lists and diagnostics are ordered the same way, with the message breaking a
+  tie between two at one position.
+- The generated file embeds no source positions at all. Its header and `App.Graph()` name each
+  provider by its function (`postgres.New`, `middleware.NewRecover`), so a comment added above a
+  constructor, a different checkout path, a vendored copy of a dependency, or another patch release
+  of Go — whose standard library sits at different line numbers — changes nothing, and
+  `servo check` on another machine agrees. Positions are for reading, so the commands you read
+  print them: `servo graph` writes a provider outside the module as its package's import path plus
+  the file name (`github.com/okian/servo/v3/middleware/recover.go:18:6`,
+  `$GOROOT/src/net/http/server.go:…`), never the module cache or replace directory it was read
+  from; `explain`, `why` and `list` print absolute paths, for you and your editor.
 
 One caveat: two different servo versions may legitimately produce two different, both correct,
 files. Pin one for the whole project with `go get -tool github.com/okian/servo/v3/cmd/servo`, which
