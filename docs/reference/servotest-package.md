@@ -237,10 +237,10 @@ servotest.NodeName[*api.Server]() // "*example.com/app/api.Server"
 - a generic instantiation spells its type arguments the same way, separated by `, ` —
   `*example.com/app/repo.Repo[example.com/app/model.User]`;
 - aliases are resolved: a node provided as `*UserRepo`, an alias of `*Repo[model.User]`, is named
-  for the latter.
+  for the latter, and `byte` and `rune` are spelled `uint8` and `int32`, the types they alias.
 
 `NodeName` computes that at run time from `T` itself, so a renamed or moved type keeps its assertion
-in step with no edit. Run time does not keep three things the source says, which servo spells as
+in step with no edit. Run time does not keep two things the source says, which servo spells as
 written; where `T` holds one of them, the two names differ:
 
 - **Parameter and result names.** A `func` or interface literal, wherever it sits in `T`, comes out
@@ -249,13 +249,10 @@ written; where `T` holds one of them, the two names differ:
 - **Embedded interfaces.** Run time flattens an interface literal's method set, so
   `interface{ io.Reader; Close() error }` comes out with `Read`'s signature written out, where
   servo writes `io.Reader`.
-- **`byte` and `rune`.** Run time knows them only as `uint8` and `int32`, so a
-  `*example.com/app/cache.Cache[[]byte]` node comes out as `…Cache[[]uint8]`.
 
-A name of its own is the cure for all three: declare the interface, or the type argument, as a
-defined type — `type ReadCloser interface{ io.Reader; Close() error }`, `type Payload []byte` — and
-`NodeName` and servo agree on that name. For `byte` and `rune`, spelling `uint8` and `int32` where
-the node's type is written does as well.
+A name of its own is the cure for both: declare the interface as a defined type —
+`type ReadCloser interface{ io.Reader; Close() error }` — and `NodeName` and servo agree on that
+name.
 
 And a binary built from `package main` calls that package `main` at run time, where servo uses its
 import path; under `go test`, the package being tested carries its import path, so a test's own

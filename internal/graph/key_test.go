@@ -107,6 +107,10 @@ var (
 	noArgsPlain   func() *DB
 	embeddedAlias struct{ Embedded }
 	embeddedPlain struct{ DB }
+	// Embedded, a generic keeps its own name, the field's, while its
+	// type arguments are resolved like any other.
+	embeddedGenericAlias struct{ *Cache[DBAlias] }
+	embeddedGenericPlain struct{ *Cache[*DB] }
 )
 `
 	fset := token.NewFileSet()
@@ -135,6 +139,7 @@ var (
 		{"ifaceAlias", "ifacePlain"},
 		{"embedAlias", "embedPlain"},
 		{"noArgsAlias", "noArgsPlain"},
+		{"embeddedGenericAlias", "embeddedGenericPlain"},
 	} {
 		aliased, plain := typeOf(pair[0]), typeOf(pair[1])
 		if !types.Identical(aliased, plain) {
@@ -162,6 +167,125 @@ var (
 	plain := typeOf("nestedPlain")
 	if unaliasDeep(plain) != plain {
 		t.Error("unaliasDeep rebuilt a type that holds no alias")
+	}
+}
+
+// TestTypeStringSpellsByteAndRuneAsUint8AndInt32: the spec makes byte and
+// rune aliases of uint8 and int32, but go/types keeps each as a type of its
+// own carrying the spelling the source used, so []byte and []uint8, one
+// type, rendered as two keys, wherever they sat. A constructor returning
+// *Repo[[]byte] then never satisfied a parameter written *Repo[[]uint8]:
+// "no provider for *Repo[[]uint8]". Keys spell uint8 and int32 now, at
+// every depth, a type argument inside an embedded field included; only an
+// embedded byte itself keeps its spelling, because it is the field's name.
+func TestTypeStringSpellsByteAndRuneAsUint8AndInt32(t *testing.T) {
+	const src = `
+package probe
+
+type Repo[T any] struct{}
+type Pair[K comparable, V any] struct{}
+type Getter[T any] interface{ Get() T }
+
+var (
+	argByte          *Repo[[]byte]
+	argUint8         *Repo[[]uint8]
+	argRune          *Repo[rune]
+	argInt32         *Repo[int32]
+	nestedByte       Repo[Pair[rune, map[byte][]byte]]
+	nestedPlain      Repo[Pair[int32, map[uint8][]uint8]]
+	sliceByte        []byte
+	sliceUint8       []uint8
+	arrayRune        [4]rune
+	arrayInt32       [4]int32
+	mapByte          map[rune]byte
+	mapPlain         map[int32]uint8
+	chanByte         chan<- byte
+	chanUint8        chan<- uint8
+	funcByte         func([]byte, ...rune) (byte, error)
+	funcPlain        func([]uint8, ...int32) (uint8, error)
+	structByte       struct{ B []byte; R rune }
+	structPlain      struct{ B []uint8; R int32 }
+	ifaceByte        interface{ Write([]byte) (int, error) }
+	ifacePlain       interface{ Write([]uint8) (int, error) }
+	embedIfaceByte   interface{ Getter[[]byte]; Close() }
+	embedIfacePlain  interface{ Getter[[]uint8]; Close() }
+	embedStructByte  struct{ *Repo[[]byte] }
+	embedStructPlain struct{ *Repo[[]uint8] }
+	embeddedByte     struct{ byte }
+	embeddedUint8    struct{ uint8 }
+)
+`
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "probe.go", src, 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	pkg, err := (&types.Config{Importer: importer.Default()}).Check("example.com/probe", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	typeOf := func(name string) types.Type { return pkg.Scope().Lookup(name).Type() }
+
+	for _, pair := range [][2]string{
+		{"argByte", "argUint8"},
+		{"argRune", "argInt32"},
+		{"nestedByte", "nestedPlain"},
+		{"sliceByte", "sliceUint8"},
+		{"arrayRune", "arrayInt32"},
+		{"mapByte", "mapPlain"},
+		{"chanByte", "chanUint8"},
+		{"funcByte", "funcPlain"},
+		{"structByte", "structPlain"},
+		{"ifaceByte", "ifacePlain"},
+		{"embedIfaceByte", "embedIfacePlain"},
+		{"embedStructByte", "embedStructPlain"},
+	} {
+		spelled, plain := typeOf(pair[0]), typeOf(pair[1])
+		if !types.Identical(spelled, plain) {
+			t.Fatalf("%s and %s are not types.Identical (test assumption broken)", pair[0], pair[1])
+		}
+		if got, want := TypeString(spelled), TypeString(plain); got != want {
+			t.Errorf("TypeString(%s) = %q, want %q — the key of the identical %s", pair[0], got, want, pair[1])
+		}
+		if got := TypeString(spelled); strings.Contains(got, "byte") || strings.Contains(got, "rune") {
+			t.Errorf("TypeString(%s) = %q still spells byte or rune", pair[0], got)
+		}
+	}
+
+	if types.Identical(typeOf("embeddedByte"), typeOf("embeddedUint8")) {
+		t.Fatal("struct{ byte } and struct{ uint8 } are types.Identical (test assumption broken)")
+	}
+	if got := TypeString(typeOf("embeddedByte")); got != "struct{byte}" {
+		t.Errorf("TypeString(struct{ byte }) = %q, want struct{byte}: the field is named byte", got)
+	}
+
+	plain := typeOf("nestedPlain")
+	if unaliasDeep(plain) != plain {
+		t.Error("unaliasDeep rebuilt a type that spells neither byte nor rune")
+	}
+}
+
+// TestTypeStringLeavesATypeParameterAsWritten: a generic constructor is
+// rejected, but its result is still rendered — `servo list --rejected` and
+// a "no provider" diagnostic's near misses show it — and a type parameter
+// in it is neither an alias nor a predeclared type to canonicalize. It is
+// left as written, and the type around it is not rebuilt.
+func TestTypeStringLeavesATypeParameterAsWritten(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "probe.go", "package probe\ntype Repo[T any] struct{}\nfunc NewRepo[T any]() *Repo[T] { return nil }\n", 0)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	pkg, err := (&types.Config{}).Check("example.com/probe", fset, []*ast.File{f}, nil)
+	if err != nil {
+		t.Fatalf("typecheck: %v", err)
+	}
+	result := pkg.Scope().Lookup("NewRepo").Type().(*types.Signature).Results().At(0).Type()
+	if got, want := TypeString(result), "*example.com/probe.Repo[T]"; got != want {
+		t.Errorf("TypeString(*Repo[T]) = %q, want %q", got, want)
+	}
+	if unaliasDeep(result) != result {
+		t.Error("unaliasDeep rebuilt a type whose only argument is a type parameter")
 	}
 }
 

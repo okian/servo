@@ -6,8 +6,9 @@ import "go/types"
 
 // Key is the canonical identity of a value in the object graph: a fully
 // qualified type string (with every alias resolved, at any depth, so
-// aliases collapse to their target) plus an optional tag. T and *T are
-// distinct keys because their type strings differ by the leading "*".
+// aliases collapse to their target — byte and rune to uint8 and int32)
+// plus an optional tag. T and *T are distinct keys because their type
+// strings differ by the leading "*".
 type Key struct {
 	Type string
 	Tag  string
@@ -49,6 +50,11 @@ func TypeStringWith(t types.Type, q types.Qualifier) string {
 // strings for one type. types.Identical agrees they are the same type; only
 // the rendered key disagreed, and a constructor for one then never
 // satisfied a parameter written as the other.
+//
+// byte and rune are aliases too, of uint8 and int32 as the spec defines
+// them, but go/types keeps each as a type of its own carrying the spelling
+// the source used, which types.Unalias does not touch: []byte and []uint8
+// rendered as two keys the same way. They resolve to uint8 and int32 here.
 //
 // A subtree holding no alias comes back as the identical object, so the
 // common case rebuilds nothing.
@@ -102,6 +108,10 @@ func unaliasDeep(t types.Type) types.Type {
 			return universeAny
 		}
 		return unaliasMethods(u)
+	case *types.Basic:
+		// Typ holds the one canonical object per kind; byte and rune are
+		// the predeclared types that are not it.
+		return types.Typ[u.Kind()]
 	default:
 		return u
 	}
@@ -165,9 +175,14 @@ func unaliasFields(s *types.Struct) types.Type {
 		typ := f.Type()
 		// An embedded field is named after the type written for it, so
 		// struct{ Alias } and struct{ Target } are different types — the
-		// field is called Alias in one and Target in the other. Resolving
-		// the alias here would make the two render alike.
-		if !f.Embedded() {
+		// field is called Alias in one and Target in the other — and so are
+		// struct{ byte } and struct{ uint8 }. Resolving the alias here
+		// would make the two render alike. Its type arguments are another
+		// matter: struct{ Cache[DBAlias] } and struct{ Cache[*DB] } both
+		// have a field named Cache, of one type, and need one key.
+		if f.Embedded() {
+			typ = unaliasEmbedded(typ)
+		} else {
 			typ = unaliasDeep(typ)
 		}
 		changed = changed || typ != f.Type()
@@ -178,6 +193,23 @@ func unaliasFields(s *types.Struct) types.Type {
 		return s
 	}
 	return types.NewStruct(fields, tags)
+}
+
+// unaliasEmbedded resolves an embedded field's type as far as its name
+// allows: a generic type's arguments, written T[A] or *T[A], while T, the
+// field's name, stays as written.
+func unaliasEmbedded(t types.Type) types.Type {
+	switch u := t.(type) {
+	case *types.Pointer:
+		if elem := unaliasEmbedded(u.Elem()); elem != u.Elem() {
+			return types.NewPointer(elem)
+		}
+		return u
+	case *types.Named:
+		return unaliasTypeArgs(u)
+	default:
+		return u
+	}
 }
 
 func unaliasMethods(iface *types.Interface) types.Type {

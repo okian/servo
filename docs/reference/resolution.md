@@ -51,8 +51,11 @@ Consequences, all of which follow from that single rule:
   the type itself, a pointer's element, a type argument, a slice, map or channel element, a
   function's parameters and results, a struct's fields — so `*Alias` and `*Underlying`, or
   `*Cache[DBAlias]` and `*Cache[*DB]`, are one key rather than two strings that merely look
-  different. An embedded field is the exception, because it is named after the type written for
-  it: `struct{ Alias }` and `struct{ Target }` are different types.
+  different. That includes `byte` and `rune`, which the spec defines as aliases of `uint8` and
+  `int32`: keys spell them that way, so a constructor returning `*Repo[[]byte]` satisfies a
+  parameter of type `*Repo[[]uint8]`. An embedded field's type name is the exception, because the
+  field is named after it: `struct{ Alias }` and `struct{ Target }` are different types, as are
+  `struct{ byte }` and `struct{ uint8 }`; its type arguments collapse like any others.
 - **Import paths are always written in full**, never abbreviated to a package name, so two
   same-named types from different packages can never collide.
 - **A node is a singleton.** Each key resolves once; every consumer of that key gets the same
