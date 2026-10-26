@@ -5,6 +5,7 @@ import (
 	"go/token"
 	"go/types"
 	"io/fs"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -129,8 +130,31 @@ func TestExportDataErrorNamesBothVersionsAndBothRemedies(t *testing.T) {
 // comes from: the build info of the running binary, which under `go tool
 // servo` is the consumer's build list rather than servo's go.mod.
 func TestToolsVersionIsReadFromTheBinary(t *testing.T) {
-	if v := toolsVersion(); !strings.HasPrefix(v, "v0.") {
-		t.Errorf("toolsVersion() = %q, want this test binary's golang.org/x/tools version", v)
+	tools := func(version string, replace *debug.Module) *debug.Module {
+		return &debug.Module{Path: toolsModule, Version: version, Replace: replace}
+	}
+	for _, tc := range []struct {
+		name string
+		deps []*debug.Module
+		want string
+	}{
+		{"required", []*debug.Module{{Path: "golang.org/x/mod", Version: "v0.42.0"}, tools("v0.52.0", nil)}, "v0.52.0"},
+		{"replaced by another version", []*debug.Module{tools("v0.52.0", &debug.Module{Path: toolsModule, Version: "v0.53.0"})}, "v0.53.0"},
+		{"replaced by a directory", []*debug.Module{tools("v0.52.0", &debug.Module{Path: "../tools"})}, ""},
+		{"not linked at all", []*debug.Module{{Path: "golang.org/x/mod", Version: "v0.42.0"}}, ""},
+	} {
+		if got := toolsVersionFrom(&debug.BuildInfo{Deps: tc.deps}); got != tc.want {
+			t.Errorf("%s: toolsVersionFrom = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+
+	// The running binary, when its build info records x/tools at all: Go
+	// 1.27's test binaries do, Go 1.26's did not, and a release binary
+	// always does.
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if want := toolsVersionFrom(info); want != "" && toolsVersion() != want {
+			t.Errorf("toolsVersion() = %q, want this test binary's %q", toolsVersion(), want)
+		}
 	}
 	if v := goVersion("."); !strings.HasPrefix(v, "go1.") {
 		t.Errorf("goVersion(.) = %q, want the go command's GOVERSION", v)
