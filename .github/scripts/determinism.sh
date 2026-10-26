@@ -42,6 +42,18 @@ native() {
 	fi
 }
 
+# A go.work use path in the form the go command compares against the
+# directory it runs in. On Windows that is backslashes: given a mixed
+# "D:/a/..." path, go keeps it verbatim as a module root and then reports
+# "D:\a\..." as outside every root. Everywhere else it is the path itself.
+workpath() {
+	if command -v cygpath > /dev/null 2>&1; then
+		cygpath -w "$1"
+	else
+		printf '%s\n' "$1"
+	fi
+}
+
 # One binary for every scenario, so they differ only in their surroundings.
 servo="$work/bin/servo$(go env GOEXE)"
 go build -o "$servo" ./cmd/servo
@@ -129,7 +141,7 @@ gover=${gover%% *}
 {
 	printf 'go %s\n\nuse (\n' "$gover"
 	for dir in "${examples[@]}" diagnostics; do
-		printf '\t%s\n' "$(native "$root/examples/$dir")"
+		printf '\t%s\n' "$(workpath "$root/examples/$dir")"
 	done
 	printf ')\n'
 } > "$work/go.work"

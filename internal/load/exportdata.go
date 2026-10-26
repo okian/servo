@@ -82,6 +82,14 @@ func toolsVersion() string {
 	if !ok {
 		return ""
 	}
+	return toolsVersionFrom(info)
+}
+
+// toolsVersionFrom is toolsVersion over given build info, so the lookup can
+// be tested with any shape of dependency list: a test binary does not
+// always record its dependencies (Go 1.26's did not), which leaves the
+// running binary nothing to read.
+func toolsVersionFrom(info *debug.BuildInfo) string {
 	for _, m := range info.Deps {
 		if m.Path != toolsModule {
 			continue
