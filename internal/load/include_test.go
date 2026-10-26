@@ -2,6 +2,7 @@ package load
 
 import (
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1017,4 +1018,72 @@ func Wire() {
 		t.Errorf("an included declaration lost its mark: values=%v configfile=%v scopes=%v http=%v extracts=%v",
 			spec.Values[0].Included, spec.ConfigFile.Included, spec.Scopes[0].Included, spec.HTTP.Included, spec.Extracts[0].Included)
 	}
+}
+
+// TestFindSpecNamesAMarkerSetItsBuildLeavesOut: a marker set in a file
+// this build excludes — a constraint beyond servoinject, a GOOS in its
+// name — is a name the spec cannot resolve, and was refused as an
+// argument of the wrong shape. The file and what excludes it are named
+// instead, and a name that is simply not declared gets the type
+// checker's own words.
+func TestFindSpecNamesAMarkerSetItsBuildLeavesOut(t *testing.T) {
+	const marked = `
+import (
+	"example.com/inc/memory"
+	"example.com/inc/store"
+	"github.com/okian/servo/v3/servo"
+)
+
+func Shared() []servo.Marker {
+	return []servo.Marker{
+		servo.Bind[store.Store, *memory.Mem](),
+	}
+}
+`
+	spec := func(arg string) string {
+		return "//go:build servoinject\n\npackage spec\n\nimport (\n\t\"example.com/inc/api\"\n\t\"example.com/inc/wiring\"\n\t\"github.com/okian/servo/v3/servo\"\n)\n\nfunc Wire() {\n\tservo.Build(\n\t\tservo.Include(" + arg + "),\n\t\tservo.Root[*api.Server](),\n\t)\n}\n"
+	}
+	otherOS := "plan9"
+	if runtime.GOOS == otherOS {
+		otherOS = "windows"
+	}
+	cases := []struct {
+		name, file, src, arg, want string
+	}{
+		{
+			name: "a constraint this run does not satisfy",
+			file: "wiring/wiring.go", src: "//go:build servoinject && prod\n\npackage wiring\n" + marked, arg: "wiring.Shared",
+			want: ", a file this build leaves out (its constraint is `//go:build servoinject && prod`) — run with the tags that select it, or gate the file on `//go:build servoinject` alone, as a spec file is",
+		},
+		{
+			name: "a file name for another GOOS",
+			file: "wiring/shared_" + otherOS + ".go", src: "package wiring\n" + marked, arg: "wiring.Shared",
+			want: ", a file this build leaves out (by its file name) — ",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := writeIncludeModule(t, map[string]string{
+				"wiring/doc.go": "package wiring\n",
+				c.file:          c.src,
+				"spec/spec.go":  spec(c.arg),
+			})
+			_, err := findSpecIn(t, dir)
+			want := "servo.Include names " + c.arg + ", which is declared in " + filepath.Join(dir, filepath.FromSlash(c.file)) + c.want
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("got err=%v\nwant it to contain %q", err, want)
+			}
+		})
+	}
+
+	t.Run("a name declared nowhere", func(t *testing.T) {
+		dir := writeIncludeModule(t, map[string]string{
+			"wiring/wiring.go": "//go:build servoinject\n\npackage wiring\n" + marked,
+			"spec/spec.go":     spec("wiring.Shard"),
+		})
+		_, err := findSpecIn(t, dir)
+		if err == nil || !strings.Contains(err.Error(), "the spec file does not type-check, so servo.Include's argument cannot be read") || !strings.Contains(err.Error(), "undefined: wiring.Shard") {
+			t.Fatalf("got err=%v, want the type checker's undefined name", err)
+		}
+	})
 }

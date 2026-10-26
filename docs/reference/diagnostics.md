@@ -309,6 +309,7 @@ Full explanations on [Spec file and markers](spec.md#errors-from-this-stage). In
 | `servo.Value[…]() declared twice` | One `Value` per type |
 | `servo.Include takes exactly one argument, the name of a func() []servo.Marker` | `Include(pkg.Shared)` |
 | `servo.Include's argument must name a declared func() []servo.Marker` | Pass the function's name, not a literal, a method value, or a call |
+| `servo.Include names …, which is declared in …, a file this build leaves out` | The marker set's file carries a constraint this run doesn't satisfy, or a `GOOS`/`GOARCH` in its name: run with the tags that select it, or gate it on `servoinject` alone |
 | `servo.Include names …, which is not a marker set servo can read` | The function is not declared in your module or one it requires — the standard library's, say — so there is no body for servo to read; name a `func() []servo.Marker` of your own |
 | ``servo.Include names …, which is declared in a file without a `//go:build servoinject` constraint`` | Tag the shared marker set's file, exactly like a spec file |
 | ``X must be exactly `return []servo.Marker{ ... }` `` | The included body is read as syntax, so it can't be a variable, a conditional, or an `append` |
@@ -441,7 +442,9 @@ Export data is something the go command builds, and that build can fail before i
 package: the build cache turned off with `GOCACHE=off`, a `-toolexec` in `GOFLAGS` that fails.
 The go command's own reason follows the colon; fix what it names. This used to arrive as an empty
 load, reported as the [missing runtime package](#missing-runtime-package) below, with the advice
-to run `servo init`.
+to run `servo init`. The compile check `generate` and `check` run over the generated code asks the
+same question, so the same failure there is `verify: go list -export failed: …`; it used to pass,
+having compiled nothing.
 
 ### Missing runtime package
 

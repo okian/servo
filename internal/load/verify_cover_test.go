@@ -60,6 +60,20 @@ func TestVerifyReportsAGoCommandThatWillNotRun(t *testing.T) {
 	}
 }
 
+// TestVerifyReportsAnExportDataBuildThatFails: with the build cache off,
+// the go command cannot build the dependencies' export data and lists no
+// package, which go/packages hands back as an empty, error-free answer.
+// That is not a verification: it is reported in the go command's words.
+func TestVerifyReportsAnExportDataBuildThatFails(t *testing.T) {
+	dir := writeVerifyModule(t)
+	t.Setenv("GOCACHE", "off")
+	gen := filepath.Join(dir, "cmd", "app", "servo_gen.go")
+	v, err := Verify(Config{Dir: dir}, map[string][]byte{gen: []byte("package main\n\nfunc New() int { return 1 }\n")}, []string{"example.com/verify/cmd/app"})
+	if err == nil || !strings.HasPrefix(err.Error(), "verify: go list -export failed: ") || !strings.Contains(err.Error(), "build cache is disabled by GOCACHE=off") {
+		t.Fatalf("Verify = %+v, %v; want the go command's reason it could not build export data", v, err)
+	}
+}
+
 // TestUnresolvedImportFromTheTypeChecker: with no list error on the
 // dependency itself, the type checker's "could not import" is the reason
 // a package cannot be judged, folded onto one line — unless it is an
