@@ -711,6 +711,14 @@ func Order(ctx context.Context) (servo.Json[*Resp], *MyErr) { return nil, nil }
 			want: "implements error but is not the error interface itself",
 		},
 		{
+			name: "second result not an error at all",
+			src: header + `
+//servo:post /order
+func Order(ctx context.Context) (servo.Json[*Resp], string) { return nil, "" }
+`,
+			want: "must return (R, error) where R is a servo response type (servo.Json[T], servo.Xml[T] or servo.Response)",
+		},
+		{
 			name: "non-scalar bound field",
 			src: header + `
 type ListReq struct {
@@ -721,6 +729,30 @@ type ListReq struct {
 func List(ctx context.Context, req *ListReq) (servo.Json[*Resp], error) { return nil, nil }
 `,
 			want: "must be a scalar",
+		},
+		{
+			name: "basic but non-scalar bound field",
+			src: header + `
+type PtrReq struct {
+	Addr uintptr ` + "`query:\"addr\"`" + `
+}
+
+//servo:get /peek
+func Peek(ctx context.Context, req *PtrReq) (servo.Json[*Resp], error) { return nil, nil }
+`,
+			want: "query-bound fields must be a scalar (string, bool, int/uint families, float32/64), got uintptr",
+		},
+		{
+			name: "form fields on a bodyless method",
+			src: header + `
+type SearchReq struct {
+	Q string ` + "`form:\"q\"`" + `
+}
+
+//servo:get /search
+func Search(ctx context.Context, req *SearchReq) (servo.Json[*Resp], error) { return nil, nil }
+`,
+			want: "request struct example.com/app.SearchReq declares form fields, but GET requests carry no body",
 		},
 		{
 			name: "form and json body mixed",
