@@ -1,6 +1,7 @@
 package conf
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -183,12 +184,17 @@ func TestEverySizedCoercion(t *testing.T) {
 		{"Uint bool", func() error { _, err := Uint(true); return err }, "cannot use bool as integer"},
 		{"Float32 overflow", func() error { _, err := Float32(float64(1e300)); return err }, "overflows float32"},
 		{"Float64 string", func() error { _, err := Float64("1.5"); return err }, "cannot use string as float"},
+		{"Float32 string", func() error { _, err := Float32("1.5"); return err }, "cannot use string as float"},
 	}
 	for _, r := range refusals {
 		err := r.call()
 		if err == nil || !strings.Contains(err.Error(), r.want) {
 			t.Errorf("%s: err = %v, want it to contain %q", r.name, err, r.want)
 		}
+	}
+	// A uint above MaxInt64 exists only where uint is 64 bits wide.
+	if _, err := Int64(^uint(0)); strconv.IntSize == 64 && (err == nil || !strings.Contains(err.Error(), "overflows int64")) {
+		t.Errorf("Int64(max uint): err = %v, want it to overflow int64", err)
 	}
 
 	for _, v := range []any{float32(1.5), int8(-2), uint16(3)} {

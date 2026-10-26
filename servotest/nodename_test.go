@@ -22,6 +22,39 @@ type (
 	nnFunc                      func(int) error
 )
 
+// Type literals, which have no name for the run time to report, so
+// NodeName spells them out itself. Only an interface literal can be a
+// node on its own, but its methods can take and return every other kind
+// here. Each is an alias, so the type checker sees the literal as it is
+// written, and graph.TypeString resolves the alias the way it resolves
+// one in a constructor's signature. Parameters are unnamed because the
+// run time keeps no names.
+type (
+	nnSliceOf     = []nnUser
+	nnArrayOf     = [3]*nnUser
+	nnMapOf       = map[nnID][]string
+	nnRecvChanOf  = <-chan nnUser
+	nnSendChanOf  = chan<- nnUser
+	nnChanOf      = chan nnID
+	nnNullaryFunc = func()
+	nnVariadic    = func(int, ...nnUser) error
+	nnTwoResults  = func(string) (nnUser, error)
+	nnEmptyIface  = interface{}
+	nnIfaceLit    = interface {
+		Close() error
+		Get(string) (nnUser, bool)
+	}
+	nnStructLit = struct {
+		A int
+		*nnUser
+		B string `json:"b"`
+	}
+)
+
+// The embedded field is read only through reflection; referenced here so
+// the fixture is lint-clean.
+var _ = nnStructLit{}.nnUser
+
 // TestNodeNameMatchesTheGenerator checks NodeName against the generator's
 // own naming rule, graph.TypeString, rather than against strings written
 // down by hand: this package's test files are type-checked, each fixture
@@ -70,6 +103,23 @@ func TestNodeNameMatchesTheGenerator(t *testing.T) {
 		{NodeName[nnRepo[nnFunc]](), instantiate("nnRepo", named("nnFunc"))},
 		{NodeName[nnRepo[[4]chan<- nnUser]](), instantiate("nnRepo", types.NewArray(types.NewChan(types.SendOnly, user), 4))},
 		{NodeName[error](), types.Universe.Lookup("error").Type()},
+
+		// Type literals: here NodeName walks the reflect type itself, so
+		// these are the cases where it, not the run time, owes go/types'
+		// spacing, its "..." for a variadic parameter, its parentheses
+		// round two results, and its quoting of a struct tag.
+		{NodeName[nnSliceOf](), named("nnSliceOf")},
+		{NodeName[nnArrayOf](), named("nnArrayOf")},
+		{NodeName[nnMapOf](), named("nnMapOf")},
+		{NodeName[nnRecvChanOf](), named("nnRecvChanOf")},
+		{NodeName[nnSendChanOf](), named("nnSendChanOf")},
+		{NodeName[nnChanOf](), named("nnChanOf")},
+		{NodeName[nnNullaryFunc](), named("nnNullaryFunc")},
+		{NodeName[nnVariadic](), named("nnVariadic")},
+		{NodeName[nnTwoResults](), named("nnTwoResults")},
+		{NodeName[nnEmptyIface](), named("nnEmptyIface")},
+		{NodeName[nnIfaceLit](), named("nnIfaceLit")},
+		{NodeName[nnStructLit](), named("nnStructLit")},
 	}
 	for _, c := range cases {
 		if want := graph.TypeString(c.want); c.got != want {

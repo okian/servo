@@ -311,6 +311,9 @@ func TestSuppliableNeedsEveryConsumerToTakeTheInterface(t *testing.T) {
 		{"scoped member takes the interface", true, func(n *resolve.Node) *resolve.Resolved {
 			return &resolve.Resolved{Order: []*resolve.Node{n}, Scopes: []*resolve.Scope{{Order: []*resolve.Node{consumer(n, iface)}}}}
 		}},
+		{"scoped member takes the concrete type", false, func(n *resolve.Node) *resolve.Resolved {
+			return &resolve.Resolved{Order: []*resolve.Node{n}, Scopes: []*resolve.Scope{{Order: []*resolve.Node{consumer(n, concrete)}}}}
+		}},
 		{"a capability", false, func(n *resolve.Node) *resolve.Resolved {
 			n.Capabilities = []string{"Healther"}
 			return &resolve.Resolved{Order: []*resolve.Node{n, consumer(n, iface)}}
