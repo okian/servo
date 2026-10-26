@@ -153,6 +153,18 @@ var mainScenarios = map[string]func(context.Context) (*scriptedApp, error){
 			return &NodeError{Node: "http", Phase: "Run", Err: errors.New("listen tcp :8080: bind: address already in use")}
 		}}, nil
 	},
+	"new-fails-with-options": func(context.Context) (*scriptedApp, error) {
+		return nil, errInit
+	},
+}
+
+// mainScenarioOptions are the MainOptions a scenario hands Main, beside
+// its newApp: a zero MainOption, which sets nothing, and a Logger writing
+// text to stdout.
+var mainScenarioOptions = map[string]func() []MainOption{
+	"new-fails-with-options": func() []MainOption {
+		return []MainOption{{}, Logger(slog.New(slog.NewTextHandler(os.Stdout, nil)))}
+	},
 }
 
 // TestMainHelperProcess is the child. In an ordinary run it does nothing;
@@ -168,7 +180,11 @@ func TestMainHelperProcess(t *testing.T) {
 		fmt.Fprintf(os.Stderr, "no scenario %q\n", scenario)
 		os.Exit(99)
 	}
-	Main(newApp)
+	var opts []MainOption
+	if options, ok := mainScenarioOptions[scenario]; ok {
+		opts = options()
+	}
+	Main(newApp, opts...)
 }
 
 type child struct {
@@ -364,5 +380,21 @@ func TestMainProcessRunFailure(t *testing.T) {
 	c.wantExit(1)
 	if got, want := c.stderr.String(), `ERROR servo: run failed err="http: Run: listen tcp :8080: bind: address already in use"`; !strings.Contains(got, want) {
 		t.Fatalf("stderr = %q, want a line containing %q", got, want)
+	}
+}
+
+// TestMainProcessAppliesItsOptions: what Main is handed reaches the run.
+// The Logger carries the startup failure out on stdout, leaving stderr
+// empty, and the zero MainOption beside it, which sets nothing, is
+// skipped rather than called.
+func TestMainProcessAppliesItsOptions(t *testing.T) {
+	t.Parallel()
+	c := startChild(t, "new-fails-with-options")
+	c.wantExit(1)
+	if got, want := c.stdout.String(), `level=ERROR msg="servo: startup failed" err="*postgres.DB: Init: dial tcp 127.0.0.1:5432: connect: connection refused"`; !strings.Contains(got, want) {
+		t.Fatalf("stdout = %q, want a line containing %q", got, want)
+	}
+	if got := c.stderr.String(); got != "" {
+		t.Fatalf("stderr = %q, want nothing: the Logger option took the line", got)
 	}
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/okian/servo/v3/internal/graph"
 	"github.com/okian/servo/v3/internal/load"
 	"github.com/okian/servo/v3/internal/resolve"
+	"github.com/okian/servo/v3/internal/route"
 )
 
 // fixturePkg is one package of a test's fixture module: its import path
@@ -112,6 +113,20 @@ type fixtureSpec struct {
 	// does; configFile declares a servo.ConfigFile with that path.
 	configs    bool
 	configFile string
+	// http declares servo.HTTP(), serving every route the packages'
+	// //servo: directives declare.
+	http *fixtureHTTP
+}
+
+// fixtureHTTP is the servo.HTTP() half of a fixture's spec: each servo.Use,
+// in declaration order.
+type fixtureHTTP struct{ uses []fixtureUse }
+
+// fixtureUse is one servo.Use: a middleware type, attached by pointer, and
+// the groups it is limited to — none attaches it server-wide.
+type fixtureUse struct {
+	typ    string
+	groups []string
 }
 
 // buildFixture resolves pkgs (the last is the injector) under spec.
@@ -192,9 +207,22 @@ func buildFixture(t *testing.T, fs fixtureSpec, pkgs ...fixturePkg) (*resolve.Re
 	if fs.configFile != "" {
 		spec.ConfigFile = &load.ConfigFileDecl{Path: fs.configFile, Pos: token.Position{Filename: "spec.go", Line: 50}}
 	}
+	var httpIn *resolve.HTTPInput
+	if fs.http != nil {
+		routes, rdiags := route.Scan(loaded, servoPkg.Types)
+		if len(rdiags) > 0 {
+			t.Fatalf("route scan diagnostics: %v", rdiags)
+		}
+		ck, ct := route.HTTPConfigKey(servoPkg.Types)
+		httpIn = &resolve.HTTPInput{Pos: token.Position{Filename: "spec.go", Line: 60}, Routes: routes, ConfigKey: ck, ConfigType: ct}
+		for i, u := range fs.http.uses {
+			typ := lookup("*" + u.typ)
+			httpIn.Uses = append(httpIn.Uses, load.UseDecl{Type: graph.NewKey(typ, ""), TypeT: typ, Groups: u.groups, Pos: token.Position{Filename: "spec.go", Line: 61 + i}})
+		}
+	}
 	resolved, diags := resolve.Resolve(resolve.Input{
 		Spec: spec, Candidates: candidates, Caps: caps, Scope: scope, Fset: fset, Pkgs: loaded,
-		ExtraBinds: spec.Overrides, Configs: configs,
+		ExtraBinds: spec.Overrides, Configs: configs, HTTP: httpIn,
 	})
 	if len(diags) > 0 {
 		t.Fatalf("unexpected diagnostics: %v", diags)

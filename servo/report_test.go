@@ -205,3 +205,24 @@ func TestNodeStatusDecodesItsOldForm(t *testing.T) {
 		t.Fatalf("as a map key: %s", b)
 	}
 }
+
+// TestReportJSONRefusesAMalformedNode: a stored report whose node has a
+// field of the wrong type fails to decode, rather than coming back as a
+// node with that field silently left empty. NodeStatus.UnmarshalJSON is
+// exported, so it can be handed bytes encoding/json never would: a quoted
+// status cut short is refused too, not read as a name.
+func TestReportJSONRefusesAMalformedNode(t *testing.T) {
+	for _, bad := range []string{
+		`{"nodes":[{"name":5,"status":"ok"}]}`,
+		`{"nodes":[{"name":"*postgres.DB","status":"failed","err":7}]}`,
+	} {
+		var r Report
+		if err := json.Unmarshal([]byte(bad), &r); err == nil {
+			t.Errorf("json.Unmarshal(%s) = nil error, decoded %+v; want a refusal", bad, r)
+		}
+	}
+	var s NodeStatus
+	if err := s.UnmarshalJSON([]byte(`"fail`)); err == nil {
+		t.Errorf("UnmarshalJSON of an unterminated string = nil error, status %v", s)
+	}
+}

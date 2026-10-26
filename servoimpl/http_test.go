@@ -557,6 +557,69 @@ func TestStopServerWithNoTimeLeftStillCloses(t *testing.T) {
 	}
 }
 
+// StopServer's cancel is optional: a server built without NewServer has no
+// request context of its own to end, and nil stops it like any other.
+func TestStopServerWithoutACancel(t *testing.T) {
+	srv := &http.Server{Handler: http.NotFoundHandler()}
+	var ready atomic.Bool
+	if r := StopServer(context.Background(), "http", srv, &ready, time.Minute, nil); r.Status != servo.StatusOK || r.Err != nil {
+		t.Fatalf("result = %+v, want a clean stop", r)
+	}
+}
+
+// errCloseFailed is what closeFailsListener's Close returns.
+var errCloseFailed = errors.New("close tcp 127.0.0.1:8080: bad file descriptor")
+
+// closeFailsListener accepts nothing and fails to close, as a listener
+// whose descriptor has gone bad does. accepting is closed once the server
+// is serving it, which net/http does only after it tracks the listener.
+type closeFailsListener struct {
+	accepting, closed     chan struct{}
+	acceptOnce, closeOnce sync.Once
+}
+
+func (l *closeFailsListener) Accept() (net.Conn, error) {
+	l.acceptOnce.Do(func() { close(l.accepting) })
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *closeFailsListener) Close() error {
+	l.closeOnce.Do(func() { close(l.closed) })
+	return errCloseFailed
+}
+
+func (l *closeFailsListener) Addr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}
+}
+
+// A drain that finishes but cannot close the listener is a failed stop,
+// carrying the close's own error. The requests' context still ends as a
+// stop rather than as a drain that ran out: none were cut short.
+func TestStopServerReportsAListenerThatWouldNotClose(t *testing.T) {
+	srv, cancel, err := NewServer("http", servo.HTTPListener{}, http.NotFoundHandler())
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := &closeFailsListener{accepting: make(chan struct{}), closed: make(chan struct{})}
+	served := make(chan error, 1)
+	go func() { served <- srv.Serve(l) }()
+	<-l.accepting
+
+	var cause error
+	var ready atomic.Bool
+	r := StopServer(context.Background(), "http", srv, &ready, 0, func(err error) { cause = err; cancel(err) })
+	if r.Status != servo.StatusFailed || !errors.Is(r.Err, errCloseFailed) || r.Name != "http" {
+		t.Fatalf("result = %+v, want failed with the close error", r)
+	}
+	if !errors.Is(cause, errServerStopped) {
+		t.Fatalf("the requests' context ended with %v, want errServerStopped", cause)
+	}
+	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("Serve = %v, want http.ErrServerClosed", err)
+	}
+}
+
 // The status contract, applied once at run time for every adapter.
 func TestRespond(t *testing.T) {
 	cases := []struct {
@@ -645,6 +708,18 @@ func TestRespondAbortsACutShortResponse(t *testing.T) {
 		r := httptest.NewRequest("GET", "/x", nil).WithContext(ctx)
 		Respond(failingWriter{httptest.NewRecorder()}, r, "app.H", "GET /x", servo.Text("x"), nil)
 		if rec := logs.only(t); rec.level != slog.LevelDebug || !strings.Contains(rec.msg, "request ended first") {
+			t.Fatalf("logged %+v", rec)
+		}
+	})
+	// The server cut the request when its drain ran out: worth a Warn,
+	// with the cause saying so.
+	t.Run("after the drain cut it", func(t *testing.T) {
+		logs := captureLogs(t)
+		ctx, cancel := context.WithCancelCause(served(context.WithValue(context.Background(), markKey{}, "req-1")))
+		cancel(errDrainExpired)
+		r := httptest.NewRequest("GET", "/x", nil).WithContext(ctx)
+		Respond(failingWriter{httptest.NewRecorder()}, r, "app.H", "GET /x", servo.Text("x"), nil)
+		if rec := logs.only(t); rec.level != slog.LevelWarn || !strings.Contains(rec.msg, "request ended first") || rec.attrs["cause"] != errDrainExpired.Error() {
 			t.Fatalf("logged %+v", rec)
 		}
 	})
