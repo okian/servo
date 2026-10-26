@@ -71,11 +71,21 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 	for i, d := range node.Deps {
 		deps[i] = d.Key.String()
 	}
+	// Each dependent is named once, however many of its parameters this
+	// node answers: a constructor taking it as two interfaces depends on
+	// it once, and listing that constructor twice read as two dependents.
 	var dependents []string
+	named := map[string]bool{}
+	dependent := func(name string) {
+		if !named[name] {
+			named[name] = true
+			dependents = append(dependents, name)
+		}
+	}
 	for _, n := range allNodes(resolved) {
 		for _, d := range n.Deps {
 			if d.Key == node.Key {
-				dependents = append(dependents, n.Key.String())
+				dependent(n.Key.String())
 			}
 		}
 	}
@@ -84,7 +94,7 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 	// config that asked for it is named instead.
 	for _, entry := range httpEntryPoints(resolved) {
 		if entry.node == node {
-			dependents = append(dependents, "("+entry.label+")")
+			dependent("(" + entry.label + ")")
 		}
 	}
 	// A scoped node's consumers are usually not other nodes at all: they
@@ -96,19 +106,28 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 		lifetime = fmt.Sprintf("scoped — one per %s, linger %s, max %d", scopeKey, node.Scope.Linger, node.Scope.Max)
 		for _, root := range node.Scope.Roots {
 			if root.Node == node {
-				dependents = append(dependents, "(acquired via "+root.Iface.String()+")")
+				dependent("(acquired via " + root.Iface.String() + ")")
 			}
 		}
 	}
 
 	// A servo.Value has no provider to name — the caller is the provider —
 	// so the fields that would describe one carry the declaration instead.
-	// A //servo:config's provider is its generated loader.
+	// A //servo:config's provider is its generated loader. A scope's key
+	// comes from its ScopeKey extractor on every acquire, and the
+	// construction context from whoever calls New.
 	provider, pos, binding := "", "", node.Binding
 	switch node.Kind {
 	case resolve.NodeSupplied:
 		provider, pos, binding = "the caller, via NewWith", node.SuppliedPos.String(), "supplied"
 		lifetime = "supplied — handed to NewWith once, held for the life of the process"
+	case resolve.NodeScopeKey:
+		provider, pos = scopeKeyExtractors(node.Scope)
+		binding = "scope key"
+		lifetime = "per acquire — read from the acquiring context; the scope keeps one instance per key"
+	case resolve.NodeContext:
+		provider, pos = "the caller, as the ctx New, NewWith or NewTestApp is called with", p.spec.Pos.String()
+		lifetime = "the call to New — for work done while constructing; Run's context is the one that lasts"
 	case resolve.NodeConfig:
 		provider = fmt.Sprintf("%s.ServoConfig (generated, env prefix %s)", node.Config.PkgName, node.Config.Prefix)
 		pos = node.Config.Pos.String()
@@ -180,6 +199,20 @@ func runExplain(cfg load.Config, query string, jsonOut bool) error {
 	fmt.Printf("  depended on:  %s\n", joinOrNone(dependents))
 	fmt.Printf("  capabilities: %s\n", joinOrNone(node.Capabilities))
 	return nil
+}
+
+// scopeKeyExtractors names the ScopeKey methods a scope's key comes from,
+// one per servo.Scoped sharing the key type, and where each is declared.
+func scopeKeyExtractors(s *resolve.Scope) (names, positions string) {
+	var ns, ps []string
+	for _, root := range s.Roots {
+		if root.Extractor == nil {
+			continue
+		}
+		ns = append(ns, "("+shortTypeString(root.Extractor.OwnerType)+")."+graph.ScopeKeyMethodName)
+		ps = append(ps, root.Extractor.Pos.String())
+	}
+	return strings.Join(ns, ", ") + ", on each acquire", strings.Join(ps, ", ")
 }
 
 // levelOf reports a scoped node's level within its own scope, and an
@@ -406,6 +439,8 @@ func nodeType(n *resolve.Node) types.Type {
 		return n.Config.Type
 	case n.Kind == resolve.NodeTraced && n.Traced != nil:
 		return n.Traced.IfaceType
+	case n.Kind == resolve.NodeScopeKey && n.Scope != nil:
+		return n.Scope.KeyType
 	}
 	return nil
 }

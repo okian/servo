@@ -727,6 +727,20 @@ func New(s store.Store, c cache.Cache, st settings.Settings) *Server { return &S
 	if want := "binding:      explicit bind (example.com/mk/store.Store, " + bindPos + ", via servo.Include)\n"; !strings.Contains(out, want) {
 		t.Errorf("explain postgres.DB missing %q:\n%s", want, out)
 	}
+	// api.Server takes it twice, as store.Store and as cache.Cache, and is
+	// still one dependent.
+	if want := "depended on:  *example.com/mk/api.Server\n"; !strings.Contains(out, want) {
+		t.Errorf("explain postgres.DB should name api.Server once, as %q:\n%s", want, out)
+	}
+	// Nor is that one path twice.
+	paths := captureStdout(t, func() {
+		if err := runWhyPaths(api, "postgres.DB", false, true); err != nil {
+			t.Fatalf("why --all postgres.DB: %v", err)
+		}
+	})
+	if n := strings.Count(paths, "root  "); n != 1 {
+		t.Errorf("why --all postgres.DB printed %d paths, want 1:\n%s", n, paths)
+	}
 
 	out = explain("store.Store")
 	if want := "example.com/mk/store.Store resolves to *example.com/mk/postgres.DB — explicit bind, servo.Bind at " + bindPos + ", in a marker set pulled in with servo.Include\n"; !strings.Contains(out, want) {
@@ -954,5 +968,85 @@ func TestExplainLookupHelpersTolerateMissingPackages(t *testing.T) {
 	}
 	if found := typesNamed(p, "broken.Thing"); len(found) != 0 {
 		t.Errorf("typesNamed over a package with no types = %v, want none", found)
+	}
+}
+
+// TestExplainAndWhyAnswerForAScopeKey: explain lists a scope's key among
+// a scoped node's dependencies, and asking about it said the key was not
+// in the graph. It is described now, from the extractor that produces it,
+// and why reaches it through the scoped node that takes it.
+func TestExplainAndWhyAnswerForAScopeKey(t *testing.T) {
+	dir := "../../examples/scoped"
+	out := captureStdout(t, func() {
+		if err := runExplain(cfg(dir), "chat.RoomKey", false); err != nil {
+			t.Fatalf("explain chat.RoomKey: %v", err)
+		}
+	})
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"example.com/servoscoped/chat.RoomKey\n",
+		"  provider:     (*chat.Room).ScopeKey, on each acquire (" + filepath.Join(abs, "chat", "chat.go") + ":91:14)\n",
+		"  binding:      scope key\n",
+		"  lifetime:     per acquire — read from the acquiring context; the scope keeps one instance per key\n",
+		"  depends on:   none\n",
+		"  depended on:  *example.com/servoscoped/chat.RoomLog, *example.com/servoscoped/chat.Room\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("explain chat.RoomKey missing %q:\n%s", want, out)
+		}
+	}
+
+	out = captureStdout(t, func() {
+		if err := runWhy(cfg(dir), "chat.RoomKey", false); err != nil {
+			t.Fatalf("why chat.RoomKey: %v", err)
+		}
+	})
+	want := "root  *example.com/servoscoped/api.Server\n" +
+		"  -> *example.com/servoscoped/chat.Room  (acquired via example.com/servoscoped/chat.Rooms)\n" +
+		"  -> example.com/servoscoped/chat.RoomKey\n"
+	if out != want {
+		t.Errorf("why chat.RoomKey =\n%s\nwant\n%s", out, want)
+	}
+}
+
+// TestExplainAndWhyAnswerForTheConstructionContext: a constructor taking
+// a context.Context depends on the ctx New is called with, and explain
+// says so; asking about context.Context then answered that nothing in the
+// graph asks for it.
+func TestExplainAndWhyAnswerForTheConstructionContext(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "go.mod", "module example.com/ctxq\n\ngo 1.26.0\n\nrequire github.com/okian/servo/v3 v3.0.0\n\nreplace github.com/okian/servo/v3 => "+repoRoot(t)+"\n")
+	mustWriteFile(t, dir, "api/api.go", "package api\n\nimport \"context\"\n\ntype Server struct{}\n\nfunc New(ctx context.Context) *Server { return &Server{} }\n")
+	mustWriteFile(t, dir, "cmd/app/main.go", "package main\n\nfunc main() {}\n")
+	mustWriteFile(t, dir, "cmd/app/spec.go", "//go:build servoinject\n\npackage main\n\nimport (\n\t\"example.com/ctxq/api\"\n\t\"github.com/okian/servo/v3/servo\"\n)\n\nfunc wire() {\n\tservo.Build(servo.Root[*api.Server]())\n}\n")
+	runGoModTidy(t, dir)
+
+	out := captureStdout(t, func() {
+		if err := runExplain(cfg(dir), "context.Context", false); err != nil {
+			t.Fatalf("explain context.Context: %v", err)
+		}
+	})
+	for _, want := range []string{
+		"context.Context\n",
+		"  provider:     the caller, as the ctx New, NewWith or NewTestApp is called with (" + filepath.Join(dir, "cmd", "app", "spec.go") + ":11:2)\n",
+		"  binding:      construction context\n",
+		"  lifetime:     the call to New — for work done while constructing; Run's context is the one that lasts\n",
+		"  depended on:  *example.com/ctxq/api.Server\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("explain context.Context missing %q:\n%s", want, out)
+		}
+	}
+
+	out = captureStdout(t, func() {
+		if err := runWhy(cfg(dir), "context.Context", false); err != nil {
+			t.Fatalf("why context.Context: %v", err)
+		}
+	})
+	if want := "root  *example.com/ctxq/api.Server\n  -> context.Context\n"; out != want {
+		t.Errorf("why context.Context =\n%s\nwant\n%s", out, want)
 	}
 }

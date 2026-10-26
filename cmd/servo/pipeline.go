@@ -401,7 +401,28 @@ func allNodes(resolved *resolve.Resolved) []*resolve.Node {
 	// that these commands report as unknown is worse than not supporting
 	// them.
 	all = append(all, resolved.Supplied...)
-	return append(all, resolved.Configs...)
+	all = append(all, resolved.Configs...)
+	return append(all, depOnlyNodes(all)...)
+}
+
+// depOnlyNodes is every node that exists only as another node's
+// dependency: a scope's key, handed to its constructors on each acquire,
+// and the construction context, New's own ctx. Nothing builds either, so
+// neither is in any list a Resolved keeps, yet `explain` names them among
+// a node's dependencies. Asking about one used to answer that nothing in
+// the graph asks for it.
+func depOnlyNodes(nodes []*resolve.Node) []*resolve.Node {
+	var out []*resolve.Node
+	seen := map[*resolve.Node]bool{}
+	for _, n := range nodes {
+		for _, d := range n.Deps {
+			if (d.Kind == resolve.NodeScopeKey || d.Kind == resolve.NodeContext) && !seen[d] {
+				seen[d] = true
+				out = append(out, d)
+			}
+		}
+	}
+	return out
 }
 
 func joinOrNone(ss []string) string {
