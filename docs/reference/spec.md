@@ -512,6 +512,18 @@ binary, where every marker it returns panics
 [`servo-vet`](cli.md#servo-vet) flags the calls in that file directly, which is the faster loop; a
 shared marker set lives away from any spec file, which is where the tag is easiest to forget.
 
+A marker set in a file this build leaves out — a constraint beyond `servoinject`, such as
+`servoinject && prod`, or a `GOOS` in its file name — is a name the spec cannot resolve, so it is
+named with the file and what excludes it:
+
+```
+cmd/api/spec.go:12:3: servo.Include names wiring.Shared, which is declared in wiring/wiring.go, a
+file this build leaves out (its constraint is `//go:build servoinject && prod`) — run with the tags
+that select it, or gate the file on `//go:build servoinject` alone, as a spec file is
+```
+
+A name declared nowhere is the type checker's `undefined`, quoted in full.
+
 **The body must be exactly one `return` of one slice literal of marker calls.** Its contents are
 read as syntax by the same code that reads `Build`'s own argument list. Anything servo would have to
 *execute* to know the answer — a variable, a conditional, an `append` — is refused:

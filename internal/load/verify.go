@@ -83,6 +83,15 @@ func Verify(cfg Config, files map[string][]byte, pkgPaths []string) (Verificatio
 	patterns := slices.Sorted(slices.Values(pkgPaths))
 	patterns = slices.Compact(patterns)
 	pkgs, err := packages.Load(pcfg, patterns...)
+	if err == nil && len(pkgs) == 0 && len(patterns) > 0 {
+		// The dependencies' types come from export data, which the go
+		// command builds, and go/packages reports no failure of that build
+		// when it stops before listing a package — see load's handling of
+		// the same call. Taken as it came, the empty answer was a
+		// verification with nothing in it: generated code that had not been
+		// compiled at all, reported as compiling.
+		err = exportListFailure(cfg, patterns)
+	}
 	if err != nil {
 		return Verification{}, fmt.Errorf("verify: %w", err)
 	}

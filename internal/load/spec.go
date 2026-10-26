@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/build/constraint"
 	"go/constant"
+	"go/parser"
 	"go/token"
 	"go/types"
 	"maps"
@@ -1380,6 +1381,17 @@ func spliceInclude(pkg *packages.Package, spec *Spec, call *ast.CallExpr, pos to
 	}
 	fn, ok := includedFunc(pkg, call.Args[0])
 	if !ok {
+		// A name that resolves to nothing is most often a marker set in a
+		// file this build leaves out — a constraint beyond servoinject, a
+		// GOOS in its name — and then the type checker says only
+		// "undefined". Said here instead, the message below blamed the
+		// shape of an argument that was fine.
+		if file, why, found := excludedMarkerSet(pkg, call.Args[0]); found {
+			return fmt.Errorf("%s: servo.Include names %s, which is declared in %s, a file this build leaves out (%s) — run with the tags that select it, or gate the file on `//go:build %s` alone, as a spec file is", pos, types.ExprString(call.Args[0]), file, why, BuildTag)
+		}
+		if err := specTypeError(pkg, pos, "servo.Include's argument"); err != nil {
+			return err
+		}
 		return fmt.Errorf("%s: servo.Include's argument must name a declared func() []servo.Marker — not a literal, a method value, or a call", pos)
 	}
 	for _, seen := range including {
@@ -1429,6 +1441,54 @@ func includedFunc(pkg *packages.Package, arg ast.Expr) (*types.Func, bool) {
 		return nil, false
 	}
 	return fn, true
+}
+
+// excludedMarkerSet finds the function an Include argument names among
+// the files this build configuration leaves out of the package it names:
+// the file, and what leaves it out — the build constraint it carries, or
+// else its file name. An unresolved name has no object to follow, so the package
+// comes from the qualifier the argument is written with, or is the spec's
+// own for a bare name.
+func excludedMarkerSet(pkg *packages.Package, arg ast.Expr) (file, why string, ok bool) {
+	target, name := pkg, ""
+	switch a := arg.(type) {
+	case *ast.Ident:
+		name = a.Name
+	case *ast.SelectorExpr:
+		qual, isIdent := a.X.(*ast.Ident)
+		if !isIdent {
+			return "", "", false
+		}
+		imported, isPkg := pkg.TypesInfo.Uses[qual].(*types.PkgName)
+		if !isPkg {
+			return "", "", false
+		}
+		target, name = pkg.Imports[imported.Imported().Path()], a.Sel.Name
+	default:
+		return "", "", false
+	}
+	if target == nil {
+		return "", "", false
+	}
+	fset := token.NewFileSet()
+	for _, path := range target.IgnoredFiles {
+		if !strings.HasSuffix(path, ".go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+		if err != nil {
+			continue
+		}
+		for _, d := range f.Decls {
+			if fd, isFunc := d.(*ast.FuncDecl); isFunc && fd.Recv == nil && fd.Name.Name == name {
+				if expr, constrained := FileConstraint(f); constrained {
+					return path, "its constraint is `//go:build " + expr.String() + "`", true
+				}
+				return path, "by its file name", true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // findFuncDecl locates fn's declaration and the package whose TypesInfo
