@@ -151,3 +151,22 @@ func TestRunListFailsWhenModuleFailsToLoad(t *testing.T) {
 		t.Fatal("expected an error for a nonexistent directory")
 	}
 }
+
+// TestRunListRejectedJSONIncludesUnusableCandidates: the JSON form of
+// the rejected listing carries the candidates the injector cannot use as
+// their own kind, with the type each would have provided.
+func TestRunListRejectedJSONIncludesUnusableCandidates(t *testing.T) {
+	dir := writeAppModule(t, "example.com/listunusablejson", true, "")
+	mustWriteFile(t, dir, "comp/comp.go", "package comp\n\ntype pool struct{}\n\nfunc NewPool() *pool { return &pool{} }\n")
+
+	out := captureStdout(t, func() {
+		if err := runList(cfg(dir), true, false, true); err != nil {
+			t.Fatalf("runList --rejected --json: %v", err)
+		}
+	})
+	for _, want := range []string{`"name": "comp.NewPool"`, `"provides": "*comp.pool"`, `"kind": "unusable"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("list --rejected --json missing %s:\n%s", want, out)
+		}
+	}
+}

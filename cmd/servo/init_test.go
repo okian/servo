@@ -488,3 +488,44 @@ func servoDeclaresMain(t *testing.T) bool {
 	}
 	return false
 }
+
+// TestDeclaresMainReadsOnlySourceFiles: a directory, a test file and a
+// file that does not parse are passed over, and a directory that cannot
+// be read declares nothing.
+func TestDeclaresMainReadsOnlySourceFiles(t *testing.T) {
+	dir := t.TempDir()
+	mustWriteFile(t, dir, "sub/main.go", "package main\n\nfunc main() {}\n")
+	mustWriteFile(t, dir, "main_test.go", "package main\n\nfunc main() {}\n")
+	mustWriteFile(t, dir, "broken.go", "package main\n\nfunc main( {\n")
+	mustWriteFile(t, dir, "notes.txt", "func main() {}\n")
+	if declaresMain(dir) {
+		t.Error("declaresMain found a main in a subdirectory, a test file, a broken file or a text file")
+	}
+	mustWriteFile(t, dir, "app.go", "package main\n\nfunc main() {}\n")
+	if !declaresMain(dir) {
+		t.Error("declaresMain missed app.go's func main")
+	}
+	if declaresMain(filepath.Join(dir, "missing")) {
+		t.Error("declaresMain on a missing directory = true")
+	}
+}
+
+// TestInitReportsAFileItCannotWrite: the directive file and main.go are
+// written only where nothing exists, and a path that exists only as a
+// dangling symlink cannot be written, which init reports.
+func TestInitReportsAFileItCannotWrite(t *testing.T) {
+	for _, name := range []string{generateFileName, mainFileName} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			mustWriteFile(t, dir, "go.mod", "module example.com/initsymlink\n\ngo 1.23\n")
+			if err := os.Symlink(filepath.Join(dir, "no", "such", "dir"), filepath.Join(dir, name)); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			var err error
+			captureStdout(t, func() { err = runInit(dir, nil) })
+			if err == nil {
+				t.Fatalf("runInit wrote through a dangling %s symlink without an error", name)
+			}
+		})
+	}
+}

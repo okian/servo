@@ -334,6 +334,12 @@ func TestVersionOfAReplacedBuild(t *testing.T) {
 			want: "v3.4.2 (github.com/fork/servo/v3)",
 		},
 		{
+			name:     "a clean working-tree build",
+			main:     debug.Module{Path: "github.com/okian/servo/v3", Version: "(devel)"},
+			settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "71f44864ed6c0123"}, {Key: "vcs.modified", Value: "false"}},
+			want:     "(devel, 71f44864ed6c)",
+		},
+		{
 			name:     "a working-tree build",
 			main:     debug.Module{Path: "github.com/okian/servo/v3", Version: "(devel)"},
 			settings: []debug.BuildSetting{{Key: "vcs.revision", Value: "71f44864ed6c0123"}, {Key: "vcs.modified", Value: "true"}},
@@ -605,5 +611,37 @@ func TestPathFlagUsageDoesNotReportAPanic(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("usage text does not document %s, so the assertion above proves nothing:\n%s", want, out.String())
 		}
+	}
+}
+
+// TestRunDispatchesConfig: `servo config` reaches runConfig with its
+// flags.
+func TestRunDispatchesConfig(t *testing.T) {
+	dir := writeConfigModule(t, "example.com/runconfig", false)
+	var err error
+	out := captureStdout(t, func() { err = run([]string{"config", "--dir", dir}) })
+	if err != nil || !strings.HasPrefix(out, "configuration for example.com/runconfig/cmd/app\n") {
+		t.Errorf("servo config = %v:\n%s", err, out)
+	}
+}
+
+// TestIgnoredArgsWarningWithoutADirectory: a command with no --dir has
+// no directory to suggest, and several arguments cannot be one --dir.
+func TestIgnoredArgsWarningWithoutADirectory(t *testing.T) {
+	var err error
+	stderr := captureStderr(t, func() {
+		captureStdout(t, func() { err = run([]string{"version", "extra"}) })
+	})
+	if err != nil || strings.TrimSpace(stderr) != `servo version: ignoring "extra" — version takes no arguments` {
+		t.Errorf("servo version extra = %v, stderr %q; want the bare warning", err, stderr)
+	}
+
+	dir := writeAppModule(t, "example.com/ignoredtwo", true, "")
+	if err := runGenerate(cfg(dir)); err != nil {
+		t.Fatalf("runGenerate: %v", err)
+	}
+	stderr = captureStderr(t, func() { err = run([]string{"check", "--dir", dir, "./a", "./b"}) })
+	if err != nil || !strings.Contains(stderr, `ignoring "./a" "./b" — check takes no arguments and reads every injector under --dir`) || !strings.Contains(stderr, "; pass --dir to choose the directory") {
+		t.Errorf("servo check ./a ./b = %v, stderr:\n%s", err, stderr)
 	}
 }
