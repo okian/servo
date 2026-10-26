@@ -172,6 +172,41 @@ func NewLogger() *Logger { return &Logger{} }
 	}
 }
 
+// TestEmitSeesAMethodWhateverParenthesesItsReceiverHas: Go accepts a
+// receiver type in parentheses, around the star or inside it, and the
+// method is App's all the same. Read only as plainly spelled, such a
+// method slipped past both checks above: a Run went unreported and the
+// generated file declared App.Run a second time, and a field named like
+// the method kept its name and clashed with it.
+func TestEmitSeesAMethodWhateverParenthesesItsReceiverHas(t *testing.T) {
+	const src = `
+package app
+
+type Logger struct{}
+
+func NewLogger() *Logger { return &Logger{} }
+`
+	for _, recv := range []string{"(App)", "*(App)", "(*App)", "((*App))", "(*(App))"} {
+		t.Run(recv, func(t *testing.T) {
+			resolved, spec := buildResolvedFrom(t, src, []string{"Logger"}, nil)
+			addUserFile(t, spec, "methods.go", "package app\n\nimport \"context\"\n\nfunc (a "+recv+") Run(ctx context.Context) error { return nil }\n")
+			if _, err := Emit(resolved, spec, false); err == nil || !strings.Contains(err.Error(), "App.Run is declared in package app, and Run is part of the generated App's method set") {
+				t.Errorf("Emit = %v, want App.Run reported", err)
+			}
+
+			resolved, spec = buildResolvedFrom(t, src, []string{"Logger"}, nil)
+			addUserFile(t, spec, "methods.go", "package app\n\nfunc (a "+recv+") logger() *Logger { return a.logger2 }\n")
+			out, err := Emit(resolved, spec, false)
+			if err != nil {
+				t.Fatalf("Emit: %v", err)
+			}
+			if !strings.Contains(string(out), "logger2 := NewLogger()") {
+				t.Errorf("the field did not step around the method:\n%s", out)
+			}
+		})
+	}
+}
+
 // TestEmitIgnoresTheSpecFilesDeclarations: a spec file is gated
 // servoinject and never shares a build with the generated file, so what it
 // declares — conventionally a func that holds servo.Build — collides with

@@ -51,6 +51,29 @@ type (
 	}
 )
 
+// Channels of receive-only channels, where go/types writes parentheses Go
+// itself needs: chan <-chan T would read as chan<- (chan T). Only a
+// bidirectional channel of an unnamed receive-only one takes them, so the
+// rest are here too, to show they take none. nnFeedsLit is the shape that
+// can be a node: an interface literal whose method returns one.
+type (
+	nnFeed           <-chan nnUser
+	nnChanOfRecvChan = chan (<-chan nnUser)
+	nnChanChanOfRecv = chan chan (<-chan nnUser)
+	nnSendOfRecvChan = chan<- <-chan nnUser
+	nnRecvOfRecvChan = <-chan <-chan nnUser
+	nnChanOfFeed     = chan nnFeed
+	nnFeedsLit       = interface{ Feeds() chan (<-chan nnUser) }
+)
+
+// nnStoreCloser is the cure NodeName's doc comment gives for an interface
+// literal that embeds another, which run time sees only flattened: the
+// same interface, declared under a name of its own.
+type nnStoreCloser interface {
+	nnStore
+	Close() error
+}
+
 // The embedded field is read only through reflection; referenced here so
 // the fixture is lint-clean.
 var _ = nnStructLit{}.nnUser
@@ -120,6 +143,16 @@ func TestNodeNameMatchesTheGenerator(t *testing.T) {
 		{NodeName[nnEmptyIface](), named("nnEmptyIface")},
 		{NodeName[nnIfaceLit](), named("nnIfaceLit")},
 		{NodeName[nnStructLit](), named("nnStructLit")},
+
+		{NodeName[nnChanOfRecvChan](), named("nnChanOfRecvChan")},
+		{NodeName[nnChanChanOfRecv](), named("nnChanChanOfRecv")},
+		{NodeName[nnSendOfRecvChan](), named("nnSendOfRecvChan")},
+		{NodeName[nnRecvOfRecvChan](), named("nnRecvOfRecvChan")},
+		{NodeName[nnChanOfFeed](), named("nnChanOfFeed")},
+		{NodeName[nnFeedsLit](), named("nnFeedsLit")},
+		{NodeName[nnRepo[nnChanOfRecvChan]](), instantiate("nnRepo", named("nnChanOfRecvChan"))},
+		{NodeName[nnStoreCloser](), named("nnStoreCloser")},
+		{NodeName[nnRepo[nnStoreCloser]](), instantiate("nnRepo", named("nnStoreCloser"))},
 	}
 	for _, c := range cases {
 		if want := graph.TypeString(c.want); c.got != want {

@@ -1503,8 +1503,9 @@ returning `Marker`, `HTTPOption`, `ScopeOption` or `TraceOption` — `Root`, `Bi
 [tracing ones](tracing.md) alike — in any file that doesn't carry a build constraint requiring
 `servoinject`. The analyzer recognises a marker by its result type, so a marker added later is
 covered without a change to it, and by what the call resolves to, so a dot-imported, bare `Build(…)`
-is covered too. The markers panic when actually executed, so such a call compiles straight into your
-real binary and panics at runtime. This catches it in the editor instead:
+is covered too, and so is a call in parentheses, `(servo.Build)(…)`. The markers panic when actually
+executed, so such a call compiles straight into your real binary and panics at runtime. This catches
+it in the editor instead:
 
 ```
 spec.go:9:2: servo: servo.Build called in a file without a `//go:build servoinject` constraint —
