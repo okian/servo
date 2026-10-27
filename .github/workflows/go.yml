@@ -539,8 +539,7 @@ jobs:
   # the examples' READMEs. Offline, so a flaky external site can never fail
   # a pull request; links to other sites are not checked. The site serves
   # docs/x.md as x.html, so a link written either way is resolved to the
-  # Markdown file. docs/superpowers/ holds working notes, not pages anyone
-  # navigates.
+  # Markdown file.
   links:
     name: Links
     runs-on: ubuntu-latest
@@ -574,7 +573,6 @@ jobs:
         run: |
           # shellcheck disable=SC2016
           lychee --offline --no-progress --include-fragments \
-            --exclude-path docs/superpowers \
             --remap '^(file://[^#]*)\.html(#.*)?$ $1.md$2' \
             '*.md' 'docs/**/*.md' 'examples/**/*.md'
 
@@ -583,7 +581,7 @@ jobs:
       # the link's text is on one line. The script names each one that is
       # not; the docs job's output check catches the rest of the class.
       - name: Check no link text wraps a line
-        run: git ls-files -z -- 'docs/*.md' ':!:docs/superpowers/*' | xargs -0 python3 .github/scripts/wrapped-links.py
+        run: git ls-files -z -- 'docs/*.md' | xargs -0 python3 .github/scripts/wrapped-links.py
 
   # The site is five hand-written Jekyll layouts, a Liquid-templated search
   # index and a hand-formatted stylesheet, published straight to Pages from
@@ -640,7 +638,7 @@ jobs:
           # cannot follow: its target does not exist, its text wraps a line,
           # or its text holds a `](` (a code span like `Use[T](sel)`) that
           # ends the rewriter's match early.
-          if grep -rEo 'href="[^":#]*\.md(#[^"]*)?"' --include='*.html' _site | grep -v '^_site/superpowers/'; then
+          if grep -rEo 'href="[^":#]*\.md(#[^"]*)?"' --include='*.html' _site; then
             echo "::error::the pages above link to .md files the published site does not serve"
             exit 1
           fi
