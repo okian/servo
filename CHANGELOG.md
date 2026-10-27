@@ -28,7 +28,7 @@ support window, and go.mod's `go` line is the older of the two. When Go ships a 
 servo release raises the line to the release before it. That is a minor bump, as the move to 1.27
 in 3.2.0 was: it changes nothing this section defines as breaking.
 
-## [Unreleased]
+## [3.5.0] - 2026-10-27
 
 ### Added
 - **`servo.Main(New)`: the documented main.** Every example and every page used to show about 30
