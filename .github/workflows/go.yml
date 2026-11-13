@@ -509,7 +509,7 @@ jobs:
           persist-credentials: false
 
       - name: typos
-        uses: crate-ci/typos@7f9d0819ca1c008ade73f4b41fa9d258d48f605b # v1.51.1
+        uses: crate-ci/typos@4c8b7f51ca60df14e3c5ca82770dfbbe6c3dae85 # v1.52.0
 
   # actionlint type-checks these workflow files: expressions, contexts,
   # job outputs, and every run: script through shellcheck, which the
@@ -609,7 +609,7 @@ jobs:
       # deployment mode refuses one that disagrees with the Gemfile) and
       # caches the result by the lockfile's hash.
       - name: Set up Ruby and the pinned gems
-        uses: ruby/setup-ruby@7f797815d8adceb1c412e7abefdd1ab4abc47a5f # v1.335.0
+        uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1.336.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
